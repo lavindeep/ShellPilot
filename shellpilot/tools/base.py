@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
+from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.command_policy import CommandRisk
 from shellpilot.policy.risk import RiskLevel, SideEffect
 
@@ -28,6 +29,7 @@ class ToolContext:
     max_result_tokens: int
     max_capture_chars: int = 200_000
     emit_output: Callable[[str], None] | None = None
+    snapshots: SnapshotStore | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,7 @@ class ToolResult:
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], ToolResult]
 ToolClassifier = Callable[[ToolContext, dict[str, Any]], CommandRisk]
+ToolPreview = Callable[[ToolContext, dict[str, Any]], str]
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,8 @@ class ToolSpec:
     handler: ToolHandler
     # Argument-dependent risk (run_command); None means default_risk applies.
     classifier: ToolClassifier | None = None
+    # Diff preview shown in approval prompts for write tools (section 12.5).
+    preview: ToolPreview | None = None
 
     @property
     def name(self) -> str:

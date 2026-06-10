@@ -9,6 +9,7 @@ from shellpilot.config.model import Settings
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import Message, tool_result, user
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.prompts.planning import PLANNING_GUIDANCE
 from shellpilot.prompts.system import build_system_prompt
 from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_budget
@@ -57,6 +58,8 @@ class ConversationRuntime:
         self._history: list[Message] = []
         self._last_user_text = ""
         self._last_failure_signature: str | None = None
+        self.snapshots = SnapshotStore()
+        self.recent_diffs: list[str] = []
         self.plan_manager = PlanManager(workspace, settings.runtime.security_profile)
         for spec in make_plan_tools(
             self.plan_manager, ui.ask_plan_approval, lambda: self._last_user_text
@@ -158,6 +161,7 @@ class ConversationRuntime:
             max_capture_chars=self.budget.max_command_capture_chars,
             ask_approval=self._ui.ask_approval,
             emit_output=self._ui.show_command_output,
+            snapshots=self.snapshots,
         )
         tools = executor.available_definitions()
         tool_turns = 0
@@ -217,6 +221,9 @@ class ConversationRuntime:
                     self._ui.show_tool_result(
                         call.name, outcome.result.success, outcome.result.summary
                     )
+                    diff = outcome.result.metadata.get("diff", "")
+                    if outcome.result.success and diff:
+                        self.recent_diffs.append(diff)
                 self._history.append(tool_result(outcome.model_text))
                 self._track_repeated_failure(call.name, outcome)
 

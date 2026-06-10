@@ -38,6 +38,7 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/plan revise <text>", "Ask the assistant to revise the active plan."),
     ("/cwd", "Show the workspace boundary."),
     ("/tools", "List tools available under the active profile."),
+    ("/diff", "Show diffs from this session's agent edits."),
 ]
 
 
@@ -103,6 +104,8 @@ class SlashDispatcher:
             self._cwd()
         elif command == "/tools":
             self._tools()
+        elif command == "/diff":
+            self._diff()
         else:
             self._console.print(f"[red]Unknown command: {command}[/red] — type /help for commands.")
         return SlashAction.CONTINUE
@@ -231,6 +234,14 @@ class SlashDispatcher:
     def _cwd(self) -> None:
         status = self._runtime.status()
         self._console.print(f"Workspace boundary: {status.workspace}")
+
+    def _diff(self) -> None:
+        diffs = self._runtime.recent_diffs
+        if not diffs:
+            self._console.print("[dim]No agent edits this session.[/dim]")
+            return
+        for diff in diffs[-5:]:
+            self._console.print(diff, markup=False, highlight=False)
 
     def _tools(self) -> None:
         profile = self._runtime.settings.runtime.security_profile

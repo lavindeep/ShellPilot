@@ -60,6 +60,8 @@ class TerminalUI:
             self._console.print(f"Purpose: {escape(request.purpose)}")
         elif request.reasons:
             self._console.print(f"Why flagged: {escape('; '.join(request.reasons))}")
+        if request.diff:
+            self._console.print(escape(request.diff), markup=False, highlight=False)
         try:
             if request.risk is RiskLevel.HIGH:
                 answer = self._console.input(

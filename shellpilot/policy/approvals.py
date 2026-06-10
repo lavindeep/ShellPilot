@@ -25,6 +25,7 @@ class ApprovalRequest:
     reasons: tuple[str, ...]
     cwd: Path
     purpose: str = ""
+    diff: str = ""
 
 
 def decide(profile: str, side_effect: SideEffect, risk: RiskLevel) -> Decision:

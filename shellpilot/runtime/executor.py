@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shellpilot.llm.messages import ToolCall, ToolDefinition
+from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.approvals import ApprovalRequest, Decision, decide
 from shellpilot.runtime.budget import estimate_tokens, truncate_to_tokens
 from shellpilot.tools.base import (
@@ -49,7 +50,9 @@ class ToolExecutor:
         max_capture_chars: int = 200_000,
         ask_approval: ApprovalAsker | None = None,
         emit_output: Callable[[str], None] | None = None,
+        snapshots: SnapshotStore | None = None,
     ) -> None:
+        self._snapshots = snapshots
         self._registry = registry
         self._workspace = workspace
         self._profile = profile
@@ -85,6 +88,7 @@ class ToolExecutor:
             max_result_tokens=self._max_result_tokens,
             max_capture_chars=self._max_capture_chars,
             emit_output=self._emit_output,
+            snapshots=self._snapshots,
         )
 
         # Deterministic policy before execution (sections 14.1-14.3). The model
@@ -102,12 +106,19 @@ class ToolExecutor:
                 result=ToolResult(success=False, summary=f"blocked: {reason}", content=""),
             )
         if decision is Decision.ASK:
+            diff = ""
+            if spec.preview is not None:
+                try:
+                    diff = spec.preview(context, call.arguments)
+                except Exception as exc:  # noqa: BLE001 - preview must never block approval
+                    diff = f"(preview failed: {exc})"
             request = ApprovalRequest(
                 kind="command" if call.name == "run_command" else "tool",
                 display=self._display_for(call),
                 risk=classification.risk,
                 reasons=classification.reasons,
                 cwd=self._workspace,
+                diff=diff,
             )
             approved = self._ask_approval(request) if self._ask_approval else False
             if not approved:

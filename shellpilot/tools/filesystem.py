@@ -39,7 +39,12 @@ def _read_file(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
         )
     start_line = int(arguments.get("start_line", 1))
     max_lines = int(arguments.get("max_lines", DEFAULT_MAX_LINES))
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    data = path.read_bytes()
+    if context.snapshots is not None:
+        # Whole-file hash even for window reads: write tools validate against it
+        # before any edit (design section 12.4).
+        context.snapshots.record(path, data)
+    lines = data.decode("utf-8", errors="replace").splitlines()
     window = lines[start_line - 1 : start_line - 1 + max_lines]
     body = "\n".join(window)
     bounded, truncated = truncate_to_tokens(body, context.max_result_tokens)

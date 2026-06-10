@@ -13,7 +13,7 @@ ShellPilot gives you one terminal conversation that can answer questions, inspec
 - [x] Phase 1 — Local Ollama chat loop (streaming, layered config, slash commands, context budgets)
 - [x] Phase 2 — Read-only tools (`read_file`, `list_dir`, `search_text`, `env_info`) with recovery loop
 - [x] Phase 3 — Planning and command execution (`shell=False` runner, deterministic risk policy, PLAN.md artifacts, roadblock protocol)
-- [ ] Phase 4 — File writes and anchored edits with read-before-write snapshots
+- [x] Phase 4 — File writes and anchored edits with read-before-write snapshots and diff previews
 - [ ] Phase 5 — Security profiles, dangerous-command approvals, audit logging
 
 A demo recording of the full plan → approve → edit → verify loop lands here when v1 is complete.
