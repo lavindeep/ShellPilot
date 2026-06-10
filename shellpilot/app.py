@@ -1,10 +1,10 @@
 """ShellPilot application entrypoint."""
 
-from shellpilot import __version__
+from collections.abc import Sequence
+
+from shellpilot.cli.commands import run_cli
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     """Run the ShellPilot CLI."""
-    print(f"ShellPilot {__version__} — local-first AI shell harness")
-    print("The conversation runtime is not implemented yet. See docs/DESIGN.md.")
-    return 0
+    return run_cli(argv)

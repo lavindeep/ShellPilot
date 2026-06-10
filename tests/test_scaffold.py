@@ -15,7 +15,7 @@ def test_version_is_set() -> None:
 def test_main_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:
     from shellpilot.app import main
 
-    assert main() == 0
+    assert main([]) == 0
     assert "ShellPilot" in capsys.readouterr().out
 
 
