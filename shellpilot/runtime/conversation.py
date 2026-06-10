@@ -9,7 +9,9 @@ from shellpilot.config.model import Settings
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import Message, tool_result, user
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.snapshots import SnapshotStore
+from shellpilot.prompts.execution import EXPLAINER_PROMPT
 from shellpilot.prompts.planning import PLANNING_GUIDANCE
 from shellpilot.prompts.system import build_system_prompt
 from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_budget
@@ -47,7 +49,9 @@ class ConversationRuntime:
         ui: RuntimeUI,
         model: str | None = None,
         registry: ToolRegistry | None = None,
+        audit: AuditLogger | None = None,
     ) -> None:
+        self._audit = audit
         self._llm = llm
         self._settings = settings
         self._workspace = workspace
@@ -78,6 +82,10 @@ class ConversationRuntime:
     @property
     def registry(self) -> ToolRegistry:
         return self._registry
+
+    @property
+    def audit(self) -> AuditLogger | None:
+        return self._audit
 
     def _resolve_budget(self) -> ContextBudget:
         detected = self._llm.model_context_length(self._model)
@@ -144,11 +152,31 @@ class ConversationRuntime:
             return ""
 
         self._last_user_text = text
+        if self._audit is not None:
+            self._audit.write("user_turn", chars=len(text))
         self._history.append(user(text))
         dropped = self.compact_now()
         if dropped:
             self._ui.show_status(f"Compacted context: dropped {dropped} oldest messages.")
         return self._tool_loop().content
+
+    def _explain_purpose(self, display: str, reasons: tuple[str, ...]) -> str:
+        """Short model-written purpose for a dangerous command (section 13.4)."""
+        prompt = EXPLAINER_PROMPT.format(
+            command=display,
+            cwd=self._workspace,
+            reasons="; ".join(reasons) or "high risk",
+            context=self._last_user_text[:500],
+        )
+        try:
+            reply = self._llm.chat(
+                self._model,
+                [Message(role="user", content=prompt)],
+                num_ctx=min(4096, self.budget.model_context_tokens),
+            )
+        except Exception:  # noqa: BLE001 - explanation is best-effort, never blocking
+            return ""
+        return reply.content.strip()[:500]
 
     def _tool_loop(self) -> Message:
         """Model call loop with tool dispatch, budgets, and recovery (section 10.4)."""
@@ -162,6 +190,8 @@ class ConversationRuntime:
             ask_approval=self._ui.ask_approval,
             emit_output=self._ui.show_command_output,
             snapshots=self.snapshots,
+            explain_purpose=self._explain_purpose,
+            audit=self._audit,
         )
         tools = executor.available_definitions()
         tool_turns = 0

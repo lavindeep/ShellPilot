@@ -17,6 +17,7 @@ from shellpilot.runtime.conversation import ConversationRuntime
 class SlashAction(Enum):
     CONTINUE = "continue"
     EXIT = "exit"
+    MANUAL_SHELL = "manual_shell"
 
 
 HELP_ROWS: list[tuple[str, str]] = [
@@ -39,6 +40,10 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/cwd", "Show the workspace boundary."),
     ("/tools", "List tools available under the active profile."),
     ("/diff", "Show diffs from this session's agent edits."),
+    ("/profile", "Show the active security profile."),
+    ("/profile use <name>", "Switch profile: supervised or balanced."),
+    ("/logs", "Show recent local audit events."),
+    ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
 ]
 
 
@@ -86,6 +91,8 @@ class SlashDispatcher:
 
         if command in ("/exit", "/quit"):
             return SlashAction.EXIT
+        if command == "/shell":
+            return SlashAction.MANUAL_SHELL
         if command == "/help":
             self._help()
         elif command == "/clear":
@@ -106,6 +113,10 @@ class SlashDispatcher:
             self._tools()
         elif command == "/diff":
             self._diff()
+        elif command == "/profile":
+            self._profile(args)
+        elif command == "/logs":
+            self._logs()
         else:
             self._console.print(f"[red]Unknown command: {command}[/red] — type /help for commands.")
         return SlashAction.CONTINUE
@@ -242,6 +253,49 @@ class SlashDispatcher:
             return
         for diff in diffs[-5:]:
             self._console.print(diff, markup=False, highlight=False)
+
+    def _profile(self, args: list[str]) -> None:
+        import dataclasses
+
+        from shellpilot.config.model import VALID_PROFILES
+
+        settings = self._runtime.settings
+        if not args:
+            self._console.print(f"Active profile: {settings.runtime.security_profile}")
+            self._console.print(f"Available: {', '.join(VALID_PROFILES)} (trusted-local is v2)")
+            return
+        if args[0] == "use" and len(args) > 1:
+            name = args[1]
+            if name not in VALID_PROFILES:
+                self._console.print(
+                    f"[red]{name} is not a v1 profile.[/red] Available: {', '.join(VALID_PROFILES)}"
+                )
+                return
+            new_runtime = dataclasses.replace(settings.runtime, security_profile=name)
+            self._runtime.update_settings(dataclasses.replace(settings, runtime=new_runtime))
+            if self._runtime.audit is not None:
+                self._runtime.audit.write("config_change", setting="profile", value=name)
+                self._runtime.audit.profile = name
+            self._console.print(f"Switched to profile: {name}")
+            return
+        self._console.print("Usage: /profile | /profile use <supervised|balanced>")
+
+    def _logs(self) -> None:
+        audit = self._runtime.audit
+        if audit is None:
+            self._console.print("[dim]Audit logging is not active in this session.[/dim]")
+            return
+        events = audit.tail(15)
+        if not events:
+            self._console.print("[dim]No audit events yet.[/dim]")
+            return
+        for event in events:
+            line = f"{event.get('timestamp', '?')} {event.get('event', '?')}"
+            for key in ("tool", "command", "risk", "decision", "summary"):
+                if event.get(key):
+                    line += f" {key}={event[key]}"
+            self._console.print(line, markup=False, highlight=False)
+        self._console.print(f"[dim]Log file: {audit.path}[/dim]")
 
     def _tools(self) -> None:
         profile = self._runtime.settings.runtime.security_profile

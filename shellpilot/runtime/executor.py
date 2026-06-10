@@ -10,10 +10,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from shellpilot.llm.messages import ToolCall, ToolDefinition
+from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.approvals import ApprovalRequest, Decision, decide
+from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.budget import estimate_tokens, truncate_to_tokens
 from shellpilot.tools.base import (
     ToolContext,
@@ -25,6 +28,8 @@ from shellpilot.tools.base import (
 from shellpilot.tools.registry import ToolRegistry
 
 ApprovalAsker = Callable[[ApprovalRequest], bool]
+# Generates the short purpose explanation for risky commands (section 13.4).
+PurposeExplainer = Callable[[str, tuple[str, ...]], str]
 
 
 @dataclass(frozen=True)
@@ -51,8 +56,12 @@ class ToolExecutor:
         ask_approval: ApprovalAsker | None = None,
         emit_output: Callable[[str], None] | None = None,
         snapshots: SnapshotStore | None = None,
+        explain_purpose: PurposeExplainer | None = None,
+        audit: AuditLogger | None = None,
     ) -> None:
         self._snapshots = snapshots
+        self._explain_purpose = explain_purpose
+        self._audit = audit
         self._registry = registry
         self._workspace = workspace
         self._profile = profile
@@ -95,8 +104,10 @@ class ToolExecutor:
         # never downgrades this classification (section 14.4).
         classification = spec.risk_for(context, call.arguments)
         decision = decide(self._profile, spec.side_effect, classification.risk)
+        display = self._display_for(call)
         if decision is Decision.BLOCK:
             reason = "; ".join(classification.reasons) or "blocked by policy"
+            self._log("policy_block", call, display, classification.risk, reason=reason)
             return ExecutionOutcome(
                 model_text=(
                     f"tool: {call.name}\nstatus: blocked\nsummary: {reason}. "
@@ -112,15 +123,29 @@ class ToolExecutor:
                     diff = spec.preview(context, call.arguments)
                 except Exception as exc:  # noqa: BLE001 - preview must never block approval
                     diff = f"(preview failed: {exc})"
+            purpose = ""
+            if classification.risk is RiskLevel.HIGH and self._explain_purpose is not None:
+                # Model-written purpose explanation for dangerous commands
+                # (section 13.4); it can never downgrade the deterministic risk.
+                purpose = self._explain_purpose(display, classification.reasons)
             request = ApprovalRequest(
                 kind="command" if call.name == "run_command" else "tool",
-                display=self._display_for(call),
+                display=display,
                 risk=classification.risk,
                 reasons=classification.reasons,
                 cwd=self._workspace,
+                purpose=purpose,
                 diff=diff,
             )
             approved = self._ask_approval(request) if self._ask_approval else False
+            self._log(
+                "approval",
+                call,
+                display,
+                classification.risk,
+                explanation=purpose,
+                decision="approved" if approved else "rejected",
+            )
             if not approved:
                 return ExecutionOutcome(
                     model_text=(
@@ -139,9 +164,26 @@ class ToolExecutor:
             result = ToolResult(
                 success=False, summary=f"tool {call.name} crashed: {exc}", content=""
             )
+        event = "command_result" if call.name == "run_command" else "tool_result"
+        if call.name in ("write_file", "patch_file") and result.success:
+            event = "file_edit"
+        self._log(
+            event,
+            call,
+            display,
+            classification.risk,
+            success=result.success,
+            summary=result.summary,
+        )
         return ExecutionOutcome(
             model_text=self._render(call.name, result), malformed=False, result=result
         )
+
+    def _log(
+        self, event: str, call: ToolCall, display: str, risk: RiskLevel, **fields: Any
+    ) -> None:
+        if self._audit is not None:
+            self._audit.write(event, tool=call.name, command=display, risk=risk.value, **fields)
 
     @staticmethod
     def _display_for(call: ToolCall) -> str:
