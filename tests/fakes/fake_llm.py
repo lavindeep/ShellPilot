@@ -1,0 +1,87 @@
+"""Scripted fake LLM client (design section 26.3).
+
+The fake makes the whole runtime testable in CI without a GPU or Ollama: it
+emits direct answers, tool calls, malformed tool calls, and stuck loops from a
+fixed script, and records every request it receives.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+from shellpilot.llm.client import TokenCallback
+from shellpilot.llm.messages import Message, ToolCall, ToolDefinition, assistant
+from shellpilot.llm.ollama import LocalModel
+
+DEFAULT_CONTEXT_LENGTH = 8192
+
+
+def answer(text: str) -> Message:
+    """Script entry: a plain assistant answer."""
+    return assistant(text)
+
+
+def tool_call(name: str, **arguments: Any) -> Message:
+    """Script entry: a single well-formed tool call."""
+    return assistant("", tool_calls=(ToolCall(name=name, arguments=arguments),))
+
+
+@dataclass
+class RecordedCall:
+    model: str
+    messages: tuple[Message, ...]
+    tools: tuple[ToolDefinition, ...]
+    num_ctx: int
+
+
+@dataclass
+class FakeLLM:
+    """Plays back a script of Messages; raises if asked for more than scripted."""
+
+    script: list[Message] = field(default_factory=list)
+    models: list[LocalModel] = field(
+        default_factory=lambda: [LocalModel(name="gemma4:e4b", size_bytes=4_500_000_000)]
+    )
+    context_length: int = DEFAULT_CONTEXT_LENGTH
+    healthy: bool = True
+    calls: list[RecordedCall] = field(default_factory=list)
+
+    def chat(
+        self,
+        model: str,
+        messages: Sequence[Message],
+        *,
+        tools: Sequence[ToolDefinition] = (),
+        num_ctx: int,
+        on_token: TokenCallback | None = None,
+    ) -> Message:
+        self.calls.append(
+            RecordedCall(
+                model=model,
+                messages=tuple(messages),
+                tools=tuple(tools),
+                num_ctx=num_ctx,
+            )
+        )
+        if not self.script:
+            raise AssertionError("FakeLLM script exhausted: unexpected extra chat() call")
+        reply = self.script.pop(0)
+        if on_token is not None and reply.content:
+            for chunk in _chunks(reply.content, 8):
+                on_token(chunk)
+        return reply
+
+    def health(self) -> bool:
+        return self.healthy
+
+    def list_models(self) -> list[LocalModel]:
+        return list(self.models)
+
+    def model_context_length(self, model: str) -> int | None:
+        return self.context_length
+
+
+def _chunks(text: str, size: int) -> list[str]:
+    return [text[i : i + size] for i in range(0, len(text), size)]
