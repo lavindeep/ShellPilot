@@ -38,6 +38,8 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/plan cancel", "Cancel the active plan after confirmation."),
     ("/plan revise <text>", "Ask the assistant to revise the active plan."),
     ("/cwd", "Show the workspace boundary."),
+    ("/cwd set <path>", "Change the workspace boundary after confirmation."),
+    ("/doctor", "Check Python, Ollama, models, and paths."),
     ("/tools", "List tools available under the active profile."),
     ("/diff", "Show diffs from this session's agent edits."),
     ("/profile", "Show the active security profile."),
@@ -108,7 +110,9 @@ class SlashDispatcher:
         elif command == "/plan":
             self._plan(args)
         elif command == "/cwd":
-            self._cwd()
+            self._cwd(args)
+        elif command == "/doctor":
+            self._doctor()
         elif command == "/tools":
             self._tools()
         elif command == "/diff":
@@ -242,9 +246,26 @@ class SlashDispatcher:
             return
         self._console.print("Usage: /plan | /plan path | /plan cancel | /plan revise <text>")
 
-    def _cwd(self) -> None:
-        status = self._runtime.status()
-        self._console.print(f"Workspace boundary: {status.workspace}")
+    def _cwd(self, args: list[str]) -> None:
+        if not args:
+            status = self._runtime.status()
+            self._console.print(f"Workspace boundary: {status.workspace}")
+            return
+        if args[0] == "set" and len(args) > 1:
+            new_workspace = Path(args[1]).expanduser().resolve()
+            if not new_workspace.is_dir():
+                self._console.print(f"[red]{new_workspace} is not a directory.[/red]")
+                return
+            if self._confirm(f"Change the workspace boundary to {new_workspace}?"):
+                self._runtime.set_workspace(new_workspace)
+                self._console.print(f"Workspace boundary: {new_workspace}")
+            return
+        self._console.print("Usage: /cwd | /cwd set <path>")
+
+    def _doctor(self) -> None:
+        from shellpilot.cli.doctor import run_doctor
+
+        run_doctor(self._runtime.status().workspace)
 
     def _diff(self) -> None:
         diffs = self._runtime.recent_diffs

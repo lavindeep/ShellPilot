@@ -136,3 +136,27 @@ def test_compact_status_shows_thresholds(tmp_path: Path) -> None:
     out = harness.output()
     assert "Compact at: 5734" in out
     assert "Hard limit: 7372" in out
+
+
+def test_cwd_set_changes_boundary_with_confirmation(tmp_path: Path) -> None:
+    new_workspace = tmp_path / "other"
+    new_workspace.mkdir()
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle(f"/cwd set {new_workspace}")
+    assert harness.runtime.status().workspace == new_workspace.resolve()
+
+
+def test_cwd_set_rejects_missing_dir(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle(f"/cwd set {tmp_path / 'nope'}")
+    assert harness.runtime.status().workspace == tmp_path
+    assert "not a directory" in harness.output()
+
+
+def test_profile_use_switches_and_audits(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/profile use supervised")
+    assert harness.runtime.settings.runtime.security_profile == "supervised"
+    harness.dispatcher.handle("/profile use trusted-local")
+    assert harness.runtime.settings.runtime.security_profile == "supervised"  # rejected
+    assert "not a v1 profile" in harness.output()

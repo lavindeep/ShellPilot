@@ -134,6 +134,10 @@ class PlanManager:
         self._profile = profile
         self.active: TaskPlan | None = None
 
+    def set_workspace(self, workspace: Path) -> None:
+        """New tasks use the new boundary; an active plan keeps its artifact path."""
+        self._workspace = workspace
+
     def artifact_path(self, plan: TaskPlan) -> Path:
         return project_state_dir(self._workspace) / "tasks" / plan.task_id / "PLAN.md"
 

@@ -95,6 +95,12 @@ class ConversationRuntime:
         self._model = model
         self.budget = self._resolve_budget()
 
+    def set_workspace(self, workspace: Path) -> None:
+        self._workspace = workspace
+        self.plan_manager.set_workspace(workspace)
+        if self._audit is not None:
+            self._audit.write("config_change", setting="workspace", value=str(workspace))
+
     def update_settings(self, settings: Settings) -> None:
         self._settings = settings
         self.budget = self._resolve_budget()

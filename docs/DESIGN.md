@@ -975,6 +975,8 @@ Whole-file rewrites are acceptable when:
 
 Even then, the runtime should treat the model output as a replacement against a known snapshot, not a blind write.
 
+v1 implementation note (2026-06-10): the Phase 0.5 benchmark measured 100% byte-exact span reproduction for `gemma4:e4b`, so the anchored strategy ships as designed. The v1 operation set is `replace_exact`, `insert_before`, `insert_after`, and `delete_exact`; whole-file rewrites go through `write_file` with `mode=overwrite` against a validated snapshot (covering `rewrite_file_from_snapshot`). `replace_between` is deferred: it needs a two-anchor schema, and `replace_exact` covers its use cases at the measured reliability.
+
 ## 13. Command Execution Design
 
 Command execution is one of the most important design areas.
@@ -2059,10 +2061,11 @@ Settled during design review (2026-06-10):
 - `trusted-local` auto-write question: moot for v1.
 - Final name (settled 2026-06-10): **ShellPilot**. Package, executable, and PyPI name `shellpilot`; state dir `.shellpilot/`; env prefix `SHELLPILOT_`. PyPI `shellpilot` was unregistered as of 2026-06-10; the hyphenated `shell-pilot` is an unrelated subprocess library and a distinct name under PEP 503.
 
+- Project `AGENTS.md` (settled 2026-06-10): read-only when present. The assistant never creates or writes `AGENTS.md`; the user authors it.
+
 Still open (do not block implementation):
 
 - Whether `prompt_toolkit` is needed for multiline editing.
-- Whether project `AGENTS.md` should be created automatically or only read when present.
 
 ## 30. Recommended Defaults
 
