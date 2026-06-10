@@ -29,12 +29,13 @@ class ToolRegistry:
 
 
 def default_registry() -> ToolRegistry:
-    """The v1 tool surface; write/command tools register as later phases land."""
+    """The v1 tool surface; write tools register when Phase 4 lands."""
+    from shellpilot.tools.command import RUN_COMMAND
     from shellpilot.tools.environment import ENV_INFO
     from shellpilot.tools.filesystem import LIST_DIR, READ_FILE
     from shellpilot.tools.search import SEARCH_TEXT
 
     registry = ToolRegistry()
-    for spec in (READ_FILE, LIST_DIR, SEARCH_TEXT, ENV_INFO):
+    for spec in (READ_FILE, LIST_DIR, SEARCH_TEXT, ENV_INFO, RUN_COMMAND):
         registry.register(spec)
     return registry

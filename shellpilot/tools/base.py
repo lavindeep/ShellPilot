@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
+from shellpilot.policy.command_policy import CommandRisk
 from shellpilot.policy.risk import RiskLevel, SideEffect
 
 
@@ -25,6 +26,8 @@ class ToolContext:
 
     workspace: Path
     max_result_tokens: int
+    max_capture_chars: int = 200_000
+    emit_output: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,7 @@ class ToolResult:
 
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], ToolResult]
+ToolClassifier = Callable[[ToolContext, dict[str, Any]], CommandRisk]
 
 
 @dataclass(frozen=True)
@@ -52,10 +56,17 @@ class ToolSpec:
     default_risk: RiskLevel
     allowed_profiles: frozenset[str]
     handler: ToolHandler
+    # Argument-dependent risk (run_command); None means default_risk applies.
+    classifier: ToolClassifier | None = None
 
     @property
     def name(self) -> str:
         return self.definition.name
+
+    def risk_for(self, context: ToolContext, arguments: dict[str, Any]) -> CommandRisk:
+        if self.classifier is not None:
+            return self.classifier(context, arguments)
+        return CommandRisk(self.default_risk, ())
 
 
 _JSON_TYPES: dict[str, type | tuple[type, ...]] = {
