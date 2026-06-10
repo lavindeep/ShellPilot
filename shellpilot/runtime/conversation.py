@@ -7,13 +7,16 @@ from pathlib import Path
 
 from shellpilot.config.model import Settings
 from shellpilot.llm.client import LLMClient
-from shellpilot.llm.messages import Message, user
+from shellpilot.llm.messages import Message, tool_result, user
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.prompts.system import build_system_prompt
 from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_budget
 from shellpilot.runtime.events import RuntimeUI
+from shellpilot.runtime.executor import ToolExecutor
+from shellpilot.tools.registry import ToolRegistry, default_registry
 
 MIN_KEPT_MESSAGES = 4
+MAX_CONSECUTIVE_MALFORMED = 2
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,7 @@ class ConversationRuntime:
         behavior: BehaviorInstructions,
         ui: RuntimeUI,
         model: str | None = None,
+        registry: ToolRegistry | None = None,
     ) -> None:
         self._llm = llm
         self._settings = settings
@@ -47,6 +51,7 @@ class ConversationRuntime:
         self._behavior = behavior
         self._ui = ui
         self._model = model or settings.model.default
+        self._registry = registry or default_registry()
         self._history: list[Message] = []
         self.budget = self._resolve_budget()
 
@@ -121,13 +126,73 @@ class ConversationRuntime:
         dropped = self.compact_now()
         if dropped:
             self._ui.show_status(f"Compacted context: dropped {dropped} oldest messages.")
+        return self._tool_loop().content
 
-        messages = [Message(role="system", content=self._system_message_text()), *self._history]
-        reply = self._llm.chat(
-            self._model,
-            messages,
-            num_ctx=self.budget.model_context_tokens,
-            on_token=self._ui.stream_token,
+    def _tool_loop(self) -> Message:
+        """Model call loop with tool dispatch, budgets, and recovery (section 10.4)."""
+        executor = ToolExecutor(
+            registry=self._registry,
+            workspace=self._workspace,
+            profile=self._settings.runtime.security_profile,
+            max_result_tokens=self.budget.max_tool_prompt_tokens,
+            max_total_tokens=self.budget.max_total_tool_prompt_tokens,
         )
-        self._history.append(reply)
-        return reply.content
+        tools = executor.available_definitions()
+        tool_turns = 0
+        consecutive_malformed = 0
+
+        while True:
+            messages = [
+                Message(role="system", content=self._system_message_text()),
+                *self._history,
+            ]
+            reply = self._llm.chat(
+                self._model,
+                messages,
+                tools=tools,
+                num_ctx=self.budget.model_context_tokens,
+                on_token=self._ui.stream_token,
+            )
+            self._history.append(reply)
+            if not reply.tool_calls:
+                return reply
+
+            tool_turns += 1
+            if tool_turns > self._settings.runtime.max_tool_turns:
+                self._ui.show_status("Tool budget for this turn is exhausted; wrapping up.")
+                self._history.append(
+                    tool_result(
+                        "Tool budget exhausted for this turn. Answer now in plain text "
+                        "with what you already know; do not call more tools."
+                    )
+                )
+                tools = []
+                continue
+
+            for call in reply.tool_calls:
+                self._ui.show_tool_call(call.name, call.arguments)
+                outcome = executor.execute(call)
+                if outcome.malformed:
+                    consecutive_malformed += 1
+                    if consecutive_malformed >= MAX_CONSECUTIVE_MALFORMED:
+                        self._ui.show_status(
+                            "Repeated malformed tool calls; stopping tool use for this turn."
+                        )
+                        self._history.append(
+                            tool_result(
+                                f"{outcome.model_text}\nRepeated malformed tool calls. "
+                                "Answer now in plain text without calling tools."
+                            )
+                        )
+                        tools = []
+                        break
+                    self._history.append(
+                        tool_result(f"{outcome.model_text}\nRetry once with a corrected call.")
+                    )
+                    continue
+                consecutive_malformed = 0
+                if outcome.result is not None:
+                    self._ui.show_tool_result(
+                        call.name, outcome.result.success, outcome.result.summary
+                    )
+                self._history.append(tool_result(outcome.model_text))

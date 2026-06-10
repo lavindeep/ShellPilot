@@ -34,6 +34,14 @@ class TerminalUI:
     def show_error(self, text: str) -> None:
         self._console.print(f"[red]{escape(text)}[/red]")
 
+    def show_tool_call(self, name: str, arguments: dict[str, object]) -> None:
+        rendered = " ".join(f"{key}={value!r}" for key, value in arguments.items())
+        self._console.print(f"[dim]→ {escape(name)} {escape(rendered)}[/dim]")
+
+    def show_tool_result(self, name: str, success: bool, summary: str) -> None:
+        mark = "[green]✓[/green]" if success else "[red]✗[/red]"
+        self._console.print(f"[dim]{mark} {escape(summary)}[/dim]")
+
 
 def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple[Path, Path]:
     """User and project config paths; SHELLPILOT_CONFIG overrides the user path."""

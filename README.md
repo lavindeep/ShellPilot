@@ -9,9 +9,9 @@ ShellPilot gives you one terminal conversation that can answer questions, inspec
 🚧 **Pre-alpha.** The design is settled in [`docs/DESIGN.md`](docs/DESIGN.md) and the runtime is being built phase by phase:
 
 - [x] Phase 0 — Foundation: package scaffold, tracked tests, CI, design doc, `shellpilot doctor`
-- [ ] Phase 0.5 — Model capability validation (benchmark against `gemma4:e4b`)
+- [x] Phase 0.5 — Model capability validation ([benchmark results](docs/benchmarks/2026-06-10-gemma4-e4b.md): anchored edits validated)
 - [x] Phase 1 — Local Ollama chat loop (streaming, layered config, slash commands, context budgets)
-- [ ] Phase 2 — Read-only tools (`read_file`, `list_dir`, `search_text`, `env_info`)
+- [x] Phase 2 — Read-only tools (`read_file`, `list_dir`, `search_text`, `env_info`) with recovery loop
 - [ ] Phase 3 — Planning and command execution (`shell=False`, deterministic risk policy)
 - [ ] Phase 4 — File writes and anchored edits with read-before-write snapshots
 - [ ] Phase 5 — Security profiles, dangerous-command approvals, audit logging

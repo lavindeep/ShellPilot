@@ -1,0 +1,113 @@
+"""Tool interface: specs, results, argument validation, workspace boundary (section 12)."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from shellpilot.llm.messages import ToolDefinition
+from shellpilot.policy.risk import RiskLevel, SideEffect
+
+
+class ToolError(Exception):
+    """A tool could not run; the message is safe to show the model."""
+
+
+class WorkspaceBoundaryError(ToolError):
+    """A path resolved outside the workspace boundary (design section 14.5)."""
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """Per-turn execution context handed to tool handlers."""
+
+    workspace: Path
+    max_result_tokens: int
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    """Tool output contract (design section 12.3)."""
+
+    success: bool
+    summary: str
+    content: str
+    truncated: bool = False
+    risk: RiskLevel = RiskLevel.LOW
+    side_effect: SideEffect = SideEffect.NONE
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+ToolHandler = Callable[[ToolContext, dict[str, Any]], ToolResult]
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """A registered tool: schema plus policy metadata plus handler (section 12.1)."""
+
+    definition: ToolDefinition
+    side_effect: SideEffect
+    default_risk: RiskLevel
+    allowed_profiles: frozenset[str]
+    handler: ToolHandler
+
+    @property
+    def name(self) -> str:
+        return self.definition.name
+
+
+_JSON_TYPES: dict[str, type | tuple[type, ...]] = {
+    "string": str,
+    "integer": int,
+    "number": (int, float),
+    "boolean": bool,
+    "array": list,
+}
+
+
+def validate_args(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
+    """Returns a compact, model-readable error, or None when arguments are valid."""
+    definition = spec.definition
+    for name in definition.required:
+        if name not in arguments:
+            return f"missing required argument '{name}' for {spec.name}"
+    for name, value in arguments.items():
+        schema = definition.parameters.get(name)
+        if schema is None:
+            return f"unknown argument '{name}' for {spec.name}"
+        expected = _JSON_TYPES.get(str(schema.get("type", "string")))
+        if expected is not None and not isinstance(value, expected):
+            if expected is int and isinstance(value, bool):
+                return f"argument '{name}' must be an integer"
+            return f"argument '{name}' must be of type {schema.get('type')}"
+        if expected is int and isinstance(value, bool):
+            return f"argument '{name}' must be an integer"
+    return None
+
+
+def schema_reminder(spec: ToolSpec) -> str:
+    """One-line schema summary used for malformed-call recovery (section 10.4)."""
+    params = ", ".join(
+        f"{name}: {schema.get('type', 'string')}{'' if name in spec.definition.required else '?'}"
+        for name, schema in spec.definition.parameters.items()
+    )
+    return f"{spec.name}({params})"
+
+
+def resolve_in_workspace(workspace: Path, raw_path: str) -> Path:
+    """Resolve a tool-supplied path and enforce the workspace boundary.
+
+    Symlinks are resolved first so aliased paths cannot escape (section 24.1).
+    """
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
+    resolved = candidate.resolve()
+    root = workspace.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise WorkspaceBoundaryError(
+            f"path {raw_path} resolves outside the workspace boundary {root}"
+        )
+    return resolved
