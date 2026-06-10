@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 from rich.console import Console
 from rich.markup import escape
 
 from shellpilot import __version__
+from shellpilot.cli.manual_shell import manual_shell_loop
 from shellpilot.cli.slash import SlashAction, SlashDispatcher
 from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
 from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
+from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.paths import AppPaths, project_state_dir
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
@@ -145,9 +148,23 @@ def run_interactive(workspace: Path) -> int:
     else:
         behavior = BehaviorInstructions(global_text=None, project_text=None)
 
+    audit = AuditLogger(
+        path=paths.state_dir / "audit.jsonl",
+        session_id=uuid.uuid4().hex[:12],
+        workspace=workspace,
+        profile=settings.runtime.security_profile,
+        redact=settings.privacy.redact_secrets,
+    )
+    audit.write("session_start", model=settings.model.default)
+
     ui = TerminalUI(console)
     runtime = ConversationRuntime(
-        llm=client, settings=settings, workspace=workspace, behavior=behavior, ui=ui
+        llm=client,
+        settings=settings,
+        workspace=workspace,
+        behavior=behavior,
+        ui=ui,
+        audit=audit,
     )
     dispatcher = SlashDispatcher(
         runtime=runtime,
@@ -175,8 +192,11 @@ def run_interactive(workspace: Path) -> int:
         if not line:
             continue
         if line.startswith("/"):
-            if dispatcher.handle(line) is SlashAction.EXIT:
+            action = dispatcher.handle(line)
+            if action is SlashAction.EXIT:
                 break
+            if action is SlashAction.MANUAL_SHELL:
+                manual_shell_loop(console, workspace, audit)
             continue
         try:
             runtime.run_turn(line)
@@ -187,4 +207,5 @@ def run_interactive(workspace: Path) -> int:
         except OllamaError as exc:
             console.print()
             ui.show_error(f"Model call failed: {exc}")
+    audit.write("session_end")
     return 0
