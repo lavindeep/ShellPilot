@@ -12,19 +12,21 @@ def test_version_is_set() -> None:
     assert __version__
 
 
-def test_main_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:
+def test_version_flag_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     from shellpilot.app import main
 
-    assert main([]) == 0
-    assert "ShellPilot" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--version"])
+    assert excinfo.value.code == 0
+    assert "shellpilot" in capsys.readouterr().out
 
 
 def test_module_execution() -> None:
     result = subprocess.run(
-        [sys.executable, "-m", "shellpilot"],
+        [sys.executable, "-m", "shellpilot", "--version"],
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0
-    assert "ShellPilot" in result.stdout
+    assert "shellpilot" in result.stdout

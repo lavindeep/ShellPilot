@@ -1,0 +1,130 @@
+"""Interactive terminal session: rich rendering plus the REPL loop."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from rich.console import Console
+from rich.markup import escape
+
+from shellpilot import __version__
+from shellpilot.cli.slash import SlashAction, SlashDispatcher
+from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
+from shellpilot.llm.ollama import OllamaClient, OllamaError
+from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
+from shellpilot.persistence.paths import AppPaths, project_state_dir
+from shellpilot.runtime.conversation import ConversationRuntime
+
+PROMPT = "[bold cyan]\\[AI] >[/bold cyan] "
+
+
+class TerminalUI:
+    """RuntimeUI implementation over a rich console."""
+
+    def __init__(self, console: Console) -> None:
+        self._console = console
+
+    def stream_token(self, token: str) -> None:
+        self._console.print(token, end="", markup=False, highlight=False, soft_wrap=True)
+
+    def show_status(self, text: str) -> None:
+        self._console.print(f"[dim]{escape(text)}[/dim]")
+
+    def show_error(self, text: str) -> None:
+        self._console.print(f"[red]{escape(text)}[/red]")
+
+
+def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple[Path, Path]:
+    """User and project config paths; SHELLPILOT_CONFIG overrides the user path."""
+    user_file = (
+        Path(env["SHELLPILOT_CONFIG"]) if env.get("SHELLPILOT_CONFIG") else (paths.user_config_file)
+    )
+    return user_file, project_state_dir(workspace) / "config.toml"
+
+
+def run_interactive(workspace: Path) -> int:
+    console = Console()
+    env = dict(os.environ)
+    paths = AppPaths.default()
+    user_file, project_file = config_files(workspace, env, paths)
+
+    def load() -> LoadedConfig:
+        return load_config(user_config_file=user_file, project_config_file=project_file, env=env)
+
+    try:
+        loaded = load()
+    except ConfigError as exc:
+        console.print(f"[red]Config error:[/red] {escape(str(exc))}")
+        return 2
+    settings = loaded.settings
+
+    client = OllamaClient(
+        base_url=settings.model.base_url,
+        reasoning=settings.model.reasoning,
+    )
+    if not client.health():
+        console.print(
+            "[red]Cannot reach Ollama at "
+            f"{settings.model.base_url}.[/red] Is `ollama serve` running? "
+            "Run `shellpilot doctor` for a full environment check."
+        )
+        return 1
+    installed = {model.name for model in client.list_models()}
+    if settings.model.default not in installed:
+        console.print(
+            f"[red]Model {settings.model.default} is not installed.[/red] "
+            f"Try: ollama pull {settings.model.default}"
+        )
+        return 1
+
+    if settings.instructions.load_agents_md:
+        detected = client.model_context_length(settings.model.default)
+        cap = min(1500, (detected or 8192) // 10)
+        behavior = load_behavior_instructions(paths.config_dir, workspace, max_tokens=cap)
+    else:
+        behavior = BehaviorInstructions(global_text=None, project_text=None)
+
+    ui = TerminalUI(console)
+    runtime = ConversationRuntime(
+        llm=client, settings=settings, workspace=workspace, behavior=behavior, ui=ui
+    )
+    dispatcher = SlashDispatcher(
+        runtime=runtime,
+        client=client,
+        console=console,
+        loaded=loaded,
+        user_config_file=user_file,
+        reload_config=load,
+    )
+
+    console.print(
+        f"[bold]ShellPilot {__version__}[/bold] — model {runtime.model}, "
+        f"profile {settings.runtime.security_profile}"
+    )
+    console.print(f"[dim]Workspace: {workspace} — /help for commands, /exit to quit.[/dim]")
+
+    while True:
+        try:
+            line = console.input(PROMPT).strip()
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            console.print("[dim](Ctrl-C — use /exit to quit)[/dim]")
+            continue
+        if not line:
+            continue
+        if line.startswith("/"):
+            if dispatcher.handle(line) is SlashAction.EXIT:
+                break
+            continue
+        try:
+            runtime.run_turn(line)
+            console.print()
+        except KeyboardInterrupt:
+            console.print()
+            ui.show_status("Interrupted.")
+        except OllamaError as exc:
+            console.print()
+            ui.show_error(f"Model call failed: {exc}")
+    return 0

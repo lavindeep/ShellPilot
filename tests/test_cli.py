@@ -24,9 +24,18 @@ def test_version_flag_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     assert "shellpilot" in capsys.readouterr().out
 
 
-def test_default_invocation_prints_banner(capsys: pytest.CaptureFixture[str]) -> None:
-    assert run_cli([]) == 0
-    assert "ShellPilot" in capsys.readouterr().out
+def test_default_invocation_routes_to_interactive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: list[Path] = []
+
+    def fake_interactive(workspace: Path) -> int:
+        seen.append(workspace)
+        return 0
+
+    monkeypatch.setattr("shellpilot.cli.terminal.run_interactive", fake_interactive)
+    assert run_cli(["--cwd", str(tmp_path)]) == 0
+    assert seen == [tmp_path.resolve()]
 
 
 def test_missing_cwd_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
