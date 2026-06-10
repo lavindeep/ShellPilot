@@ -14,6 +14,8 @@ from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
 from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
 from shellpilot.persistence.paths import AppPaths, project_state_dir
+from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
 
 PROMPT = "[bold cyan]\\[AI] >[/bold cyan] "
@@ -41,6 +43,54 @@ class TerminalUI:
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
         mark = "[green]✓[/green]" if success else "[red]✗[/red]"
         self._console.print(f"[dim]{mark} {escape(summary)}[/dim]")
+
+    def show_command_output(self, line: str) -> None:
+        self._console.print(escape(line), markup=False, highlight=False)
+
+    def ask_approval(self, request: ApprovalRequest) -> bool:
+        """Approval UX per design section 20: high risk requires typing 'run'."""
+        risk_color = "red" if request.risk is RiskLevel.HIGH else "yellow"
+        self._console.print(
+            f"\n[{risk_color} bold]{request.risk.value.capitalize()} risk "
+            f"{request.kind}[/{risk_color} bold]"
+        )
+        self._console.print(f"CWD: {request.cwd}")
+        self._console.print(f"Command: {escape(request.display)}")
+        if request.purpose:
+            self._console.print(f"Purpose: {escape(request.purpose)}")
+        elif request.reasons:
+            self._console.print(f"Why flagged: {escape('; '.join(request.reasons))}")
+        try:
+            if request.risk is RiskLevel.HIGH:
+                answer = self._console.input(
+                    'Run it? Type "run" to execute, or press Enter to cancel: '
+                )
+                return answer.strip().lower() == "run"
+            answer = self._console.input("Approve? \\[y/N] ")
+            return answer.strip().lower() in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+    def ask_plan_approval(self, rendered: str, path: str) -> tuple[str, str]:
+        self._console.print()
+        self._console.print(escape(rendered), markup=False, highlight=False)
+        self._console.print(f"[dim]Plan saved to {escape(path)}[/dim]")
+        try:
+            while True:
+                answer = (
+                    self._console.input("Approve plan? \\[y]es / \\[e]dit / \\[n]o: ")
+                    .strip()
+                    .lower()
+                )
+                if answer in ("y", "yes"):
+                    return "y", ""
+                if answer in ("e", "edit"):
+                    revision = self._console.input("Describe the changes you want: ").strip()
+                    return "e", revision
+                if answer in ("n", "no", ""):
+                    return "n", ""
+        except (EOFError, KeyboardInterrupt):
+            return "n", ""
 
 
 def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple[Path, Path]:

@@ -32,6 +32,12 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/config reload", "Reload config from disk."),
     ("/compact", "Truncate older conversation context now."),
     ("/compact status", "Show context usage and compaction thresholds."),
+    ("/plan", "Show the active plan."),
+    ("/plan path", "Show the active plan artifact path."),
+    ("/plan cancel", "Cancel the active plan after confirmation."),
+    ("/plan revise <text>", "Ask the assistant to revise the active plan."),
+    ("/cwd", "Show the workspace boundary."),
+    ("/tools", "List tools available under the active profile."),
 ]
 
 
@@ -91,6 +97,12 @@ class SlashDispatcher:
             self._config(args)
         elif command == "/compact":
             self._compact(args)
+        elif command == "/plan":
+            self._plan(args)
+        elif command == "/cwd":
+            self._cwd()
+        elif command == "/tools":
+            self._tools()
         else:
             self._console.print(f"[red]Unknown command: {command}[/red] — type /help for commands.")
         return SlashAction.CONTINUE
@@ -118,7 +130,11 @@ class SlashDispatcher:
             f"{status.budget.model_context_tokens} tokens "
             f"({status.history_messages} messages)"
         )
-        self._console.print("Active plan: none")
+        plan = self._runtime.plan_manager.active
+        if plan is not None:
+            self._console.print(f"Active plan: {plan.task_id} ({plan.status})")
+        else:
+            self._console.print("Active plan: none")
         self._console.print("Pending approvals: none")
 
     def _model(self, args: list[str]) -> None:
@@ -182,6 +198,55 @@ class SlashDispatcher:
         else:
             self._console.print("Usage: /config show | /config edit | /config reload")
 
+    def _plan(self, args: list[str]) -> None:
+        from shellpilot.runtime.planner import render_plan_terminal
+
+        manager = self._runtime.plan_manager
+        plan = manager.active
+        if plan is None:
+            self._console.print("[dim]No active plan.[/dim]")
+            return
+        if not args:
+            self._console.print(render_plan_terminal(plan))
+            self._console.print(f"[dim]Status: {plan.status}[/dim]")
+            return
+        if args[0] == "path":
+            self._console.print(str(manager.artifact_path(plan)))
+            return
+        if args[0] == "cancel":
+            if self._confirm(f"Cancel the active plan ({plan.task_id})?"):
+                manager.cancel()
+                self._console.print("[dim]Plan cancelled.[/dim]")
+            return
+        if args[0] == "revise":
+            instruction = " ".join(args[1:]).strip()
+            if not instruction:
+                self._console.print("Usage: /plan revise <what should change>")
+                return
+            self._runtime.run_turn(f"Revise the active plan: {instruction}")
+            self._console.print()
+            return
+        self._console.print("Usage: /plan | /plan path | /plan cancel | /plan revise <text>")
+
+    def _cwd(self) -> None:
+        status = self._runtime.status()
+        self._console.print(f"Workspace boundary: {status.workspace}")
+
+    def _tools(self) -> None:
+        profile = self._runtime.settings.runtime.security_profile
+        table = Table(title=f"Tools (profile: {profile})")
+        table.add_column("Tool")
+        table.add_column("Side effect")
+        table.add_column("Enabled")
+        for spec in self._runtime.registry.specs():
+            enabled = profile in spec.allowed_profiles
+            table.add_row(
+                spec.name,
+                spec.side_effect.value,
+                "[green]yes[/green]" if enabled else "[red]no[/red]",
+            )
+        self._console.print(table)
+
     def _compact(self, args: list[str]) -> None:
         if args and args[0] == "status":
             status = self._runtime.status()
@@ -192,7 +257,8 @@ class SlashDispatcher:
             self._console.print(f"Compact at: {budget.compact_at_tokens} tokens")
             self._console.print(f"Hard limit: {budget.hard_limit_tokens} tokens")
             self._console.print("Automatic compaction: on")
-            self._console.print("Active plan: no")
+            plan = self._runtime.plan_manager.active
+            self._console.print(f"Active plan: {'yes' if plan is not None else 'no'}")
             return
         dropped = self._runtime.compact_now()
         if dropped:

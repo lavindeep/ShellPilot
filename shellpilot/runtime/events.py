@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from shellpilot.policy.approvals import ApprovalRequest
 
 
 class RuntimeUI(Protocol):
@@ -17,3 +20,11 @@ class RuntimeUI(Protocol):
     def show_tool_call(self, name: str, arguments: dict[str, object]) -> None: ...
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None: ...
+
+    def show_command_output(self, line: str) -> None: ...
+
+    def ask_approval(self, request: ApprovalRequest) -> bool: ...
+
+    def ask_plan_approval(self, rendered: str, path: str) -> tuple[str, str]:
+        """Returns (choice, revision_text); choice is 'y', 'e', or 'n'."""
+        ...
