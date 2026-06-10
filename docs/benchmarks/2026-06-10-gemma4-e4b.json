@@ -1,0 +1,38 @@
+{
+  "model": "gemma4:e4b",
+  "trials": 10,
+  "num_ctx": 8192,
+  "temperature": 0.2,
+  "tool_format": {
+    "read_file": 1.0,
+    "list_dir": 1.0,
+    "search_text": 1.0,
+    "write_file": 1.0,
+    "patch_file": 1.0,
+    "run_command": 1.0,
+    "env_info": 1.0
+  },
+  "exact_span": {
+    "rate": 1.0,
+    "ok": 15,
+    "total": 15,
+    "notes": []
+  },
+  "chaining": {
+    "chains": 5,
+    "completed": 5,
+    "per_step_rate": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "step5_rate": 1.0
+  },
+  "stopping": {
+    "chat_no_tool_rate": 1.0,
+    "stop_when_done_rate": 1.0
+  }
+}
