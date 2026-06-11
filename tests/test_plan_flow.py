@@ -1,9 +1,11 @@
 """End-to-end plan and approval flows with the fake model."""
 
+import json
 from pathlib import Path
 
 from shellpilot.config.model import RuntimeSettings, Settings
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
 from tests.fakes.fake_llm import FakeLLM, answer, tool_call
@@ -11,7 +13,11 @@ from tests.fakes.fake_ui import FakeUI
 
 
 def make_runtime(
-    fake: FakeLLM, ui: FakeUI, tmp_path: Path, settings: Settings | None = None
+    fake: FakeLLM,
+    ui: FakeUI,
+    tmp_path: Path,
+    settings: Settings | None = None,
+    audit: AuditLogger | None = None,
 ) -> ConversationRuntime:
     return ConversationRuntime(
         llm=fake,
@@ -19,6 +25,7 @@ def make_runtime(
         workspace=tmp_path,
         behavior=BehaviorInstructions(global_text=None, project_text=None),
         ui=ui,
+        audit=audit,
     )
 
 
@@ -33,23 +40,31 @@ def plan_call() -> object:
 
 
 def test_plan_proposal_approved_and_artifact_written(tmp_path: Path) -> None:
-    fake = FakeLLM(script=[plan_call(), answer("Starting with step 1.")])
+    # After approval, step 1 is active; the model completes the steps in-turn.
+    fake = FakeLLM(
+        script=[
+            plan_call(),
+            tool_call("update_plan", step=1, status="completed"),
+            tool_call("update_plan", step=2, status="completed"),
+            tool_call("update_plan", step=3, status="completed"),
+            answer("All steps done."),
+        ]
+    )
     ui = FakeUI(plan_answer=("y", ""))
     runtime = make_runtime(fake, ui, tmp_path)
 
     reply = runtime.run_turn("Please add the feature")
 
-    assert reply == "Starting with step 1."
+    assert reply == "All steps done."
     assert ui.plan_approvals  # the user was shown the plan
     plan = runtime.plan_manager.active
     assert plan is not None
-    assert plan.status == "active"
     artifact = runtime.plan_manager.artifact_path(plan)
     assert artifact.exists()
     assert "Add a feature" in artifact.read_text()
     # The model was told the plan is approved.
-    tool_messages = [m for m in fake.calls[-1].messages if m.role == "tool"]
-    assert any("Plan approved" in m.content for m in tool_messages)
+    approval_messages = [m for call in fake.calls for m in call.messages if m.role == "tool"]
+    assert any("Plan approved" in m.content for m in approval_messages)
 
 
 def test_plan_rejection_stops_execution(tmp_path: Path) -> None:
@@ -76,11 +91,15 @@ def test_plan_edit_requests_revision(tmp_path: Path) -> None:
 
 
 def test_update_plan_completes_steps(tmp_path: Path) -> None:
+    # The model completes step 1 then stops calling tools while step 2 is still
+    # active; the bounded nudge fires twice, then the turn ends on plain text.
     fake = FakeLLM(
         script=[
             plan_call(),
             tool_call("update_plan", step=1, status="completed", note="inspected"),
             answer("Step 1 done."),
+            answer("Still narrating step 2."),
+            answer("Stopping for now."),
         ]
     )
     ui = FakeUI(plan_answer=("y", ""))
@@ -184,3 +203,172 @@ def test_repeated_identical_failure_triggers_roadblock_guidance(tmp_path: Path) 
 
     tool_messages = [m for m in fake.calls[-1].messages if m.role == "tool"]
     assert any("failed twice" in m.content for m in tool_messages)
+
+
+# ---------------------------------------------------------------------------
+# Bounded continuation nudge in the tool loop (task A3)
+# ---------------------------------------------------------------------------
+
+
+def two_step_plan_call() -> object:
+    return tool_call(
+        "propose_plan",
+        goal="Do the two-step thing",
+        steps=["Read the source file", "Summarize it"],
+        assumptions=["repo is clean"],
+        verification=["pytest"],
+    )
+
+
+def _nudge_messages(history: list[object]) -> list[object]:
+    return [
+        m
+        for m in history
+        if getattr(m, "role", "") == "tool"
+        and "call the tool for that step now" in getattr(m, "content", "")
+    ]
+
+
+def test_text_reply_with_pending_plan_gets_nudged_and_continues(tmp_path: Path) -> None:
+    (tmp_path / "source.txt").write_text("hello world")
+    fake = FakeLLM(
+        script=[
+            two_step_plan_call(),
+            # Plain narration with step 1 still active -> nudged.
+            answer("I will now execute Step 1."),
+            # The model resumes tool use in the SAME turn after the nudge.
+            tool_call("read_file", path="source.txt"),
+            tool_call("update_plan", step=1, status="completed"),
+            tool_call("update_plan", step=2, status="completed"),
+            answer("Both steps are done."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("Please do the two-step thing")
+
+    # The post-nudge tool call executed within this single run_turn.
+    assert reply == "Both steps are done."
+    assert any(name == "read_file" for name, _ in ui.tool_calls)
+    nudges = _nudge_messages(runtime._history)
+    assert len(nudges) == 1
+    assert "next step 1" in getattr(nudges[0], "content", "")
+
+
+def test_nudge_is_bounded_to_two(tmp_path: Path) -> None:
+    fake = FakeLLM(
+        script=[
+            two_step_plan_call(),
+            answer("I will now execute Step 1."),
+            answer("Still thinking about Step 1."),
+            answer("Final answer without tools."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("Please do the two-step thing")
+
+    assert reply == "Final answer without tools."
+    assert len(_nudge_messages(runtime._history)) == 2
+
+
+def test_no_nudge_while_plan_only_proposed(tmp_path: Path) -> None:
+    # Edit choice leaves the plan at status "proposed" (awaiting a revised
+    # proposal). A no-tool-call reply in that state must end the turn, not nudge.
+    fake = FakeLLM(script=[two_step_plan_call(), answer("Let me reconsider the plan.")])
+    ui = FakeUI(plan_answer=("e", "make it three steps"))
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("Please do the two-step thing")
+
+    assert reply == "Let me reconsider the plan."
+    plan = runtime.plan_manager.active
+    assert plan is not None
+    assert plan.status == "proposed"
+    assert _nudge_messages(runtime._history) == []
+
+
+def test_no_nudge_without_active_plan(tmp_path: Path) -> None:
+    fake = FakeLLM(script=[answer("Just a plain answer.")])
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("hello")
+
+    assert reply == "Just a plain answer."
+    assert _nudge_messages(runtime._history) == []
+    assert len(fake.calls) == 1
+
+
+def test_no_nudge_when_plan_completed(tmp_path: Path) -> None:
+    fake = FakeLLM(
+        script=[
+            two_step_plan_call(),
+            tool_call("update_plan", step=1, status="completed"),
+            tool_call("update_plan", step=2, status="completed"),
+            answer("All done, summary follows."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("Please do the two-step thing")
+
+    assert reply == "All done, summary follows."
+    plan = runtime.plan_manager.active
+    assert plan is not None
+    assert plan.status == "completed"
+    assert _nudge_messages(runtime._history) == []
+
+
+def test_no_nudge_after_tool_budget_exhausted(tmp_path: Path) -> None:
+    settings = Settings(runtime=RuntimeSettings(max_tool_turns=1))
+    fake = FakeLLM(
+        script=[
+            two_step_plan_call(),
+            # Second tool call trips the budget (max_tool_turns=1), which empties
+            # tools and tells the model to answer in text. The plan is still
+            # pending, but with tools emptied the nudge must NOT fire.
+            tool_call("update_plan", note="thinking"),
+            answer("Wrapping up in plain text."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path, settings)
+
+    reply = runtime.run_turn("Please do the two-step thing")
+
+    assert reply == "Wrapping up in plain text."
+    assert any("budget" in s.lower() for s in ui.statuses)
+    assert _nudge_messages(runtime._history) == []
+
+
+def test_nudge_audited(tmp_path: Path) -> None:
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess1",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    (tmp_path / "source.txt").write_text("hello world")
+    fake = FakeLLM(
+        script=[
+            two_step_plan_call(),
+            answer("I will now execute Step 1."),
+            tool_call("read_file", path="source.txt"),
+            tool_call("update_plan", step=1, status="completed"),
+            tool_call("update_plan", step=2, status="completed"),
+            answer("Both steps are done."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path, audit=audit)
+
+    runtime.run_turn("Please do the two-step thing")
+
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    nudge_events = [e for e in events if e["event"] == "plan_nudge"]
+    assert len(nudge_events) == 1
+    assert nudge_events[0]["summary"] == "step 1"

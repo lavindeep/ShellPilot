@@ -455,6 +455,9 @@ Design rules that follow:
 | Edit anchor not found or ambiguous | Re-read the target region and allow one corrected retry. |
 | Same failure twice | Stop and enter the roadblock protocol (section 11.6). |
 | Tool-call loop | Enforce turn/tool budgets (section 24.6) and replan or stop. |
+| Approved plan stalls on narration | Inject a bounded continuation nudge (below) and keep the turn going. |
+
+Small models often reply to an approved plan with prose — "I will now execute Step 1." — and no tool call, which would otherwise end the turn and force the user to type "continue" once per step. When a no-tool-call reply arrives while the active plan still has a pending or in-progress step, the tool loop injects a tool-role nudge naming that step and instructing the model to call the tool for it now, in the same turn, then loops again instead of returning. The nudge is bounded to **two per turn**: a model that genuinely needs the user (an honest question, an unrecoverable blocker) keeps the third no-tool-call reply, which ends the turn normally. The nudge never fires for a merely *proposed* plan awaiting approval, nor once the per-turn tool budget has emptied the tool set (in that state the model has already been told to answer in plain text). This is the deterministic runtime backstop behind the prompt and tool-result hardening that nudges the model toward single-turn plan execution.
 
 The roadblock protocol (section 11.6) and the model edge cases (section 24.6) are instances of this principle, not exceptional paths. Phase 0.5 (section 27.2) measures the actual failure rates of the target model before the edit strategy is locked in.
 

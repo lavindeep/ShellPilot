@@ -171,3 +171,31 @@ def test_update_result_pushes_next_step(tmp_path: Path) -> None:
     assert final_result.success
     assert "Continue with the next step now, in this same turn." not in final_result.content
     assert "All steps complete" in final_result.content
+
+
+def test_blocker_update_does_not_push_continuation(tmp_path: Path) -> None:
+    """A blocker update returns the roadblock guidance and must NOT end with the
+    same-turn continuation sentence (the blocker branch returns early)."""
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+
+    propose.handler(
+        ctx,
+        {
+            "goal": "Build the feature",
+            "steps": ["Inspect code", "Make change", "Run tests"],
+        },
+    )
+    assert manager.active is not None
+
+    result = update.handler(ctx, {"blocker": "pytest fails: ModuleNotFoundError"})
+    assert result.success
+    assert "Continue with the next step now, in this same turn." not in result.content
+    assert "roadblock" in result.content.lower()

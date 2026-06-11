@@ -27,6 +27,15 @@ MIN_KEPT_MESSAGES = 4
 MAX_CONSECUTIVE_MALFORMED = 2
 TOOL_DIGEST_HEAD = 200
 TOOL_DIGEST_TAIL = 200
+MAX_PLAN_NUDGES = 2
+
+PLAN_CONTINUE_NUDGE = (
+    "The approved plan is not finished (next step {index}: {title}). Do not narrate "
+    "what you will do — call the tool for that step now, in this same turn, and "
+    "record progress with update_plan(step=N, status='completed'). If something is "
+    'blocking you, record it with update_plan(blocker="<evidence>"). Only if you '
+    "need information that the user alone can provide: ask the user plainly and stop."
+)
 
 
 def _digest_text(content: str) -> str:
@@ -307,6 +316,32 @@ class ConversationRuntime:
             return ""
         return reply.content.strip()[:500]
 
+    def _pending_plan_step(self) -> tuple[int, str] | None:
+        """First unfinished step of the active plan, as (1-based index, title).
+
+        Returns the first step whose status is "active", else the first
+        "pending" step. Returns None when there is no plan, the plan is not yet
+        active (e.g. still "proposed" awaiting approval, or blocked/completed),
+        or every step is already in a terminal state. Used by the tool loop to
+        decide whether a no-tool-call reply should be nudged to keep executing.
+        """
+        plan = self.plan_manager.active
+        if plan is None or plan.status != "active":
+            return None
+        active = next(
+            (i for i, step in enumerate(plan.steps, start=1) if step.status == "active"),
+            None,
+        )
+        if active is not None:
+            return active, plan.steps[active - 1].title
+        pending = next(
+            (i for i, step in enumerate(plan.steps, start=1) if step.status == "pending"),
+            None,
+        )
+        if pending is not None:
+            return pending, plan.steps[pending - 1].title
+        return None
+
     def _tool_loop(self) -> Message:
         """Model call loop with tool dispatch, budgets, and recovery (section 10.4)."""
         executor = ToolExecutor(
@@ -324,6 +359,7 @@ class ConversationRuntime:
         )
         tools = executor.available_definitions()
         tool_turns = 0
+        nudges_used = 0
         consecutive_malformed = 0
 
         while True:
@@ -344,6 +380,14 @@ class ConversationRuntime:
                 self._ui.end_response()
             self._record(reply)
             if not reply.tool_calls:
+                pending = self._pending_plan_step()
+                if pending is not None and tools and nudges_used < MAX_PLAN_NUDGES:
+                    nudges_used += 1
+                    index, title = pending
+                    if self._audit is not None:
+                        self._audit.write("plan_nudge", summary=f"step {index}")
+                    self._record(tool_result(PLAN_CONTINUE_NUDGE.format(index=index, title=title)))
+                    continue
                 return reply
 
             tool_turns += 1
