@@ -1014,7 +1014,7 @@ Execution:
 - Enforce timeout.
 - Kill process group on timeout.
 - Return exit code and captured output.
-- Run with a sanitized copy of the parent environment (`DYLD_*`/`LD_*`/`Malloc*` stripped; pagers, editors, and credential prompts forced non-interactive) and stdin closed (`DEVNULL`) — command output must not depend on debug environment variables, and a command that reads stdin gets immediate EOF instead of hanging to its timeout.
+- Run with a sanitized copy of the parent environment (`DYLD_*`/`LD_*`/`Malloc*` stripped; pagers, editors, and credential prompts forced non-interactive) and stdin closed (`DEVNULL`) — command output must not depend on debug environment variables, and a command that reads stdin gets immediate EOF instead of hanging to its timeout. ShellPilot also scrubs the same prefixes from its own environment at boot: macOS libmalloc can emit a diagnostic line from the fork window of every spawned command (before exec, while the child still runs the parent's image), and that noise would land inside captured command output.
 
 ### 13.2 Raw Shell
 

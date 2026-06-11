@@ -49,6 +49,20 @@ _NON_INTERACTIVE: dict[str, str] = {
 }
 
 
+def scrub_own_environment() -> None:
+    """Remove loader/allocator debug-injection variables from this process.
+
+    Children get a sanitized environment via subprocess_env(), but macOS
+    libmalloc can still emit a diagnostic line from the fork window of every
+    spawned command when ShellPilot's own environment carries Malloc* vars
+    (the message is produced before exec, while the forked child still runs
+    the parent's image).  Scrubbing our own environment at boot closes that
+    gap.
+    """
+    for key in [k for k in os.environ if k.startswith(_STRIP_PREFIXES)]:
+        del os.environ[key]
+
+
 def subprocess_env() -> dict[str, str]:
     """Return a sanitized copy of the parent environment for child processes.
 

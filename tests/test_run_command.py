@@ -15,6 +15,7 @@ from shellpilot.tools.command import (
     CommandRequest,
     _precheck_run_command,
     run_command_process,
+    scrub_own_environment,
     subprocess_env,
 )
 from shellpilot.tools.registry import ToolRegistry
@@ -286,6 +287,24 @@ def test_oserror_backstop_not_raised_through_executor(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # subprocess_env: sanitized, non-interactive environment (section 13.1)
 # ---------------------------------------------------------------------------
+
+
+def test_scrub_own_environment_removes_debug_vars() -> None:
+    """Boot scrub deletes DYLD_/LD_/Malloc vars from this process, keeps others."""
+    with patch.dict(
+        os.environ,
+        {
+            "DYLD_SCRUB_TEST": "1",
+            "MallocScrubTest": "1",
+            "LD_SCRUB_TEST": "1",
+            "SHELLPILOT_SCRUB_KEEP": "1",
+        },
+    ):
+        scrub_own_environment()
+        assert "DYLD_SCRUB_TEST" not in os.environ
+        assert "MallocScrubTest" not in os.environ
+        assert "LD_SCRUB_TEST" not in os.environ
+        assert os.environ["SHELLPILOT_SCRUB_KEEP"] == "1"
 
 
 def test_subprocess_env_strips_debug_vars(tmp_path: Path) -> None:
