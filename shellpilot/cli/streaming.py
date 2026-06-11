@@ -71,6 +71,12 @@ class ResponseStream:
             self._buffer = ""
             return
         if self._live is not None:
+            # Clear the renderable before stopping so Live.stop()'s forced
+            # vertical_overflow="visible" repaint renders an empty region. Without this,
+            # a tail taller than the terminal pushes lines into scrollback that the
+            # transient erase cannot reach, and the final Markdown print below them
+            # makes the response appear twice.
+            self._live.update("", refresh=False)
             self._live.stop()
             self._live = None
         if self._buffer:

@@ -134,6 +134,56 @@ def test_spinner_label_none_uses_flight_verbs() -> None:
     spinner.stop()
 
 
+def test_finish_clears_live_before_stop() -> None:
+    """finish() must call live.update('', refresh=False) immediately before live.stop().
+
+    This prevents rich Live.stop()'s forced vertical_overflow='visible' repaint from
+    leaking content into scrollback on short terminals.
+    """
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    class SpyLive:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            calls.append(("start", (), {}))
+
+        def update(self, renderable: object, *, refresh: bool = True) -> None:
+            calls.append(("update", (renderable,), {"refresh": refresh}))
+
+        def stop(self) -> None:
+            calls.append(("stop", (), {}))
+
+    import shellpilot.cli.streaming as streaming_mod
+
+    original_live = streaming_mod.Live
+    streaming_mod.Live = SpyLive  # type: ignore[attr-defined]
+    try:
+        console = terminal_console()
+        stream = ResponseStream(console)
+        for token in ("alpha ", "beta ", "gamma"):
+            stream.feed(token)
+        stream.finish()
+    finally:
+        streaming_mod.Live = original_live  # type: ignore[attr-defined]
+
+    # Find the last update call and the stop call.
+    update_calls = [c for c in calls if c[0] == "update"]
+    stop_index = next(i for i, c in enumerate(calls) if c[0] == "stop")
+    last_update_index = max(i for i, c in enumerate(calls) if c[0] == "update")
+
+    # The last update must immediately precede stop.
+    assert last_update_index == stop_index - 1, (
+        "expected the last update() to immediately precede stop()"
+    )
+    last_update = update_calls[-1]
+    renderable = last_update[1][0]
+    refresh = last_update[2]["refresh"]
+    assert renderable == "", f"expected empty string renderable, got {renderable!r}"
+    assert refresh is False, "expected refresh=False on the clearing update"
+
+
 def test_runtime_emits_response_hooks_and_turn_stats(tmp_path: Path) -> None:
     loaded = load_config(
         user_config_file=tmp_path / "missing-user.toml",

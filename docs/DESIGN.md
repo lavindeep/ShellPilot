@@ -2248,7 +2248,7 @@ The proposal gate is a `Panel` titled `Plan · <slug>` containing the goal and `
 
 ### 31.7 Responses
 
-Model responses render as rich Markdown, updated live while tokens stream (`rich.live.Live` with overflow cropping). On completion the live region is replaced by exactly one final clean render, so scrollback always holds one perfect copy. Non-TTY output falls back to plain text streaming.
+Model responses render as rich Markdown, updated live while tokens stream (`rich.live.Live` with overflow cropping). On completion the live region is replaced by exactly one final clean render, so scrollback always holds one perfect copy — including when the response is taller than the terminal and live repaints span multiple screens; the implementation ensures no repaint can leak lines into scrollback above the final print. Non-TTY output falls back to plain text streaming.
 
 ### 31.8 Status and stats
 
