@@ -74,6 +74,7 @@ def test_chat_collects_tool_calls() -> None:
 
 
 def test_chat_retries_without_think_when_unsupported() -> None:
+    """Existing: think error causes a retry without think for that model call."""
     attempts: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -91,6 +92,63 @@ def test_chat_retries_without_think_when_unsupported() -> None:
     assert reply.content == "ok"
     assert attempts[0].get("think") is True
     assert "think" not in attempts[1]
+
+
+def test_think_error_retries_without_think_and_caches_model() -> None:
+    """After a think-rejection for model A, subsequent calls to model A never send think."""
+    attempts: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        attempts.append(payload)
+        if payload.get("think") and payload.get("model") == "no-think:1b":
+            return httpx.Response(400, json={"error": "model does not support thinking"})
+        return httpx.Response(
+            200,
+            content=stream_body({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = OllamaClient(reasoning=True, transport=httpx.MockTransport(handler))
+
+    # First call to the no-think model: sends think, gets error, retries without think.
+    reply = client.chat("no-think:1b", [user("hi")], num_ctx=2048)
+    assert reply.content == "ok"
+    assert attempts[0].get("think") is True  # first attempt had think
+    assert "think" not in attempts[1]  # retry did not
+
+    attempts.clear()
+
+    # Second call to the SAME model: should skip think entirely (no retry needed).
+    reply2 = client.chat("no-think:1b", [user("hello")], num_ctx=2048)
+    assert reply2.content == "ok"
+    assert len(attempts) == 1
+    assert "think" not in attempts[0]
+
+
+def test_think_still_sent_for_other_models_after_fallback() -> None:
+    """After fallback for model A, think is still sent for model B."""
+    attempts: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        attempts.append(payload)
+        if payload.get("think") and payload.get("model") == "no-think:1b":
+            return httpx.Response(400, json={"error": "model does not support thinking"})
+        return httpx.Response(
+            200,
+            content=stream_body({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = OllamaClient(reasoning=True, transport=httpx.MockTransport(handler))
+
+    # Trigger fallback for no-think:1b.
+    client.chat("no-think:1b", [user("hi")], num_ctx=2048)
+    attempts.clear()
+
+    # A different model should still get think in its request.
+    client.chat("gemma4:e4b", [user("hi")], num_ctx=2048)
+    assert len(attempts) == 1
+    assert attempts[0].get("think") is True
 
 
 def test_model_context_length_reads_model_info() -> None:

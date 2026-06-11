@@ -1852,7 +1852,7 @@ Most rows here concern the v2 memory system. The prompt-injection and secret row
 | Model missing | Show installed supported models and suggest `ollama pull`. |
 | Model emits malformed tool call | Reject tool call, show compact error, and allow one retry. |
 | Model loops tool calls | Enforce turn/tool budgets and replan or stop. |
-| Reasoning mode unavailable | Continue without reasoning mode and note capability downgrade. |
+| Reasoning mode unavailable | Per-model fallback: add the model to `_no_think`; retry once without `think`; other models keep sending `think`. `_reasoning` (the config-level flag) is never mutated. |
 
 ### 24.7 Privacy And Log Edge Cases
 

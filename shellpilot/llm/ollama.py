@@ -60,6 +60,8 @@ class OllamaClient:
             transport=transport,
         )
         self._reasoning = reasoning
+        # Per-model fallback cache: models that rejected the think flag.
+        self._no_think: set[str] = set()
 
     def close(self) -> None:
         self._client.close()
@@ -146,14 +148,15 @@ class OllamaClient:
         }
         if tools:
             payload["tools"] = [_encode_tool(tool) for tool in tools]
-        if self._reasoning:
+        if self._reasoning and model not in self._no_think:
             payload["think"] = True
         try:
             return self._stream_chat(payload, on_token)
         except OllamaResponseError as exc:
-            # Reasoning mode unavailable: continue without it (design section 24.6).
-            if self._reasoning and "think" in str(exc).lower():
-                self._reasoning = False
+            # Reasoning mode unavailable for this model: cache and retry once without
+            # think (design section 24.6). Other models are not affected.
+            if self._reasoning and model not in self._no_think and "think" in str(exc).lower():
+                self._no_think.add(model)
                 payload.pop("think", None)
                 return self._stream_chat(payload, on_token)
             raise
