@@ -19,6 +19,16 @@ MATRIX: list[tuple[str, SideEffect, RiskLevel, Decision]] = [
     ("supervised", SideEffect.VARIABLE, RiskLevel.HIGH, Decision.ASK),
     ("supervised", SideEffect.WORKSPACE_WRITE, RiskLevel.LOW, Decision.ASK),
     ("supervised", SideEffect.VARIABLE, RiskLevel.BLOCKED, Decision.BLOCK),
+    # NETWORK: always ASK regardless of profile or risk level (privacy guarantee)
+    ("balanced", SideEffect.NETWORK, RiskLevel.LOW, Decision.ASK),
+    ("balanced", SideEffect.NETWORK, RiskLevel.MEDIUM, Decision.ASK),
+    ("balanced", SideEffect.NETWORK, RiskLevel.HIGH, Decision.ASK),
+    ("supervised", SideEffect.NETWORK, RiskLevel.LOW, Decision.ASK),
+    ("supervised", SideEffect.NETWORK, RiskLevel.MEDIUM, Decision.ASK),
+    ("supervised", SideEffect.NETWORK, RiskLevel.HIGH, Decision.ASK),
+    # BLOCKED still wins even for NETWORK
+    ("balanced", SideEffect.NETWORK, RiskLevel.BLOCKED, Decision.BLOCK),
+    ("supervised", SideEffect.NETWORK, RiskLevel.BLOCKED, Decision.BLOCK),
 ]
 
 

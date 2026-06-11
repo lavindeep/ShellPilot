@@ -36,6 +36,8 @@ def decide(profile: str, side_effect: SideEffect, risk: RiskLevel) -> Decision:
     """
     if risk is RiskLevel.BLOCKED:
         return Decision.BLOCK
+    if side_effect is SideEffect.NETWORK:
+        return Decision.ASK
     if profile == "supervised":
         if side_effect is SideEffect.NONE:
             return Decision.AUTO

@@ -1082,6 +1082,21 @@ Security should be practical, deterministic first, and profile-driven.
 | `high` | Delete, credential access, privilege changes, destructive git operations, raw shell with dangerous syntax. |
 | `blocked` | Disallowed by current profile without manual override. |
 
+### 14.2a Side-Effect Decision Matrix
+
+`blocked` risk always returns `block` regardless of side effect or profile.
+
+| Side Effect | Risk | `supervised` | `balanced` |
+|---|---|---|---|
+| `none` | any | auto | auto |
+| `variable` | low | ask | auto |
+| `variable` | medium / high | ask | ask |
+| `workspace_write` | low | ask | auto |
+| `workspace_write` | medium / high | ask | ask |
+| `network` | low / medium / high | ask | ask |
+
+`network` always requires per-request consent in every profile. Network egress is irreversible and privacy-sensitive; the user must confirm every outbound request.
+
 ### 14.3 Deterministic Policy First
 
 Policy should inspect:

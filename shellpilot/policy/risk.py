@@ -16,3 +16,4 @@ class SideEffect(StrEnum):
     NONE = "none"
     WORKSPACE_WRITE = "workspace_write"
     VARIABLE = "variable"
+    NETWORK = "network"
