@@ -1367,6 +1367,9 @@ allow_sensitive_reads = "ask"
 theme = "default"
 show_reasoning_summary = true
 show_full_tool_output = false
+# v2 visual design (section 31), settled 2026-06-11:
+glyphs = "auto"   # auto | unicode | ascii
+spinner = true    # aviation status spinner while the model works
 ```
 
 ### 17.4 Environment Variables
@@ -1485,36 +1488,38 @@ Core UI states:
 - Final task summary.
 - (v2) Memory proposal.
 
-Example prompt:
+Example prompt (v2 two-line prompt, settled 2026-06-11 — visual details in section 31):
 
 ```text
-[AI] >
+~/Projects/test_project · gemma4:e4b · balanced
+❯
 ```
 
-Example plan approval:
+Example plan approval (v2 panel gate — see section 31; borders are drawn by rich, never hand-assembled):
 
 ```text
-Plan for: Refactor command policy
-
-1. Inspect current policy and command runner.
-2. Define the new policy interface.
-3. Move command classification into policy module.
-4. Add tests for risky commands.
-5. Run tests.
-
+╭─ Plan · refactor-command-policy ─────────────╮
+│ Goal: Refactor command policy                │
+│                                              │
+│ ☐ 1  Inspect current policy and runner       │
+│ ☐ 2  Define the new policy interface         │
+│ ☐ 3  Move classification into policy module  │
+│ ☐ 4  Add tests for risky commands            │
+│ ☐ 5  Run tests                               │
+╰──────────────────────────────────────────────╯
 Approve plan? [y]es / [e]dit / [n]o
 ```
 
-Example dangerous command prompt:
+Example dangerous command prompt (v2 badge style — see section 31):
 
 ```text
-High risk command
-CWD: /Users/lavin/project
-Command: rm -rf build/
-Purpose: This removes the stale build output before regenerating artifacts. It will recursively delete everything inside build/.
-
-Run it? Type "run" to execute, or press Enter to cancel:
+⏺ run_command(rm -rf build/)
+   HIGH  recursive delete · "This removes the stale build output before regenerating artifacts."
+  CWD: /Users/lavin/project
+  Type "run" to execute, or press Enter to cancel:
 ```
+
+The ` HIGH ` chip renders as an inverse white-on-red badge; purpose text is the model-written explanation required by section 13.4.
 
 Command display should avoid noisy per-command narration. The UI should show:
 
@@ -1562,7 +1567,7 @@ Planned commands:
 | `/shell` | Enter Manual Shell mode. |
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
 
-Deferred to v2:
+Scheduled for v2, v0.3.0 release (settled 2026-06-11):
 
 | Command | Purpose |
 |---|---|
@@ -1574,9 +1579,14 @@ Deferred to v2:
 | `/prefs edit` | Edit human-readable behavior preferences. |
 | `/compact auto on` | Enable automatic token-budget compaction. |
 | `/compact auto off` | Disable automatic token-budget compaction. |
+| `/export` | Export session summary, logs, or task transcript. |
+
+Deferred to v3 candidates:
+
+| Command | Purpose |
+|---|---|
 | `/capabilities` | List installed capability packs. |
 | `/capabilities enable <name>` | Enable a deferred capability pack. |
-| `/export` | Export session summary, logs, or task transcript. |
 | `/undo` | Revert selected harness-managed changes when a safe undo record exists. |
 
 ### 20.2 Compaction Behavior
@@ -1830,19 +1840,19 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 
 | Area | Defer |
 |---|---|
-| Memory system | Behavior/project memory, proposals, and optimization move to v2. V1 only reads `AGENTS.md`. |
-| Token-budget compaction | V1 uses oldest-first truncation; selective compaction is v2. |
-| `trusted-local` profile | Defer to v2 with the memory system. |
-| Session resume | V1 sessions are ephemeral; the audit log is the durable record. |
+| Memory system | Behavior/project memory, proposals, and optimization move to v2. V1 only reads `AGENTS.md`. Scheduled for v0.3.0 (settled 2026-06-11). |
+| Token-budget compaction | V1 uses oldest-first truncation; selective compaction is v2. Scheduled for v0.3.0 (settled 2026-06-11). |
+| `trusted-local` profile | Deferred from v1, and deferred again at the 2026-06-11 v2 scoping. Revisit for v3. |
+| Session resume | V1 sessions are ephemeral; the audit log is the durable record. Resume + `/export` scheduled for v0.3.0 (settled 2026-06-11). |
 | Agent raw shell | Do not expose `raw_shell` as an agent tool in v1. Keep Manual Shell for direct user-controlled `shell=True`. |
-| Capability packs | Design later after core tools are stable. |
+| Capability packs | Design later after core tools are stable. v3 candidate (2026-06-11). |
 | Packet capture diagnostics | Revisit as a capability pack. |
 | Skill Builder | Redesign later as capability or memory tooling. |
 | Plugin marketplace | Out of scope. |
 | Advanced audit signing | Defer until threat model requires it. |
-| Undo system | Defer until edits and snapshots are stable. |
-| Export command | Defer unless session sharing becomes important. |
-| Prompt toolkit UI | Defer unless standard input becomes painful. |
+| Undo system | Defer until edits and snapshots are stable. v3 candidate (2026-06-11). |
+| Export command | Defer unless session sharing becomes important. Scheduled for v0.3.0 with session persistence (settled 2026-06-11). |
+| Prompt toolkit UI | Adopted in v2 (settled 2026-06-11): the section 31 redesign adds input history and slash autocomplete, which is exactly the "standard input becomes painful" bar this row set. |
 | Heavy type system | Start with dataclasses and validation; add `pydantic` only where it clearly reduces bugs. |
 
 ### 25.3 Bloat Control Rules
@@ -2063,9 +2073,13 @@ Settled during design review (2026-06-10):
 
 - Project `AGENTS.md` (settled 2026-06-10): read-only when present. The assistant never creates or writes `AGENTS.md`; the user authors it.
 
+- v2 scope and releases (settled 2026-06-11): v2 ships in two releases. **v0.2.0** is the terminal visual redesign specified in section 31. **v0.3.0** adds the memory system (section 16), session persistence/resume with `/export`, and selective token-budget compaction. `trusted-local` stays deferred; capability packs and `/undo` are v3 candidates.
+
+- `prompt_toolkit` (settled 2026-06-11): adopted in v2. The section 31 input design (history, slash autocomplete, two-line prompt) crossed the adoption bar. This resolves the previously open question.
+
 Still open (do not block implementation):
 
-- Whether `prompt_toolkit` is needed for multiline editing.
+- None as of 2026-06-11.
 
 ## 30. Recommended Defaults
 
@@ -2089,3 +2103,73 @@ Use these unless a later decision overrides them:
 - Compaction: oldest-first truncation in v1; token-budget compaction deferred to v2.
 - Session resume: deferred to v2; v1 sessions are ephemeral.
 - Token counting: `chars / 4` heuristic with safety margin; no local tokenizer in v1.
+- UI: "Instrument minimal" visual design per section 31 (settled 2026-06-11); `ui.glyphs = "auto"`; spinner on.
+
+## 31. Terminal Visual Design (v2)
+
+Settled 2026-06-11 in a design session with side-by-side mockups; every choice below was user-approved. This section specifies the v0.2.0 visual redesign that replaces the v1 plain-text output. It is the authority for how things look; earlier sections remain the authority for what is shown and when.
+
+### 31.1 Theme: "Instrument minimal"
+
+Monochrome hierarchy on the user's terminal background — the app never sets its own background fill. Color appears only where it carries meaning. Brightness does the structural work.
+
+| Style | Value | Used for |
+|---|---|---|
+| Emphasis | bold, bright white | Banner title, tool names, current plan step |
+| Body | terminal default foreground | Conversation text, approval questions |
+| Dim | `#6b6b6b` | Machinery: tool args, results, context line, reasons |
+| Faint | `#444444` | Panel borders, turn stats, ellipsis markers |
+| Accent green | `#98c379` | Prompt chevron, success ✓, plan checks, diff additions |
+| Red | `#e06c75` | High risk, diff removals, errors ✗ |
+| Amber | `#e5c07b` | BLOCKED badge, context-usage warning |
+
+Colors are truecolor values; rich downgrades automatically on 256/16-color terminals. All named styles live in one `rich.theme.Theme` in `cli/theme.py` — no inline hex anywhere else.
+
+### 31.2 Prompt
+
+Two-line prompt replacing `[AI] >`:
+
+```text
+~/Projects/test_project · gemma4:e4b · balanced
+❯
+```
+
+Line one is dim ambient context (workspace with `~` abbreviation and middle truncation for long paths, then model, then profile). Line two is a bold accent-green `❯`. Input is provided by `prompt_toolkit`: persistent up-arrow history (state dir `history` file) and tab-completion for slash commands. Plain `input()` fallback when stdin is not a TTY.
+
+### 31.3 Activity lines
+
+Tool calls render as `⏺` + bold tool name + dim `(args) · summary`. Results and continuations indent under a dim `⎿`, with a green `✓` or red `✗`. Command output streams dim-indented under `⎿`; when display truncation applies, a faint `… +N lines` marker is shown (capture and audit limits are unchanged from section 13).
+
+### 31.4 Diffs
+
+Diffs render in a rich `Panel` titled with the filename: line-number gutter, full-line subtle red/green backgrounds for removals/additions, and brighter word-level highlight spans on the changed words. Word-level highlighting applies only when a removed/added line pair is similar (`difflib.SequenceMatcher` ratio >= 0.5); pure additions/removals get the full-line background only. Long lines wrap with the background following the text and a blank gutter on continuation rows. Tabs are expanded and control characters sanitized before rendering.
+
+### 31.5 Approvals
+
+Badge blocks: an inverse chip anchors the request, followed by the dim reason or model-written purpose, then the question.
+
+- ` MEDIUM ` — white on gray `#3a3a3a`.
+- ` HIGH ` — white on red `#c14949`; keeps the typed-`run` flow, with `"run"` in red.
+- ` BLOCKED ` — black on amber; used by the roadblock protocol (section 11.6).
+
+The yes/no question is `Approve? [y/n]` — uniform lowercase. It accepts `y`/`yes`/`n`/`no` case-insensitively and **Enter means no**; default-deny semantics are unchanged, only the shouty capital is gone. When color is unavailable, chips degrade to plain `[MEDIUM]` text.
+
+### 31.6 Plans
+
+The proposal gate is a `Panel` titled `Plan · <slug>` containing the goal and `☐ n` steps, with `Approve plan? [y]es / [e]dit / [n]o` below (example in section 20). During execution the checklist lives inline: green `✓ n` for done, bold `▶ n` for the current step, dim `☐ n` for pending — printed as steps change, never via full-screen redraws.
+
+### 31.7 Responses
+
+Model responses render as rich Markdown, updated live while tokens stream (`rich.live.Live` with overflow cropping). On completion the live region is replaced by exactly one final clean render, so scrollback always holds one perfect copy. Non-TTY output falls back to plain text streaming.
+
+### 31.8 Status and stats
+
+- While the model works: a dim aviation spinner — `◐ taxiing… / climbing… / cruising… / on approach…` with elapsed seconds. It erases itself before the first token prints and is Ctrl-C safe (never leaves a stray line). Disable with `ui.spinner = false`; auto-disabled when not a TTY.
+- After each turn: a faint stats line — `2.1s · 1.4k tokens · ctx 18%`. The ctx percentage turns amber once estimated usage crosses `compact_at_tokens` (section 10.5).
+
+### 31.9 Polish contract
+
+- All borders and panels come from rich primitives, never hand-assembled strings — alignment is guaranteed by construction at any terminal width, including wide Unicode characters.
+- `NO_COLOR` and non-TTY output degrade cleanly: no ANSI noise, badges become bracketed text, panels and content remain readable.
+- Glyph fallback: `ui.glyphs = "auto" | "unicode" | "ascii"`. The glyph set (`⏺ ⎿ ❯ ◐ ☐ ✓ ▶`) maps to ASCII equivalents; `auto` selects ASCII on terminals that cannot encode the Unicode set.
+- Snapshot tests (section 26.1) cover plan, approval, and diff rendering.
