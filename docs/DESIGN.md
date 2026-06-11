@@ -1328,6 +1328,20 @@ Project config:<repo>/.<app>/config.toml
 
 On macOS and Windows, use platform-native equivalents via `platformdirs`.
 
+#### Workspace harness state
+
+`.shellpilot/state.json` stores harness-internal state for a workspace — it is
+not user-editable config.  The current schema (version 1) holds a single key:
+
+```json
+{"version": 1, "last_model": "gemma4:e4b"}
+```
+
+`last_model` is written by the boot model picker (Task A8) when the user selects
+a model, and read on the next launch so the picker can pre-select the same model.
+The file is written atomically; a missing or unreadable file is silently ignored
+by the harness.
+
 ### 17.3 Example Config
 
 ```toml
