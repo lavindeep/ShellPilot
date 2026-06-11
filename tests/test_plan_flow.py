@@ -1,9 +1,11 @@
 """End-to-end plan and approval flows with the fake model."""
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from shellpilot.config.model import RuntimeSettings, Settings
+from shellpilot.llm.messages import Message
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.policy.risk import RiskLevel
@@ -29,7 +31,7 @@ def make_runtime(
     )
 
 
-def plan_call() -> object:
+def plan_call() -> Message:
     return tool_call(
         "propose_plan",
         goal="Add a feature",
@@ -210,7 +212,7 @@ def test_repeated_identical_failure_triggers_roadblock_guidance(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
-def two_step_plan_call() -> object:
+def two_step_plan_call() -> Message:
     return tool_call(
         "propose_plan",
         goal="Do the two-step thing",
@@ -220,7 +222,7 @@ def two_step_plan_call() -> object:
     )
 
 
-def _nudge_messages(history: list[object]) -> list[object]:
+def _nudge_messages(history: Sequence[Message]) -> list[Message]:
     return [
         m
         for m in history
