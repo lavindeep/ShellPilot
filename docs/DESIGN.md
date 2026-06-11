@@ -1395,7 +1395,7 @@ glyphs = "auto"   # auto | unicode | ascii
 spinner = true    # aviation status spinner while the model works
 ```
 
-### 17.4 Environment Variables
+### 17.4 Environment Variables and CLI Overrides
 
 Recommended environment variables:
 
@@ -1409,6 +1409,17 @@ SHELLPILOT_UI_GLYPHS
 ```
 
 Do not require environment variables for normal use.
+
+#### `--model` flag
+
+`shellpilot --model NAME` selects the model for a single session without
+changing the user or project config.  It is injected as a CLI-layer override
+(`source = "cli"`, highest precedence) and skips the interactive boot model
+picker (Task A8).  Example:
+
+```sh
+shellpilot --model gemma4:e2b
+```
 
 ## 18. Ollama And Gemma 4 Integration
 

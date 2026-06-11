@@ -30,6 +30,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ID",
         help="Resume a saved session (latest for this workspace, or a session id).",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        metavar="NAME",
+        help="Model to use for this session (skips the boot picker).",
+    )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser(
         "doctor", help="Check local prerequisites (Python, Ollama, models, paths)."
@@ -56,7 +62,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
 
     from shellpilot.cli.terminal import run_interactive
 
-    return run_interactive(workspace, resume=args.resume)
+    return run_interactive(workspace, resume=args.resume, model_override=args.model)
 
 
 def _run_config(workspace: Path, action: str) -> int:

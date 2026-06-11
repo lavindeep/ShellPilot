@@ -162,14 +162,22 @@ def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple
     return user_file, project_state_dir(workspace) / "config.toml"
 
 
-def run_interactive(workspace: Path, resume: str | None = None) -> int:
+def run_interactive(
+    workspace: Path, resume: str | None = None, model_override: str | None = None
+) -> int:
     console = build_console(Settings())
     env = dict(os.environ)
     paths = AppPaths.default()
     user_file, project_file = config_files(workspace, env, paths)
+    cli_overrides = {"model.default": model_override} if model_override is not None else None
 
     def load() -> LoadedConfig:
-        return load_config(user_config_file=user_file, project_config_file=project_file, env=env)
+        return load_config(
+            user_config_file=user_file,
+            project_config_file=project_file,
+            env=env,
+            cli_overrides=cli_overrides,
+        )
 
     try:
         loaded = load()
