@@ -48,6 +48,7 @@ class FakeLLM:
     healthy: bool = True
     calls: list[RecordedCall] = field(default_factory=list)
     preloads: list[tuple[str, str]] = field(default_factory=list)
+    capabilities: tuple[str, ...] = ("completion", "tools", "vision")
 
     def chat(
         self,
@@ -82,6 +83,9 @@ class FakeLLM:
 
     def model_context_length(self, model: str) -> int | None:
         return self.context_length
+
+    def model_capabilities(self, model: str) -> tuple[str, ...]:
+        return self.capabilities
 
     def preload(self, model: str, *, keep_alive: str = "5m") -> None:
         self.preloads.append((model, keep_alive))

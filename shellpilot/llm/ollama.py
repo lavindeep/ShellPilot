@@ -107,6 +107,20 @@ class OllamaClient:
                 return value
         return None
 
+    def model_capabilities(self, model: str) -> tuple[str, ...]:
+        """Capabilities advertised by the model, e.g. ("completion", "vision").
+
+        Returns an empty tuple on any HTTP or transport error so that capability
+        probing never crashes a session.
+        """
+        try:
+            response = self._client.post("/api/show", json={"model": model})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return ()
+        payload: dict[str, Any] = response.json()
+        return tuple(payload.get("capabilities") or ())
+
     def preload(self, model: str, *, keep_alive: str = "5m") -> None:
         """Warm the model into memory before the first user turn.
 
@@ -204,6 +218,8 @@ def _encode_message(message: Message) -> dict[str, Any]:
             {"function": {"name": call.name, "arguments": call.arguments}}
             for call in message.tool_calls
         ]
+    if message.images:
+        encoded["images"] = [ref.data_b64 for ref in message.images]
     return encoded
 
 

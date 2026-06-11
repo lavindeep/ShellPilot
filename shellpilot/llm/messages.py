@@ -20,12 +20,28 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class ImageRef:
+    """A reference to an image attached to a message.
+
+    Stores both the original filesystem path (for display) and the
+    base64-encoded bytes (for wire encoding to Ollama).  The sha256 hex
+    digest is stored so transcripts can record a content-stable reference
+    without embedding the bytes themselves.
+    """
+
+    path: str  # original filesystem path (display/reference)
+    sha256: str  # hex digest of the raw bytes
+    data_b64: str  # base64-encoded raw bytes (for Ollama wire encoding)
+
+
+@dataclass(frozen=True)
 class Message:
     """One chat message in provider-neutral form."""
 
     role: str
     content: str
     tool_calls: tuple[ToolCall, ...] = ()
+    images: tuple[ImageRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -42,8 +58,8 @@ def system(content: str) -> Message:
     return Message(role=ROLE_SYSTEM, content=content)
 
 
-def user(content: str) -> Message:
-    return Message(role=ROLE_USER, content=content)
+def user(content: str, *, images: tuple[ImageRef, ...] = ()) -> Message:
+    return Message(role=ROLE_USER, content=content, images=images)
 
 
 def assistant(content: str, tool_calls: tuple[ToolCall, ...] = ()) -> Message:
