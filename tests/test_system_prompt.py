@@ -51,3 +51,8 @@ def test_planning_guidance_one_plan_rule() -> None:
 
 def test_prompt_version_bumped() -> None:
     assert PROMPT_VERSION >= 2
+
+
+def test_prompt_network_statement_is_accurate() -> None:
+    prompt = build_system_prompt(workspace=Path("/work"), profile="balanced")
+    assert "no independent network access" in prompt.lower()

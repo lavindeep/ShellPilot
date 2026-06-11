@@ -1511,7 +1511,7 @@ Prompt principles:
 
 The main system prompt should communicate:
 
-- You are local-only.
+- No independent network access; internet contact only via registered, per-call-approved tools.
 - You can answer questions directly.
 - Use tools when inspection is needed.
 - Use tools for bash commands, project search, file operations, memory operations, and verification.
