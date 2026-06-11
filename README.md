@@ -6,7 +6,7 @@
 
 **A local-first AI shell harness for your terminal, powered by Ollama.**
 
-ShellPilot gives you one terminal conversation that can answer questions, inspect your project, plan multi-step work, edit files, and run commands with risk-based approvals — all against a local model (Gemma 4 via [Ollama](https://ollama.com)). No cloud calls, no telemetry, no API keys. Your code and your shell never leave your machine.
+ShellPilot gives you one terminal conversation that can answer questions, inspect your project, plan multi-step work, edit files, and run commands with risk-based approvals — all against a local model (Gemma 4 via [Ollama](https://ollama.com)). Local by default: your code and your shell never leave your machine — no telemetry, no API keys. Optional, off-by-default web grounding (`[tools] web = true`) contacts only the search provider and the pages you approve, one approved request at a time.
 
 ![ShellPilot demo](docs/assets/demo.gif)
 

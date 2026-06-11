@@ -107,6 +107,11 @@ class ConversationRuntime:
 
             for spec in make_memory_tools(memory):
                 self._registry.register(spec)
+        if settings.tools.web:
+            from shellpilot.tools.web import default_web_tools
+
+            for spec in default_web_tools():
+                self._registry.register(spec)
         self.budget = self._resolve_budget()
 
     @property

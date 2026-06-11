@@ -95,7 +95,7 @@ Recommendation (superseded by the settled name):
 
 ### 5.1 Local First
 
-All model calls happen through local Ollama. No telemetry, cloud sync, hosted API, or hidden network access is part of the core product.
+All model calls happen through local Ollama. No telemetry, cloud sync, or hosted API is part of the product. The only network egress is the optional, off-by-default web grounding tools: they contact only the search provider and pages the user approves per request, with no API keys.
 
 ### 5.2 Gemma 4 First
 
@@ -1163,10 +1163,9 @@ The product must stay local by default.
 
 Privacy requirements:
 
-- No cloud model calls.
-- No telemetry.
-- No remote logging.
-- No automatic upload of files.
+- No cloud model calls. No telemetry. No remote logging. No automatic upload of files.
+- Web grounding is off by default; when enabled, every request is individually approved
+  and audit-logged (query/URL, redacted).
 - No reading sensitive paths unless relevant and approved.
 - Redact secrets from logs and memory.
 - Keep state in OS-appropriate local app directories.
