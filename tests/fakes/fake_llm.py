@@ -47,6 +47,7 @@ class FakeLLM:
     context_length: int = DEFAULT_CONTEXT_LENGTH
     healthy: bool = True
     calls: list[RecordedCall] = field(default_factory=list)
+    preloads: list[tuple[str, str]] = field(default_factory=list)
 
     def chat(
         self,
@@ -81,6 +82,9 @@ class FakeLLM:
 
     def model_context_length(self, model: str) -> int | None:
         return self.context_length
+
+    def preload(self, model: str, *, keep_alive: str = "5m") -> None:
+        self.preloads.append((model, keep_alive))
 
 
 def _chunks(text: str, size: int) -> list[str]:

@@ -150,3 +150,28 @@ def test_is_tested_model_qwen35() -> None:
 
 def test_is_tested_model_unknown_family_returns_false() -> None:
     assert is_tested_model("llama4:x") is False
+
+
+# ---------------------------------------------------------------------------
+# A9: keep_alive config
+# ---------------------------------------------------------------------------
+
+
+def test_keep_alive_default_is_5m(tmp_path: Path) -> None:
+    """keep_alive defaults to '5m' when not configured."""
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert loaded.settings.model.keep_alive == "5m"
+
+
+def test_keep_alive_toml_override(tmp_path: Path) -> None:
+    """keep_alive can be overridden via TOML."""
+    user = write_toml(tmp_path / "user.toml", '[model]\nkeep_alive = "30m"\n')
+    loaded = load_config(
+        user_config_file=user, project_config_file=tmp_path / "missing.toml", env={}
+    )
+    assert loaded.settings.model.keep_alive == "30m"
+    assert loaded.sources["model.keep_alive"] == "user"

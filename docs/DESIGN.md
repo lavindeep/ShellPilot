@@ -1351,6 +1351,7 @@ family = "gemma4"
 default = "gemma4:e4b"
 reasoning = true
 base_url = "http://localhost:11434"
+keep_alive = "5m"   # how long Ollama keeps the model loaded between requests
 
 [runtime]
 security_profile = "balanced"
@@ -2233,4 +2234,14 @@ Settled 2026-06-11. On every interactive boot, ShellPilot presents a numbered li
 
 ### 32.2 Model Preload And keep_alive
 
-_Preload behavior (warm-up request before the first user turn, keep_alive policy) is specified in this section and will be filled in when Task A9 ships._
+Settled 2026-06-11 (Task A9).
+
+**Preload call:** immediately after the boot model picker resolves the session model (and before the banner prints), `run_interactive` sends a warm-up request: `OllamaClient.preload(model, keep_alive=settings.model.keep_alive)`. Ollama loads the model into GPU/CPU memory and returns when ready, eliminating the cold-start stall on the user's first question.
+
+**Wire format:** a non-streaming `POST /api/chat` with `{"model": "<name>", "messages": [], "stream": false, "keep_alive": "<duration>"}`. Ollama recognises an empty messages list as a load-only request. The client's long read timeout (`DEFAULT_GENERATE_TIMEOUT_SECONDS = 300 s`) applies automatically, which is sufficient for even large models on an 8 GB machine.
+
+**keep_alive:** the `[model] keep_alive` config key (type `str`, default `"5m"`) passes the Ollama `keep_alive` field on every preload and can be overridden to any Ollama duration string (e.g. `"30m"`, `"1h"`, `"-1"` to keep indefinitely). The same value is available for future use on regular `chat()` calls.
+
+**Error handling:** `OllamaUnreachableError` and `OllamaResponseError` from a failed preload are caught in `run_interactive`; a dim yellow warning is printed and the session continues — preload is best-effort and must never block the session.
+
+**`/model use <name>`:** after switching the active model via the slash command, `SlashDispatcher` also calls the preload helper so the new model is warm before the next user turn.

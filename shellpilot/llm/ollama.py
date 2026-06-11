@@ -105,6 +105,29 @@ class OllamaClient:
                 return value
         return None
 
+    def preload(self, model: str, *, keep_alive: str = "5m") -> None:
+        """Warm the model into memory before the first user turn.
+
+        Sends a non-streaming POST /api/chat with an empty messages list.  Ollama
+        loads the model into GPU/CPU memory and returns once it is ready.  Uses the
+        long read timeout (DEFAULT_GENERATE_TIMEOUT_SECONDS) that is already
+        configured on the client, so even large models that take tens of seconds
+        on an 8 GB machine will not time out.
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [],
+            "stream": False,
+            "keep_alive": keep_alive,
+        }
+        try:
+            response = self._client.post("/api/chat", json=payload)
+            response.raise_for_status()
+        except httpx.TransportError as exc:
+            raise OllamaUnreachableError(f"Ollama API unreachable: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise OllamaResponseError(f"Ollama API error: {exc}") from exc
+
     def chat(
         self,
         model: str,
