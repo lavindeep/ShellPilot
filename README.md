@@ -24,6 +24,8 @@ ShellPilot gives you one terminal conversation that can answer questions, inspec
 - **Manual Shell.** `/shell` drops you into a clearly-bannered raw `shell=True` mode that the model never touches.
 - **Model picker at boot.** When multiple Ollama models are installed, ShellPilot presents a numbered list at startup — tested families (`gemma4`, `qwen3.5`) are tagged `tested`; everything else gets a dim `untested` note. Press Enter to accept the default; the choice is remembered per workspace in `.shellpilot/state.json`. Pass `--model <name>` to skip the picker entirely.
 - **No cold-start stall.** ShellPilot warms the selected model via Ollama's keep-alive preload before your first question, shown as a `fueling <model>` spinner. The first-question latency spike that previously stalled on model loading is gone.
+- **Opt-in web grounding — privacy first.** `[tools] web = true` registers `web_search` (DuckDuckGo, no API key) and `web_fetch` (readable text extraction) — both off by default. Every outbound request requires individual approval in every security profile; no web call ever runs silently. Queries and URLs are audit-logged with secrets redacted. The local-first promise stays intact: opt-out is the default state, and there is no env-var toggle that can bypass the config-file act of opting in.
+- **Image input.** `/attach <path>` stages an image file (png, jpg, gif, webp, ≤ 10 MB) to send with your next message; vision-capable models see it automatically. The model can also open workspace images itself via the `view_image` tool — auto-approved at the same level as `read_file`, workspace-boundary enforced. Images are never stored in transcripts; only the path and sha256 are recorded.
 - **Testable without a model.** A fake LLM client exercises the entire runtime in CI — including malformed tool calls and stuck loops. No GPU, no Ollama needed for the test suite.
 
 ## How it works
@@ -100,6 +102,7 @@ gemma4:e4b · balanced · /help for commands
 | `/profile use <supervised\|balanced>` | Switch the security profile. |
 | `/logs` | Recent audit events and the log file path. |
 | `/shell` | Manual Shell (raw `shell=True`, model not involved). `/exit-shell` returns. |
+| `/attach <path>` | Stage an image to send with your next message (vision models). Bare `/attach` lists staged images. |
 
 ### Security profiles
 
