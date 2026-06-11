@@ -52,6 +52,7 @@ class Glyphs:
     cross: str
     ellipsis: str
     spinner_frames: tuple[str, ...]
+    beacon_frames: tuple[str, ...]
 
 
 UNICODE_GLYPHS = Glyphs(
@@ -64,7 +65,10 @@ UNICODE_GLYPHS = Glyphs(
     check="✓",
     cross="✗",
     ellipsis="…",
-    spinner_frames=("◐", "◓", "◑", "◒"),
+    # Compact-glide plane across a 4-cell track; U+2708 text presentation (no VS16).
+    spinner_frames=("✈···", "·✈··", "··✈·", "···✈", "····"),
+    # Breathing-pulse beacon for labeled states; each step held 2 ticks.
+    beacon_frames=("·", "·", "✧", "✧", "✦", "✦", "✧", "✧"),
 )
 
 ASCII_GLYPHS = Glyphs(
@@ -77,10 +81,13 @@ ASCII_GLYPHS = Glyphs(
     check="+",
     cross="x",
     ellipsis="...",
-    spinner_frames=("-", "\\", "|", "/"),
+    spinner_frames=(">---", "->--", "-->-", "--->", "----"),
+    beacon_frames=(".", ".", "+", "+", "*", "*", "+", "+"),
 )
 
-_PROBE = "".join(("⏺", "⎿", "❯", "◐", "☐", "✓", "▶", "✗", "…", "╭"))
+# _PROBE must contain every unicode glyph the UI can emit so auto-detection works.
+# Includes spinner (✈) and beacon (✦ ✧) glyphs; ◐ removed (no longer used).
+_PROBE = "".join(("⏺", "⎿", "❯", "✈", "☐", "✓", "▶", "✗", "…", "╭", "✦", "✧"))
 
 
 def build_console(settings: Settings, file: IO[str] | None = None) -> Console:

@@ -3,14 +3,17 @@
 ResponseStream renders the in-progress response as markdown inside a transient
 Live region (showing the tail when the response outgrows the screen), then
 prints exactly one clean final render — scrollback always ends with one perfect
-copy. AviationSpinner fills the wait before the first token and always erases
-itself, including on Ctrl-C.
+copy, including when the response is taller than the terminal. AviationSpinner
+fills the wait before the first token and always erases itself, including on
+Ctrl-C.
 """
 
 from __future__ import annotations
 
+import random
 import threading
 import time
+from typing import NamedTuple
 
 from rich.console import Console
 from rich.live import Live
@@ -19,14 +22,96 @@ from rich.text import Text
 
 from shellpilot.cli.theme import Glyphs
 
-SPINNER_VERBS = ("taxiing", "climbing", "cruising", "on approach")
-_VERB_SECONDS = 4
+_PHRASE_SECONDS = 10
 _REFRESH_SECONDS = 0.08
 
 
-def verb_for_elapsed(elapsed_s: float) -> str:
-    index = min(int(elapsed_s) // _VERB_SECONDS, len(SPINNER_VERBS) - 1)
-    return SPINNER_VERBS[index]
+class FlightPhase(NamedTuple):
+    """One ordered phase in the spinner's flight narrative."""
+
+    name: str
+    start: float
+    pool: tuple[str, ...]
+
+
+# Four ordered flight phases.  The spinner progresses through them as elapsed
+# time grows — never regresses.  No approach/landing phrases are included
+# because the spinner cannot know when the model will finish.
+FLIGHT_PHASES: tuple[FlightPhase, ...] = (
+    FlightPhase(
+        name="ground",
+        start=0.0,
+        pool=(
+            "taxiing",
+            "running the checklist",
+            "requesting clearance",
+            "pushing back",
+            "spooling up",
+            "holding short",
+            "lining up",
+            "chocks away",
+            "final walkaround",
+            "cleared for takeoff",
+        ),
+    ),
+    FlightPhase(
+        name="climb",
+        start=10.0,
+        pool=(
+            "climbing",
+            "wheels up",
+            "rotating",
+            "gear up",
+            "full throttle",
+            "climbing through clouds",
+            "departing the pattern",
+            "trimming the climb",
+            "on the upwind leg",
+        ),
+    ),
+    FlightPhase(
+        name="cruise",
+        start=20.0,
+        pool=(
+            "cruising",
+            "on autopilot",
+            "scanning the instruments",
+            "riding the jetstream",
+            "above the weather",
+            "steady at altitude",
+            "crossing waypoints",
+            "following the flight plan",
+            "smooth air ahead",
+            "trimmed for level flight",
+        ),
+    ),
+    FlightPhase(
+        name="long-haul",
+        start=60.0,
+        pool=(
+            "holding pattern",
+            "circling the field",
+            "crossing time zones",
+            "chasing the horizon",
+            "stretching the glide",
+            "awaiting vectors",
+            "counting runway lights",
+            "long-haul leg",
+        ),
+    ),
+)
+
+
+def phase_for_elapsed(elapsed: float) -> FlightPhase:
+    """Return the current FlightPhase for *elapsed* seconds.
+
+    Deterministic: the last phase whose ``start <= elapsed``.  Never regresses.
+    """
+    phase = FLIGHT_PHASES[0]
+    for p in FLIGHT_PHASES:
+        if elapsed >= p.start:
+            phase = p
+    return phase
 
 
 class ResponseStream:
@@ -85,15 +170,27 @@ class ResponseStream:
 
 
 class AviationSpinner:
-    """Dim flight-phase status while the model works; erases itself cleanly.
+    """Accent-colored flight-phase status while the model works; erases itself cleanly.
 
-    When ``start(label=...)`` is given a label, every frame renders as
-    ``{glyph} {label}… {N}s`` instead of the flight-phase verbs.  Existing
-    no-label behaviour (taxiing / climbing / cruising / on approach) is
-    byte-identical to before.
+    In unlabeled (thinking) mode, a compact-glide plane animates across a 4-cell track
+    in ``sp.accent`` while flight-phase phrases cycle every ``_PHRASE_SECONDS`` seconds.
+    Phrases are drawn randomly from the current phase's pool (random within an ordered,
+    never-regressing phase progression: coherent story within a turn, variety across
+    turns, no approach/landing phrases because completion time is unknowable).
+
+    When ``start(label=...)`` is given a label, every frame renders a breathing-beacon
+    glyph in ``sp.accent`` followed by the label with its rich styling preserved (no
+    longer flattened to plain text).  ``None`` label preserves original behaviour.
     """
 
-    def __init__(self, console: Console, glyphs: Glyphs, *, enabled: bool) -> None:
+    def __init__(
+        self,
+        console: Console,
+        glyphs: Glyphs,
+        *,
+        enabled: bool,
+        rng: random.Random | None = None,
+    ) -> None:
         self._console = console
         self._glyphs = glyphs
         self._enabled = enabled and console.is_terminal
@@ -102,25 +199,55 @@ class AviationSpinner:
         self._stop_event = threading.Event()
         self._started_at = 0.0
         self._label: str | Text | None = None
+        # Random phrase rotation state.
+        self._rng = rng or random.Random()
+        self._phrase: str | None = None
+        self._next_rotate: float = 0.0
 
     @property
     def active(self) -> bool:
         return self._live is not None
 
+    def _phrase_for(self, elapsed: float) -> str:
+        """Return the current display phrase, rotating every _PHRASE_SECONDS.
+
+        Single-threaded access: only the spinner thread and the pre-thread
+        ``_frame(0)`` call (inside ``start()``) call this method.
+        """
+        if elapsed >= self._next_rotate:
+            phase = phase_for_elapsed(elapsed)
+            # Never repeat the current phrase immediately; fall back to full pool
+            # only when the pool has a single entry.
+            choices = [p for p in phase.pool if p != self._phrase]
+            if not choices:
+                choices = list(phase.pool)
+            self._phrase = self._rng.choice(choices)
+            self._next_rotate = elapsed + _PHRASE_SECONDS
+        # _phrase is always set after the block above, but the type checker cannot
+        # prove it so we provide a safe fallback.
+        return self._phrase or phase_for_elapsed(elapsed).pool[0]
+
     def _frame(self, tick: int) -> Text:
-        frames = self._glyphs.spinner_frames
         elapsed = time.monotonic() - self._started_at
-        glyph = frames[tick % len(frames)]
         if self._label is not None:
-            label_str = self._label if isinstance(self._label, str) else self._label.plain
-            return Text(
-                f"{glyph} {label_str}{self._glyphs.ellipsis} {int(elapsed)}s",
-                style="sp.dim",
-            )
-        verb = verb_for_elapsed(elapsed)
-        return Text(
-            f"{glyph} {verb}{self._glyphs.ellipsis} {int(elapsed)}s",
-            style="sp.dim",
+            # Labeled (fueling / running) mode: breathing-beacon glyph in accent,
+            # label with its rich styling intact, dim elapsed suffix.
+            beacon = self._glyphs.beacon_frames[tick % len(self._glyphs.beacon_frames)]
+            suffix = f"{self._glyphs.ellipsis} {int(elapsed)}s"
+            base = Text.assemble((beacon, "sp.accent"), (" ", "sp.dim"))
+            if isinstance(self._label, Text):
+                base.append_text(self._label.copy())
+            else:
+                base.append(self._label, style="sp.dim")
+            base.append(suffix, style="sp.dim")
+            return base
+        # Unlabeled (thinking) mode: compact-glide plane in accent, phrase + elapsed dim.
+        glyph = self._glyphs.spinner_frames[tick % len(self._glyphs.spinner_frames)]
+        phrase = self._phrase_for(elapsed)
+        return Text.assemble(
+            (glyph, "sp.accent"),
+            (f" {phrase}", "sp.dim"),
+            (f"{self._glyphs.ellipsis} {int(elapsed)}s", "sp.dim"),
         )
 
     def _current_label_text(self) -> str:
@@ -138,13 +265,16 @@ class AviationSpinner:
 
     def start(self, label: str | Text | None = None) -> None:
         """Start the spinner.  When *label* is set the frame shows the label
-        instead of the flight-phase verbs; ``None`` preserves original behaviour.
+        instead of the flight-phase phrases; ``None`` preserves original behaviour.
         """
         if not self._enabled or self._live is not None:
             return
         self._label = label
         self._started_at = time.monotonic()
         self._stop_event.clear()
+        # Reset phrase state so every turn opens fresh in ground phase.
+        self._phrase = None
+        self._next_rotate = 0.0
         self._live = Live(
             self._frame(0),
             console=self._console,

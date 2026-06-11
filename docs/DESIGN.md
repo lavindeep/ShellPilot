@@ -2252,21 +2252,33 @@ Model responses render as rich Markdown, updated live while tokens stream (`rich
 
 ### 31.8 Status and stats
 
-- While the model works: a dim aviation spinner — `◐ taxiing… / climbing… / cruising… / on approach…` with elapsed seconds. It erases itself before the first token prints and is Ctrl-C safe (never leaves a stray line). Disable with `ui.spinner = false`; auto-disabled when not a TTY.
+- While the model works: an accent-colored aviation spinner — a compact-glide plane (`✈···` / `·✈··` / `··✈·` / `···✈` / `····`) gliding across a 4-cell track in `sp.accent` green, followed by a dim flight-phase phrase and elapsed seconds. It erases itself before the first token prints and is Ctrl-C safe (never leaves a stray line). Disable with `ui.spinner = false`; auto-disabled when not a TTY.
+
+  **Flight-phase phrases:** 37 lowercase phrases across four ordered phases, rotated randomly every 10 s (random pick within the current phase, never repeating the immediately preceding phrase). The progression never regresses — the phase advances as elapsed time grows. No approach/landing phrases are included because completion time is unknowable.
+
+  | Phase | Window | Pool size | Sample phrases |
+  |---|---|---|---|
+  | ground | 0–10 s | 10 | taxiing, spooling up, cleared for takeoff |
+  | climb | 10–20 s | 9 | wheels up, rotating, climbing through clouds |
+  | cruise | 20–60 s | 10 | on autopilot, riding the jetstream, trimmed for level flight |
+  | long-haul | 60 s+ | 8 | holding pattern, crossing time zones, awaiting vectors |
+
+  Rationale: random pick within an ordered, never-regressing phase progression — coherent story within a turn, variety across turns; no approach/landing phrases because completion time is unknowable.
+
 - After each turn: a faint stats line — `2.1s · 1.4k tokens · ctx 18%`. The ctx percentage turns amber once estimated usage crosses `compact_at_tokens` (section 10.5).
 
-**Labeled spinner states (A10, settled 2026-06-11):** `AviationSpinner.start(label=...)` accepts an optional label (plain `str` or rich `Text`). When set, every frame renders as `{glyph} {label}… {N}s` instead of flight-phase verbs. Two specific labels are used:
+**Labeled spinner states (A10, settled 2026-06-11):** `AviationSpinner.start(label=...)` accepts an optional label (plain `str` or rich `Text`). When set, every frame renders a breathing-beacon glyph (`·` / `✧` / `✦` cycling) in `sp.accent` followed by the label with its rich styling preserved (no longer flattened to plain text), then the dim elapsed suffix. Two specific labels are used:
 
 - **Boot preload:** `fueling <model>` (dim "fueling " + emphasis model name) — shown while `client.preload()` warms the model at startup and after `/model use <name>`.
 - **Per-tool activity:** `running <tool>` (dim "running " + emphasis tool name) — started by `show_tool_call` and stopped at the top of every subsequent output method (`show_tool_result`, `show_command_output`, `ask_approval`, `ask_plan_approval`, `show_plan_progress`, `show_error`). `stream_token` already stops the spinner; the guard is idempotent.
 
-No-label behaviour (flight verbs) is byte-identical to before A10. The `ui.spinner = false` config and non-TTY paths disable the spinner as before — the label parameter has no effect when the spinner is disabled.
+No-label behaviour (flight-phase phrases) is the default. The `ui.spinner = false` config and non-TTY paths disable the spinner as before — the label parameter has no effect when the spinner is disabled. `ui.glyphs = "ascii"` and `NO_COLOR` degradation are unchanged; no new config keys.
 
 ### 31.9 Polish contract
 
 - All borders and panels come from rich primitives, never hand-assembled strings — alignment is guaranteed by construction at any terminal width, including wide Unicode characters.
 - `NO_COLOR` and non-TTY output degrade cleanly: no ANSI noise, badges become bracketed text, panels and content remain readable.
-- Glyph fallback: `ui.glyphs = "auto" | "unicode" | "ascii"`. The glyph set (`⏺ ⎿ ❯ ◐ ☐ ✓ ▶`) maps to ASCII equivalents; `auto` selects ASCII on terminals that cannot encode the Unicode set.
+- Glyph fallback: `ui.glyphs = "auto" | "unicode" | "ascii"`. The glyph set (`⏺ ⎿ ❯ ✈ ✦ ✧ ☐ ✓ ▶`) maps to ASCII equivalents; `auto` selects ASCII on terminals that cannot encode the Unicode set.
 - Snapshot tests (section 26.1) cover plan, approval, and diff rendering.
 
 ## 32. Model Selection And Preload

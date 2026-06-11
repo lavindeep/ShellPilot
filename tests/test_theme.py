@@ -82,3 +82,4 @@ def test_resolve_glyphs_auto_picks_by_encoding() -> None:
 def test_glyph_sets_cover_the_same_fields() -> None:
     assert UNICODE_GLYPHS.bullet != ASCII_GLYPHS.bullet
     assert UNICODE_GLYPHS.spinner_frames and ASCII_GLYPHS.spinner_frames
+    assert UNICODE_GLYPHS.beacon_frames and ASCII_GLYPHS.beacon_frames
