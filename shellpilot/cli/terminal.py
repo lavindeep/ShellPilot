@@ -39,6 +39,7 @@ from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.paths import AppPaths, project_state_dir
+from shellpilot.persistence.sessions import SessionStore
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -159,7 +160,7 @@ def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple
     return user_file, project_state_dir(workspace) / "config.toml"
 
 
-def run_interactive(workspace: Path) -> int:
+def run_interactive(workspace: Path, resume: str | None = None) -> int:
     console = build_console(Settings())
     env = dict(os.environ)
     paths = AppPaths.default()
@@ -213,6 +214,32 @@ def run_interactive(workspace: Path) -> int:
     )
     audit.write("session_start", model=settings.model.default)
 
+    sessions_dir = SessionStore.sessions_dir(workspace)
+    restored = None
+    if resume is not None:
+        session_path = (
+            SessionStore.latest(sessions_dir)
+            if resume == "latest"
+            else SessionStore.find(sessions_dir, resume)
+        )
+        if session_path is None:
+            console.print(
+                f"[red]No saved session to resume[/red] "
+                f"({'none found' if resume == 'latest' else resume}) in {sessions_dir}."
+            )
+            return 1
+        restored = SessionStore.load(session_path)
+    session = SessionStore(
+        sessions_dir,
+        restored.session_id if restored is not None else SessionStore.new_session_id(),
+        redact=settings.privacy.redact_secrets,
+    )
+    session.write_meta(
+        model=settings.model.default,
+        profile=settings.runtime.security_profile,
+        workspace=workspace,
+    )
+
     ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner)
     runtime = ConversationRuntime(
         llm=client,
@@ -221,7 +248,10 @@ def run_interactive(workspace: Path) -> int:
         behavior=behavior,
         ui=ui,
         audit=audit,
+        session=session,
     )
+    if restored is not None:
+        runtime.restore_history(restored.messages)
     dispatcher = SlashDispatcher(
         runtime=runtime,
         client=client,
@@ -233,6 +263,12 @@ def run_interactive(workspace: Path) -> int:
     )
 
     console.print(banner(__version__, runtime.model, settings.runtime.security_profile))
+    if restored is not None:
+        console.print(
+            f"[sp.dim]Resumed session {escape(restored.session_id)} "
+            f"({len(restored.messages)} messages).[/sp.dim]"
+        )
+        audit.write("session_resume", summary=restored.session_id)
     reader = make_input(console, paths.state_dir, command_words(), glyphs)
 
     while True:

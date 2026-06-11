@@ -171,3 +171,9 @@ def test_compact_auto_toggle(tmp_path: Path) -> None:
     assert "Automatic compaction: off" in harness.output()
     harness.dispatcher.handle("/compact auto on")
     assert harness.runtime.settings.runtime.auto_compact is True
+
+
+def test_export_without_session_store_reports(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/export")
+    assert "No session transcript" in harness.output()

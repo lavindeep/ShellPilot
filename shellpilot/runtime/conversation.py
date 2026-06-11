@@ -11,6 +11,7 @@ from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import Message, tool_result, user
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
+from shellpilot.persistence.sessions import SessionStore
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.prompts.execution import EXPLAINER_PROMPT
 from shellpilot.prompts.planning import PLANNING_GUIDANCE
@@ -65,8 +66,10 @@ class ConversationRuntime:
         model: str | None = None,
         registry: ToolRegistry | None = None,
         audit: AuditLogger | None = None,
+        session: SessionStore | None = None,
     ) -> None:
         self._audit = audit
+        self._session = session
         self._llm = llm
         self._settings = settings
         self._workspace = workspace
@@ -105,6 +108,24 @@ class ConversationRuntime:
     def audit(self) -> AuditLogger | None:
         return self._audit
 
+    @property
+    def session(self) -> SessionStore | None:
+        return self._session
+
+    def _record(self, message: Message) -> None:
+        """Append to history and the session transcript together."""
+        self._history.append(message)
+        if self._session is not None:
+            self._session.record_message(message)
+
+    def restore_history(self, messages: list[Message]) -> None:
+        """Adopt a prior session's messages without re-recording them.
+
+        Snapshots are deliberately not restored: read-before-write safety
+        requires fresh reads in the new process.
+        """
+        self._history = list(messages)
+
     def _resolve_budget(self) -> ContextBudget:
         detected = self._llm.model_context_length(self._model)
         return resolve_budget(self._settings.context, detected)
@@ -125,6 +146,8 @@ class ConversationRuntime:
 
     def clear_history(self) -> None:
         self._history.clear()
+        if self._session is not None:
+            self._session.record_clear()
 
     def _system_message_text(self) -> str:
         prompt = build_system_prompt(
@@ -229,7 +252,7 @@ class ConversationRuntime:
         self._last_user_text = text
         if self._audit is not None:
             self._audit.write("user_turn", chars=len(text))
-        self._history.append(user(text))
+        self._record(user(text))
         if self._settings.runtime.auto_compact:
             adjusted = self.compact_now()
             if adjusted:
@@ -302,14 +325,14 @@ class ConversationRuntime:
                 )
             finally:
                 self._ui.end_response()
-            self._history.append(reply)
+            self._record(reply)
             if not reply.tool_calls:
                 return reply
 
             tool_turns += 1
             if tool_turns > self._settings.runtime.max_tool_turns:
                 self._ui.show_status("Tool budget for this turn is exhausted; wrapping up.")
-                self._history.append(
+                self._record(
                     tool_result(
                         "Tool budget exhausted for this turn. Answer now in plain text "
                         "with what you already know; do not call more tools."
@@ -327,7 +350,7 @@ class ConversationRuntime:
                         self._ui.show_status(
                             "Repeated malformed tool calls; stopping tool use for this turn."
                         )
-                        self._history.append(
+                        self._record(
                             tool_result(
                                 f"{outcome.model_text}\nRepeated malformed tool calls. "
                                 "Answer now in plain text without calling tools."
@@ -335,7 +358,7 @@ class ConversationRuntime:
                         )
                         tools = []
                         break
-                    self._history.append(
+                    self._record(
                         tool_result(f"{outcome.model_text}\nRetry once with a corrected call.")
                     )
                     continue
@@ -347,7 +370,7 @@ class ConversationRuntime:
                     diff = outcome.result.metadata.get("diff", "")
                     if outcome.result.success and diff:
                         self.recent_diffs.append(diff)
-                self._history.append(tool_result(outcome.model_text))
+                self._record(tool_result(outcome.model_text))
                 self._track_repeated_failure(call.name, outcome)
 
     def _track_repeated_failure(self, name: str, outcome: ExecutionOutcome) -> None:
@@ -357,7 +380,7 @@ class ConversationRuntime:
             return
         signature = f"{name}:{outcome.result.summary}"
         if signature == self._last_failure_signature:
-            self._history.append(
+            self._record(
                 tool_result(
                     "The same action has now failed twice with the same result. Stop "
                     "this approach. Follow the roadblock protocol: record the blocker "

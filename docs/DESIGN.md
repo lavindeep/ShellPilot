@@ -1568,6 +1568,7 @@ Planned commands:
 | `/compact auto on` | Enable automatic token-budget compaction. |
 | `/compact auto off` | Disable automatic token-budget compaction. |
 | `/logs` | Show recent local audit/session events. |
+| `/export <path>` | Export this session's transcript to markdown (default `.shellpilot/exports/<session-id>.md`). |
 | `/shell` | Enter Manual Shell mode. |
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
 
@@ -1581,7 +1582,6 @@ Scheduled for v2, v0.3.0 release (settled 2026-06-11):
 | `/memory compact` | Optimize memory entries while preserving explicit user instructions. |
 | `/prefs show` | Show behavior preferences. |
 | `/prefs edit` | Edit human-readable behavior preferences. |
-| `/export` | Export session summary, logs, or task transcript. |
 
 Deferred to v3 candidates:
 
@@ -1851,7 +1851,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 | Memory system | Behavior/project memory, proposals, and optimization move to v2. V1 only reads `AGENTS.md`. Scheduled for v0.3.0 (settled 2026-06-11). |
 | Token-budget compaction | V1 uses oldest-first truncation; selective compaction is v2. Scheduled for v0.3.0 (settled 2026-06-11). |
 | `trusted-local` profile | Deferred from v1, and deferred again at the 2026-06-11 v2 scoping. Revisit for v3. |
-| Session resume | V1 sessions are ephemeral; the audit log is the durable record. Resume + `/export` scheduled for v0.3.0 (settled 2026-06-11). |
+| Session resume | Shipped in v0.3.0 (settled 2026-06-11): append-only JSONL transcripts at `.shellpilot/sessions/<session-id>.jsonl`, written incrementally with secrets redacted; compaction trims memory, never the transcript. `shellpilot --resume [id]` restores the latest (or named) session's history; snapshots are never restored, so read-before-write forces fresh reads. `/export` renders the transcript to markdown. |
 | Agent raw shell | Do not expose `raw_shell` as an agent tool in v1. Keep Manual Shell for direct user-controlled `shell=True`. |
 | Capability packs | Design later after core tools are stable. v3 candidate (2026-06-11). |
 | Packet capture diagnostics | Revisit as a capability pack. |

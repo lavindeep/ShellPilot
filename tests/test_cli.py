@@ -29,7 +29,7 @@ def test_default_invocation_routes_to_interactive(
 ) -> None:
     seen: list[Path] = []
 
-    def fake_interactive(workspace: Path) -> int:
+    def fake_interactive(workspace: Path, resume: str | None = None) -> int:
         seen.append(workspace)
         return 0
 
@@ -42,3 +42,16 @@ def test_missing_cwd_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     missing = tmp_path / "does-not-exist"
     assert run_cli(["--cwd", str(missing)]) == 2
     assert "does not exist" in capsys.readouterr().err
+
+
+def test_resume_flag_parses_and_routes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: list[str | None] = []
+
+    def fake_interactive(workspace: Path, resume: str | None = None) -> int:
+        seen.append(resume)
+        return 0
+
+    monkeypatch.setattr("shellpilot.cli.terminal.run_interactive", fake_interactive)
+    assert run_cli(["--cwd", str(tmp_path), "--resume"]) == 0
+    assert run_cli(["--cwd", str(tmp_path), "--resume", "20260611-101010-abcd"]) == 0
+    assert seen == ["latest", "20260611-101010-abcd"]

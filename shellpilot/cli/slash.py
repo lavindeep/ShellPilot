@@ -48,6 +48,7 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/profile", "Show the active security profile."),
     ("/profile use <name>", "Switch profile: supervised or balanced."),
     ("/logs", "Show recent local audit events."),
+    ("/export <path>", "Export this session's transcript to markdown."),
     ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
 ]
 
@@ -137,6 +138,8 @@ class SlashDispatcher:
             self._profile(args)
         elif command == "/logs":
             self._logs()
+        elif command == "/export":
+            self._export(args)
         else:
             self._console.print(f"[red]Unknown command: {command}[/red] — type /help for commands.")
         return SlashAction.CONTINUE
@@ -331,6 +334,26 @@ class SlashDispatcher:
                     line += f" {key}={event[key]}"
             self._console.print(line, markup=False, highlight=False)
         self._console.print(f"[dim]Log file: {audit.path}[/dim]")
+
+    def _export(self, args: list[str]) -> None:
+        from shellpilot.persistence.json_store import atomic_write_text
+        from shellpilot.persistence.paths import project_state_dir
+        from shellpilot.persistence.sessions import SessionStore, session_markdown
+
+        store = self._runtime.session
+        if store is None or not store.path.is_file():
+            self._console.print("[dim]No session transcript available to export.[/dim]")
+            return
+        workspace = self._runtime.status().workspace
+        target = (
+            Path(args[0]).expanduser()
+            if args
+            else project_state_dir(workspace) / "exports" / f"{store.session_id}.md"
+        )
+        atomic_write_text(target, session_markdown(SessionStore.load(store.path)))
+        if self._runtime.audit is not None:
+            self._runtime.audit.write("export", summary=str(target))
+        self._console.print(f"Exported transcript to {target}")
 
     def _tools(self) -> None:
         profile = self._runtime.settings.runtime.security_profile

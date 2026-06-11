@@ -22,6 +22,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Workspace directory (defaults to the current directory).",
     )
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="ID",
+        help="Resume a saved session (latest for this workspace, or a session id).",
+    )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser(
         "doctor", help="Check local prerequisites (Python, Ollama, models, paths)."
@@ -48,7 +56,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
 
     from shellpilot.cli.terminal import run_interactive
 
-    return run_interactive(workspace)
+    return run_interactive(workspace, resume=args.resume)
 
 
 def _run_config(workspace: Path, action: str) -> int:
