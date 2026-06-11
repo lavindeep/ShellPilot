@@ -18,6 +18,8 @@ ShellPilot gives you one terminal conversation that can answer questions, inspec
 - **Deterministic security first.** Command risk is classified by deterministic policy (executable, flags, targets, shell metacharacters, workspace boundary) — never by asking the model whether something is safe. Agent commands run with `shell=False`; there is no agent-accessible raw shell.
 - **Dangerous commands are explained.** High-risk actions show the exact command, a short model-written purpose explanation, and require you to literally type `run`. The explanation can never downgrade the deterministic risk.
 - **Read-before-write edits.** File edits are anchored patches validated against a content-hashed snapshot of what was actually read — no blind writes, no stale writes, diffs shown before approval.
+- **Memory with consent.** The model can propose remembering preferences and project facts (`memory_propose_update`), but every update shows a preview and needs your approval — it never writes memory silently. `/memory show|add|forget|compact`, `/prefs` to inspect; stored as plain JSON you can edit by hand.
+- **Sessions that survive.** Every conversation is journaled (redacted) to `.shellpilot/sessions/`; `shellpilot --resume` picks up where you left off, and `/export` writes a markdown transcript. Long sessions stay healthy via selective compaction that digests old tool output first and never drops your instructions (`/compact auto on|off`).
 - **Local audit log.** Every approval, command, and edit is recorded as redacted JSONL on your machine (`/logs` to view).
 - **Manual Shell.** `/shell` drops you into a clearly-bannered raw `shell=True` mode that the model never touches.
 - **Testable without a model.** A fake LLM client exercises the entire runtime in CI — including malformed tool calls and stuck loops. No GPU, no Ollama needed for the test suite.
@@ -66,7 +68,7 @@ shellpilot          # start the conversation
 
 ```text
 $ shellpilot
-ShellPilot 0.2.0
+ShellPilot 0.3.0
 gemma4:e4b · balanced · /help for commands
 
 ~/my-project · gemma4:e4b · balanced
@@ -80,12 +82,15 @@ gemma4:e4b · balanced · /help for commands
 | Command | Purpose |
 |---|---|
 | `shellpilot` | Interactive session in the current directory (`--cwd` to point elsewhere). |
+| `shellpilot --resume [id]` | Resume the latest (or a specific) saved session in this workspace. |
 | `shellpilot doctor` | Check Python, Ollama reachability, installed Gemma models, writable paths. |
 | `shellpilot config show` | Print resolved config with the source layer of every key. |
 | `/help` | All slash commands. |
 | `/status`, `/compact status` | Model, profile, context usage, thresholds, active plan. |
 | `/plan`, `/plan cancel`, `/plan revise <text>` | Inspect or steer the active plan. |
 | `/diff` | Diffs from this session's agent edits. |
+| `/memory show`, `/memory add <text>`, `/memory forget <id>` | Inspect and curate stored memory. |
+| `/compact auto on\|off`, `/export` | Compaction control; markdown transcript export. |
 | `/model list`, `/model use <name>` | Switch among local Gemma models. |
 | `/profile use <supervised\|balanced>` | Switch the security profile. |
 | `/logs` | Recent audit events and the log file path. |
@@ -128,7 +133,7 @@ python scripts/benchmark_model.py --trials 10
 
 ## Roadmap
 
-Next up in v0.3.0 ([docs/DESIGN.md](docs/DESIGN.md) sections 16 and 25.2): persistent behavior/project memory with a proposal-and-approval flow, session resume with `/export`, and selective token-budget compaction. Deferred further: `trusted-local` profile, capability packs, `/undo`.
+v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31) and v0.3.0 (memory system, session resume/export, selective compaction). v3 candidates per section 25.2: `trusted-local` profile, capability packs, `/undo`.
 
 ## License
 
