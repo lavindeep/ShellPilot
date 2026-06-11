@@ -452,6 +452,7 @@ Design rules that follow:
 | Failure | Recovery |
 |---|---|
 | Malformed tool call | Return a compact schema reminder and allow exactly one retry. |
+| Precheck failure (unrunnable command, missing executable, empty argv, packed shell line) | Tool returns a normal failed result pre-approval; the model may correct the arguments and retry. |
 | Edit anchor not found or ambiguous | Re-read the target region and allow one corrected retry. |
 | Same failure twice | Stop and enter the roadblock protocol (section 11.6). |
 | Tool-call loop | Enforce turn/tool budgets (section 24.6) and replan or stop. |
@@ -1038,6 +1039,17 @@ Preferred order:
 1. Translate to structured tools like `search_text`.
 2. Use Python-side post-processing where simple.
 3. Ask the user to switch to Manual Shell when shell-native behavior is truly needed.
+
+**Pre-flight rule:** A command that cannot start is rejected deterministically BEFORE the approval prompt. This covers:
+
+- Empty `argv`.
+- A packed shell line (shell syntax in `argv[0]` or a single-token command string with spaces).
+- An `argv[0]` that resolves to a missing or non-executable path (path-separator form).
+- An `argv[0]` that is not found on `PATH` (bare-name form).
+
+When a PATH miss is detected, the runtime produces deterministic suggestions: it probes `<name>3` first (covers `python→python3`, `pip→pip3`) and then scans PATH for close matches via `difflib`. Example message: `executable 'python' not found on PATH — did you mean: python3?`
+
+Approvals are never spent on commands that cannot start. The model receives a normal failed tool result and may correct the arguments and retry.
 
 ### 13.4 Dangerous Commands
 

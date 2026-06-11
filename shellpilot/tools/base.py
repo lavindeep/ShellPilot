@@ -63,6 +63,9 @@ class ToolSpec:
     classifier: ToolClassifier | None = None
     # Diff preview shown in approval prompts for write tools (section 12.5).
     preview: ToolPreview | None = None
+    # Pre-approval validation hook: returns a failure message when the call can be
+    # rejected deterministically before classification/approval, or None to proceed.
+    precheck: Callable[[ToolContext, dict[str, Any]], str | None] | None = None
 
     @property
     def name(self) -> str:

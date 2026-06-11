@@ -100,6 +100,17 @@ class ToolExecutor:
             snapshots=self._snapshots,
         )
 
+        if spec.precheck is not None:
+            precheck_msg = spec.precheck(context, call.arguments)
+            if precheck_msg is not None:
+                self._log_precheck(call, precheck_msg)
+                result = ToolResult(success=False, summary=precheck_msg, content="")
+                return ExecutionOutcome(
+                    model_text=self._render(call.name, result),
+                    malformed=False,
+                    result=result,
+                )
+
         # Deterministic policy before execution (sections 14.1-14.3). The model
         # never downgrades this classification (section 14.4).
         classification = spec.risk_for(context, call.arguments)
@@ -178,6 +189,17 @@ class ToolExecutor:
         return ExecutionOutcome(
             model_text=self._render(call.name, result), malformed=False, result=result
         )
+
+    def _log_precheck(self, call: ToolCall, message: str) -> None:
+        if self._audit is not None:
+            display = self._display_for(call)
+            self._audit.write(
+                "precheck_failed",
+                tool=call.name,
+                command=display,
+                risk=RiskLevel.LOW.value,
+                message=message,
+            )
 
     def _log(
         self, event: str, call: ToolCall, display: str, risk: RiskLevel, **fields: Any

@@ -6,7 +6,9 @@ Manual Shell (section 13.2), where the user types the command themselves.
 
 from __future__ import annotations
 
+import difflib
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -126,30 +128,79 @@ def _packed_shell_line(argv: list[str]) -> bool:
     return any(marker in argv[0] for marker in _SHELL_SYNTAX_MARKERS)
 
 
+def _resolve_executable(context: ToolContext, name: str) -> str | None:
+    """Check whether argv[0] is launchable; return a failure message or None."""
+    # Path-separator → treat as filesystem path, not a PATH lookup.
+    if os.sep in name or "/" in name:
+        candidate = Path(name)
+        if not candidate.is_absolute():
+            candidate = context.workspace / candidate
+        if not candidate.exists():
+            return f"executable '{name}' not found"
+        if not os.access(candidate, os.X_OK):
+            return f"'{name}' is not executable"
+        return None
+
+    # Plain name: consult PATH.
+    if shutil.which(name) is not None:
+        return None
+
+    msg = f"executable '{name}' not found on PATH"
+
+    # Suggestions: try <name>3 first (covers python→python3, pip→pip3).
+    if shutil.which(f"{name}3") is not None:
+        return f"{msg} — did you mean: {name}3?"
+
+    # Scan PATH for close matches via difflib.
+    basenames: list[str] = []
+    for dir_str in os.environ.get("PATH", "").split(os.pathsep):
+        try:
+            for entry in os.scandir(dir_str):
+                if entry.is_file() and os.access(entry.path, os.X_OK):
+                    basenames.append(entry.name)
+        except OSError:
+            pass
+    suggestions = difflib.get_close_matches(name, sorted(set(basenames)), n=3, cutoff=0.8)
+    if suggestions:
+        return f"{msg} — did you mean: {', '.join(suggestions)}?"
+    return msg
+
+
+def _precheck_run_command(context: ToolContext, arguments: dict[str, Any]) -> str | None:
+    """Pre-approval validation for run_command (section 13.3).
+
+    Returns a failure message when the call can be rejected deterministically
+    before classification/approval, or None to proceed.
+    """
+    argv = [str(token) for token in arguments.get("argv", [])]
+    if not argv:
+        return "argv must not be empty"
+    if _packed_shell_line(argv):
+        return (
+            "argv must be separate tokens without shell syntax — "
+            "this looks like a shell command packed into one string. run_command "
+            "executes WITHOUT a shell: pass each argument as its own argv token, "
+            'e.g. ["git", "status"]. Pipes, redirection (> <), and $() are not '
+            "available — to write a file ask the user, and for shell-native "
+            "syntax suggest Manual Shell (/shell)."
+        )
+    return _resolve_executable(context, argv[0])
+
+
 def _run_command(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
     argv = [str(token) for token in arguments["argv"]]
-    if not argv:
-        return ToolResult(success=False, summary="argv must not be empty", content="")
-    if _packed_shell_line(argv):
-        return ToolResult(
-            success=False,
-            summary="argv must be separate tokens without shell syntax",
-            content=(
-                "This looks like a shell command packed into one string. run_command "
-                "executes WITHOUT a shell: pass each argument as its own argv token, "
-                'e.g. ["git", "status"]. Pipes, redirection (> <), and $() are not '
-                "available — to write a file ask the user, and for shell-native "
-                "syntax suggest Manual Shell (/shell)."
-            ),
-        )
     timeout = int(arguments.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
     classification = classify_command(argv, workspace=context.workspace)
 
-    outcome = run_command_process(
-        CommandRequest(argv=argv, cwd=context.workspace, timeout_seconds=timeout),
-        max_capture_chars=context.max_capture_chars,
-        emit_line=context.emit_output,
-    )
+    try:
+        outcome = run_command_process(
+            CommandRequest(argv=argv, cwd=context.workspace, timeout_seconds=timeout),
+            max_capture_chars=context.max_capture_chars,
+            emit_line=context.emit_output,
+        )
+    except OSError as exc:
+        return ToolResult(success=False, summary=f"could not start command: {exc}", content="")
+
     if outcome.timed_out:
         summary = f"timed out after {timeout}s; process group killed"
     else:
@@ -172,6 +223,7 @@ def _classify(context: ToolContext, arguments: dict[str, Any]) -> CommandRisk:
 
 RUN_COMMAND = ToolSpec(
     classifier=_classify,
+    precheck=_precheck_run_command,
     definition=ToolDefinition(
         name="run_command",
         description=(
