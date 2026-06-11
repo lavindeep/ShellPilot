@@ -22,6 +22,7 @@ from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_bu
 from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.executor import ExecutionOutcome, ToolExecutor
 from shellpilot.runtime.planner import PlanManager, compact_plan_state, make_plan_tools
+from shellpilot.tools.images import make_view_image_tool
 from shellpilot.tools.registry import ToolRegistry, default_registry
 
 # Coarse per-image vision-encoder cost; deliberately NOT the b64 length
@@ -95,6 +96,7 @@ class ConversationRuntime:
         self._model = model or settings.model.default
         self._registry = registry or default_registry()
         self._history: list[Message] = []
+        self._staged_tool_images: list[ImageRef] = []
         self._last_user_text = ""
         self._last_failure_signature: str | None = None
         self.snapshots = SnapshotStore()
@@ -107,6 +109,12 @@ class ConversationRuntime:
             on_step_change=ui.show_plan_progress,
         ):
             self._registry.register(spec)
+        self._registry.register(
+            make_view_image_tool(
+                self._staged_tool_images.append,
+                lambda: "vision" in self._llm.model_capabilities(self._model),
+            )
+        )
         if memory is not None:
             from shellpilot.tools.memory_tools import make_memory_tools
 
@@ -275,6 +283,9 @@ class ConversationRuntime:
 
     def run_turn(self, text: str, *, images: Sequence[ImageRef] = ()) -> str:
         """One user turn: budget-check, compact, call the model, stream, record."""
+        # Belt-and-braces: a stale stage left by an aborted prior turn must not
+        # attach to this unrelated turn's first message.
+        self._staged_tool_images.clear()
         if estimate_tokens(text) > self.budget.max_user_message_tokens:
             self._ui.show_status(
                 "Message too large for the model context "
@@ -454,6 +465,21 @@ class ConversationRuntime:
                         self.recent_diffs.append(diff)
                 self._record(tool_result(outcome.model_text))
                 self._track_repeated_failure(call.name, outcome)
+
+            # Drain images staged by view_image during THIS batch. Placed after
+            # the for-loop so every exit path of the batch (normal completion
+            # and the malformed-twice break) flows through here and cannot skip
+            # clearing — a stale stage must not attach to a later message.
+            if self._staged_tool_images:
+                refs = tuple(self._staged_tool_images)
+                self._staged_tool_images.clear()
+                names = ", ".join(ref.path for ref in refs)
+                self._record(
+                    user(
+                        f"[harness: image attached from view_image: {names}]",
+                        images=refs,
+                    )
+                )
 
     def _track_repeated_failure(self, name: str, outcome: ExecutionOutcome) -> None:
         """Same safe recovery failing twice triggers the roadblock protocol (§11.6)."""

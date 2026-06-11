@@ -414,6 +414,7 @@ def test_attach_rejects_bad_file(tmp_path: Path) -> None:
     harness.dispatcher.handle(f"/attach {bad}")
 
     out = harness.output()
-    # Some error message, nothing staged
-    assert len(out.strip()) > 0
+    # The error names the failure and the unsupported extension; nothing staged.
+    assert "Cannot attach" in out
+    assert ".csv" in out
     assert attachments.paths == []

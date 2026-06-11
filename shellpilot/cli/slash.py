@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
@@ -598,7 +599,7 @@ class SlashDispatcher:
 
         # Validate the file eagerly (extension, existence, size)
         try:
-            load_image(candidate)
+            ref = load_image(candidate)
         except AttachmentError as exc:
             self._console.print(f"[red]Cannot attach:[/red] {exc}")
             return
@@ -612,7 +613,8 @@ class SlashDispatcher:
             return
 
         queue.stage(candidate)
-        size = candidate.stat().st_size
+        # Use the already-loaded ref so a file vanishing between calls can't crash.
+        size = len(base64.b64decode(ref.data_b64))
         human_size = (
             f"{size / 1024 / 1024:.1f} MB" if size >= 1024 * 1024 else f"{size / 1024:.1f} KB"
         )

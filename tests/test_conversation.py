@@ -200,6 +200,40 @@ def test_clear_writes_audit_event(tmp_path: Path) -> None:
     assert "plan" in clear_events[0].get("summary", "").lower()
 
 
+def test_user_turn_audit_counts_images(tmp_path: Path) -> None:
+    """The user_turn audit event carries images=N only when images are passed."""
+    import base64
+    import hashlib
+
+    from shellpilot.llm.messages import ImageRef
+    from tests.conftest import TINY_PNG
+
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-img",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    ref = ImageRef(
+        path=str(tmp_path / "shot.png"),
+        sha256=hashlib.sha256(TINY_PNG).hexdigest(),
+        data_b64=base64.b64encode(TINY_PNG).decode(),
+    )
+    fake = FakeLLM(script=[answer("with image"), answer("without image")])
+    ui = FakeUI()
+    runtime = _make_runtime_with_audit(fake, ui, tmp_path, audit)
+
+    runtime.run_turn("describe this", images=(ref,))
+    runtime.run_turn("plain text only")
+
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    user_turns = [e for e in events if e["event"] == "user_turn"]
+    assert len(user_turns) == 2
+    assert user_turns[0].get("images") == 1
+    # A turn without images carries no images field (absent / 0).
+    assert user_turns[1].get("images", 0) == 0
+
+
 # ---------------------------------------------------------------------------
 # B9: run_turn images= + image token estimate
 # ---------------------------------------------------------------------------
