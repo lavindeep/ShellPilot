@@ -1941,7 +1941,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 | Export command | Defer unless session sharing becomes important. Scheduled for v0.3.0 with session persistence (settled 2026-06-11). |
 | Prompt toolkit UI | Adopted in v2 (settled 2026-06-11): the section 31 redesign adds input history and slash autocomplete, which is exactly the "standard input becomes painful" bar this row set. |
 | Heavy type system | Start with dataclasses and validation; add `pydantic` only where it clearly reduces bugs. |
-| Sandboxed `run_command` (Seatbelt) | Deferred; v0.6.0 candidate. See section 35. |
+| Sandboxed `run_command` (Seatbelt) | Declined (section 35). |
 
 ### 25.3 Bloat Control Rules
 
@@ -2396,54 +2396,32 @@ After every tool-call batch (both the normal-completion path and the malformed-t
 
 **Token budget:** `IMAGE_TOKEN_ESTIMATE = 1024` tokens per image is added to `estimated_prompt_tokens()` for each image in each history message. This is a coarse approximation of vision-encoder cost — deliberately not the base64 character length (which would wildly overestimate and thrash compaction). The constant is declared in `shellpilot/runtime/conversation.py` and applies uniformly to user-attached and tool-staged images.
 
-## 35. Sandboxed Execution (Direction)
+## 35. Sandboxed Execution (Considered, Declined — 2026-06-11)
 
-Research completed 2026-06-11. This section records the decision.
+Decision recorded 2026-06-11. This section preserves the full reasoning so the decision can be revisited honestly if circumstances change.
 
 ### 35.1 Threat Model And Today's Gap
 
-The policy engine and per-action approvals decide *which* commands run, but an approved command runs with the user's full OS privileges. The Python venv is dependency isolation, not a security boundary. A misclassified or maliciously-crafted approved command can read `~/.ssh`, write outside the workspace, or exfiltrate data over the network. Sandboxing adds a second, mechanical boundary *around* execution, complementing — never replacing — deterministic policy and approval.
+The policy engine and per-action approvals decide *which* commands run, but an approved command runs with the user's full OS privileges. The Python venv is dependency isolation, not a security boundary. A misclassified or maliciously-crafted approved command can read `~/.ssh`, write outside the workspace, or exfiltrate data over the network. Sandboxing would add a second, mechanical boundary *around* execution, complementing — never replacing — deterministic policy and approval. The threat model is real; the question is whether OS-level confinement is the right tool to address it for a single-user local harness.
 
-### 35.2 Phase 1 (v0.6.0 Candidate): Opt-in Seatbelt Wrapper
+### 35.2 Decision: No OS-Level Sandbox
 
-macOS `/usr/bin/sandbox-exec` with a generated deny-by-default SBPL profile:
+ShellPilot will not build an OS-level sandbox. Users run ShellPilot in directories they own and trust. The security model is deterministic policy classification (section 12 / 14) plus per-action approval — not OS confinement.
 
-- File writes restricted to the workspace root and the session `$TMPDIR`.
-- Hard-deny writes to `.git/hooks/`, shell rc files, `~/.ssh/`, `~/.aws/`.
-- Network deny-all by default.
+**Why declined:**
 
-This is the production-proven approach of Claude Code, OpenAI Codex CLI, and Gemini CLI on macOS — all ship SBPL profiles; Codex CLI also adds `ptrace(PT_DENY_ATTACH)` and strips `DYLD_*` env vars. Overhead: ~0 RAM, <10 ms per call — fits an 8 GB machine.
+- **Seatbelt SBPL is high-maintenance and undocumented.** macOS `sandbox-exec` profiles are written in SBPL, an undocumented Scheme-like language where a malformed profile silently allows everything. The format is man-page-deprecated since macOS 10.13. Maintaining correct, non-regressing SBPL profiles for a tool that runs arbitrary developer workflows is a significant ongoing cost with no clear payoff boundary.
+- **Per-command confinement breaks legitimate developer workflows.** A deny-by-default write policy must carve out exceptions for pip/npm/cargo caches, compiler toolchains, and other build artifacts that live outside the workspace. Each exception is a maintenance burden and a source of false-positive friction — the user is interrupted by the sandbox when the model does exactly what was asked.
+- **Virtualization is incompatible with the 8 GB target hardware.** The Apple container approach (Virtualization.framework microVMs) does not release guest memory to the host. On an 8 GB machine, per-turn container restarts would be required, adding latency and complexity that outweighs the containment benefit. This direction is not viable for the stated hardware baseline.
+- **The tool is used in trusted directories.** ShellPilot is started in a project directory the user chose. This is not the threat model of a browser rendering untrusted web content or a CI system executing arbitrary pull requests. The containment problem is qualitatively different.
 
-Known limitations (recorded honestly):
+**Containment that already exists:**
 
-- SBPL is an undocumented Scheme-like language with silent profile-failure modes; malformed profiles silently allow everything.
-- No PID or memory limits.
-- `sandbox-exec` is man-page-deprecated since macOS 10.13, yet remains functional and load-bearing for major agent CLIs. Seatbelt itself underpins App Sandbox and is not going away.
-- TLS-level egress filtering requires a proxy and is out of scope for Phase 1.
+The specific incidents that motivated the sandbox idea are addressed without OS confinement:
 
-Cross-platform note: a Linux backend would use bubblewrap + Landlock (the Claude Code / Codex CLI pattern) behind the same Python abstraction. Platform detection gates which backend runs; the calling code is identical.
+- The v0.5.0 web-content risk — untrusted page text entering context via `web_fetch` — is contained by `SideEffect.NETWORK` always-ask per-request consent (section 14.2a). No outbound network call runs silently in any profile.
+- The v0.5.1 host hardening — pre-approval command precheck, sanitized child environment with `DYLD_*`/`LD_*`/`Malloc*` stripped, and closed stdin (`DEVNULL`) — addresses the real incident cases that motivated this work (sections 13.1 and 13.3). Commands that cannot start are rejected before the approval prompt is ever spent; commands that do run cannot be injected via stdin or influenced by debug environment variables.
 
-### 35.3 Phase 2 (Future): Virtualized Execution via Apple container
+### 35.3 Revisit Condition
 
-[github.com/apple/container](https://github.com/apple/container) (v1.0.0, June 2026): one lightweight Linux microVM per container on Virtualization.framework, sub-second start, OCI images.
-
-Gates before adoption:
-
-- Requires macOS 26 for full functionality; container-to-container networking is impossible on macOS 15.
-- Guest memory is not released to the host — risky on 8 GB; would need per-turn container restarts.
-- Ecosystem is young: no compose or devcontainer support yet.
-
-Trigger conditions to revisit: macOS 26 widely installed, container v1.x stable for 6+ months, and ≥16 GB hardware as a reasonable baseline.
-
-### 35.4 Decision Record
-
-Settled 2026-06-11. Phase 1 (Seatbelt, opt-in, off by default) is the chosen v0.6.0 candidate. Phase 2 is recorded as the long-term direction.
-
-Config sketch (not binding — final schema decided when implemented):
-
-```toml
-[runtime]
-sandbox = "off"  # "off" | "seatbelt"
-```
-
-The sandbox is off by default. Opt-in via config or a `--sandbox` flag. The switch wraps `run_command` only; Manual Shell, preload calls, and doctor checks are unaffected.
+Real user demand for running ShellPilot in untrusted directories — for example, reviewing unknown repositories or executing agent tasks against code from external sources — would reopen this question with fresh eyes. In that scenario the threat model shifts meaningfully and OS-level confinement becomes more defensible despite the maintenance cost. A future decision should evaluate the sandboxing options available at that time rather than assuming the current Seatbelt or Apple container landscape is unchanged.

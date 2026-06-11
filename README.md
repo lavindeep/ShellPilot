@@ -158,7 +158,7 @@ python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 
 ## Roadmap
 
-v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v3 candidates per section 25.2: `trusted-local` profile, capability packs, `/undo`. The next privacy milestone is opt-in sandboxed command execution via macOS Seatbelt (`sandbox-exec`), the same boundary used by Claude Code and Codex CLI — tracked as a v0.6.0 candidate in section 35.
+v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v0.5.0 added opt-in web grounding and image input/attachments. v0.6.0 candidates are unscheduled and the scope is deliberately open: a `trusted-local` security profile, capability packs, and `/undo` — per section 25.2.
 
 ## License
 
