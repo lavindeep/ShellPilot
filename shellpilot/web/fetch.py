@@ -4,6 +4,13 @@ Fetches a URL, enforces conservative pre-request guards, caps the download
 size, decodes the body, and extracts readable text (HTML) or passes through
 plain text, returning a :class:`FetchedPage`.
 
+Redirect handling
+-----------------
+Redirects are followed manually (up to :data:`MAX_REDIRECTS` hops).  Each
+redirect destination is passed through :func:`_check_url` before the next
+request is issued, so a public URL that 302s to a private IP is blocked at
+the second hop before any connection is made.
+
 Known limitation — DNS-based private-IP bypass
 ----------------------------------------------
 Guards are applied to the URL hostname before any network request.  If a
@@ -18,7 +25,7 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -27,6 +34,9 @@ from shellpilot.web.extract import extract_text
 
 # Content-type tokens that we accept (case-insensitive match).
 _ACCEPTED_CONTENT_TYPES = ("text/html", "text/plain", "xml")
+
+# Maximum number of redirect hops before giving up.
+MAX_REDIRECTS = 10
 
 
 @dataclass(frozen=True)
@@ -91,6 +101,9 @@ class PageFetcher:
     Mirrors the httpx patterns of ``shellpilot.llm.ollama.OllamaClient``:
     explicit ``httpx.Timeout``, injectable ``transport`` for tests, narrow
     exception wrapping.
+
+    Redirects are followed manually so that every hop's destination URL is
+    checked against :func:`_check_url` before a connection is made.
     """
 
     def __init__(
@@ -104,7 +117,7 @@ class PageFetcher:
     ) -> None:
         self._client = httpx.Client(
             timeout=httpx.Timeout(timeout_seconds, read=read_timeout_seconds),
-            follow_redirects=True,
+            follow_redirects=False,
             transport=transport,
         )
         self._max_bytes = max_bytes
@@ -113,54 +126,82 @@ class PageFetcher:
     def fetch(self, url: str) -> FetchedPage:
         """Fetch *url* and return a :class:`FetchedPage`.
 
+        Redirects are followed manually (up to :data:`MAX_REDIRECTS` hops).
+        Each redirect destination is validated by :func:`_check_url` before the
+        next request is issued.
+
         Raises:
             WebFetchError: For scheme/host guard failures, bad content types,
-                HTTP 4xx/5xx responses, or transport errors.
+                HTTP 4xx/5xx responses, too many redirects, or transport errors.
         """
         # Pre-request guards — no network access happens before this passes.
         _check_url(url)
 
+        current_url = url
+        hops = 0
+
         try:
-            with self._client.stream("GET", url) as response:
-                if response.status_code >= 400:
-                    raise WebFetchError(f"HTTP {response.status_code} fetching {url}")
+            while True:
+                with self._client.stream("GET", current_url) as response:
+                    # Follow redirects manually so we can guard each hop.
+                    if response.is_redirect:
+                        location = response.headers.get("location", "")
+                        if not location:
+                            raise WebFetchError(
+                                f"Redirect from {current_url!r} has no Location header."
+                            )
+                        next_url = urljoin(current_url, location)
+                        hops += 1
+                        if hops >= MAX_REDIRECTS:
+                            raise WebFetchError(
+                                f"too many redirects following {url!r} "
+                                f"(exceeded {MAX_REDIRECTS} hops)"
+                            )
+                        # Guard the redirect destination BEFORE requesting it.
+                        _check_url(next_url)
+                        current_url = next_url
+                        continue
 
-                content_type = response.headers.get("content-type", "")
-                if not _content_type_accepted(content_type):
-                    raise WebFetchError(
-                        f"Unsupported content type {content_type!r}; "
-                        f"expected text/html, text/plain, or XML."
-                    )
+                    if response.status_code >= 400:
+                        raise WebFetchError(f"HTTP {response.status_code} fetching {current_url}")
 
-                # Stream body up to max_bytes
-                chunks: list[bytes] = []
-                bytes_read = 0
-                byte_truncated = False
-                for chunk in response.iter_bytes():
-                    remaining = self._max_bytes - bytes_read
-                    if len(chunk) >= remaining:
-                        chunks.append(chunk[:remaining])
-                        byte_truncated = True
-                        break
-                    chunks.append(chunk)
-                    bytes_read += len(chunk)
+                    content_type = response.headers.get("content-type", "")
+                    if not _content_type_accepted(content_type):
+                        raise WebFetchError(
+                            f"Unsupported content type {content_type!r}; "
+                            f"expected text/html, text/plain, or XML."
+                        )
 
-                raw_bytes = b"".join(chunks)
+                    # Stream body up to max_bytes
+                    chunks: list[bytes] = []
+                    bytes_read = 0
+                    byte_truncated = False
+                    for chunk in response.iter_bytes():
+                        remaining = self._max_bytes - bytes_read
+                        if len(chunk) >= remaining:
+                            chunks.append(chunk[:remaining])
+                            byte_truncated = True
+                            break
+                        chunks.append(chunk)
+                        bytes_read += len(chunk)
 
-                # Determine charset
-                charset: str = "utf-8"
-                if response.encoding:
-                    charset = response.encoding
+                    raw_bytes = b"".join(chunks)
 
-                body = raw_bytes.decode(charset, errors="replace")
-                final_url = str(response.url)
+                    # Determine charset
+                    charset: str = "utf-8"
+                    if response.encoding:
+                        charset = response.encoding
+
+                    body = raw_bytes.decode(charset, errors="replace")
+                    final_url = str(response.url)
+                    break  # Successful non-redirect response
 
         except WebFetchError:
             raise
         except httpx.TransportError as exc:
-            raise WebFetchError(f"Transport error fetching {url}: {exc}") from exc
+            raise WebFetchError(f"Transport error fetching {current_url}: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise WebFetchError(f"HTTP error fetching {url}: {exc}") from exc
+            raise WebFetchError(f"HTTP error fetching {current_url}: {exc}") from exc
 
         # Extract text based on content type
         ct_lower = content_type.lower()

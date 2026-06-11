@@ -51,23 +51,6 @@ def _error_transport() -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-def _recording_transport(
-    responses: list[httpx.Response],
-) -> tuple[httpx.MockTransport, list[httpx.Request]]:
-    """A transport that records every request and replays *responses* in order."""
-    calls: list[httpx.Request] = []
-    idx = 0
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal idx
-        calls.append(request)
-        resp = responses[idx]
-        idx += 1
-        return resp
-
-    return httpx.MockTransport(handler), calls
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -85,33 +68,83 @@ def test_fetch_extracts_readable_text() -> None:
 
 
 def test_reports_final_url_after_redirect() -> None:
-    """The url field must reflect the post-redirect URL from response.url."""
+    """FetchedPage.url must reflect the final URL after following a redirect hop."""
     final_html = "<html><body><p>Landed</p></body></html>"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # Simulate httpx following a redirect: response.url will differ from request.url
-        # We fake this by returning a response whose URL is the final destination.
-        resp = httpx.Response(
+        if request.url.path == "/a":
+            # 302 → /b on the same host
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "https://example.com/b",
+                    "content-type": "text/html",
+                },
+                content=b"",
+            )
+        # /b: serve the final page
+        return httpx.Response(
             200,
             content=final_html.encode("utf-8"),
             headers={"content-type": "text/html; charset=utf-8"},
         )
-        # Patch the request on the response so response.url returns the final URL
-        resp = httpx.Response(
-            200,
-            content=final_html.encode("utf-8"),
-            headers={"content-type": "text/html; charset=utf-8"},
-            extensions={"http_version": b"HTTP/1.1"},
-        )
-        return resp
 
-    transport = httpx.MockTransport(handler)
-    fetcher = PageFetcher(transport=transport)
-    page = fetcher.fetch("https://example.com/redirect-source")
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler))
+    page = fetcher.fetch("https://example.com/a")
 
-    # The url field is str(response.url); MockTransport echoes the request URL.
-    assert page.url.startswith("https://")
+    assert page.url.endswith("/b"), f"Expected final URL to end with /b, got {page.url!r}"
     assert "Landed" in page.text
+
+
+def test_redirect_to_private_host_blocked() -> None:
+    """A public URL that redirects to a private IP must be blocked before the second request."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.host == "example.com":
+            # 302 → private IP
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "http://127.0.0.1/secret",
+                    "content-type": "text/html",
+                },
+                content=b"",
+            )
+        # Should never be reached
+        return httpx.Response(200, content=b"secret", headers={"content-type": "text/plain"})
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(WebFetchError):
+        fetcher.fetch("http://example.com/a")
+
+    # Only the first request (to example.com) should have been made;
+    # the private-IP hop must be blocked before any connection attempt.
+    assert len(calls) == 1, (
+        f"Expected exactly 1 transport call, got {len(calls)}: {[str(r.url) for r in calls]}"
+    )
+
+
+def test_too_many_redirects() -> None:
+    """A redirect loop must raise WebFetchError after MAX_REDIRECTS hops."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Always redirect back to /loop
+        return httpx.Response(
+            302,
+            headers={
+                "location": "https://example.com/loop",
+                "content-type": "text/html",
+            },
+            content=b"",
+        )
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(WebFetchError, match="too many redirects"):
+        fetcher.fetch("https://example.com/loop")
 
 
 def test_rejects_non_http_schemes() -> None:
@@ -197,3 +230,14 @@ def test_transport_error_raises_fetch_error() -> None:
     fetcher = PageFetcher(transport=_error_transport())
     with pytest.raises(WebFetchError):
         fetcher.fetch("https://example.com/")
+
+
+def test_charset_latin1_decoded_correctly() -> None:
+    """Response with content-type charset=latin-1 must decode latin-1 bytes correctly."""
+    # b"\xe9" is 'é' in latin-1
+    body = b"caf\xe9"
+    transport = _bytes_transport(body, content_type="text/plain; charset=latin-1")
+    fetcher = PageFetcher(transport=transport)
+
+    page = fetcher.fetch("https://example.com/text")
+    assert "café" in page.text
