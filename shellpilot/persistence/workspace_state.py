@@ -32,7 +32,7 @@ def load_last_model(workspace: Path) -> str | None:
     try:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
-    except Exception:  # noqa: BLE001 - missing/corrupt file is normal
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None

@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Final
 
 VALID_PROFILES = ("supervised", "balanced")  # trusted-local arrives in v2
+
+TESTED_FAMILIES: Final[tuple[str, ...]] = ("gemma4", "qwen3.5")
+
+
+def is_tested_model(name: str) -> bool:
+    """True when the model belongs to a family ShellPilot is qualified against."""
+    return any(name.startswith(family) for family in TESTED_FAMILIES)
 
 
 @dataclass(frozen=True)

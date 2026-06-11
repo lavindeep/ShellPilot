@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from shellpilot.config.loader import ConfigError, load_config
-from shellpilot.config.model import Settings
+from shellpilot.config.model import Settings, is_tested_model
 
 
 def write_toml(path: Path, content: str) -> Path:
@@ -133,3 +133,20 @@ def test_ui_glyphs_env_override(tmp_path: Path) -> None:
     )
     assert loaded.settings.ui.glyphs == "ascii"
     assert loaded.sources["ui.glyphs"] == "env"
+
+
+# ---------------------------------------------------------------------------
+# is_tested_model / TESTED_FAMILIES
+# ---------------------------------------------------------------------------
+
+
+def test_is_tested_model_gemma4() -> None:
+    assert is_tested_model("gemma4:e4b") is True
+
+
+def test_is_tested_model_qwen35() -> None:
+    assert is_tested_model("qwen3.5:9b-mlx") is True
+
+
+def test_is_tested_model_unknown_family_returns_false() -> None:
+    assert is_tested_model("llama4:x") is False
