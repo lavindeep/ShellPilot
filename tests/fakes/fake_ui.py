@@ -7,11 +7,15 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from shellpilot.policy.approvals import ApprovalRequest
+    from shellpilot.runtime.events import TurnStats
 
 
 @dataclass
 class FakeUI:
     tokens: list[str] = field(default_factory=list)
+    began: int = 0
+    ended: int = 0
+    turn_stats: list[TurnStats] = field(default_factory=list)
     statuses: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     tool_calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
@@ -24,6 +28,15 @@ class FakeUI:
 
     def stream_token(self, token: str) -> None:
         self.tokens.append(token)
+
+    def begin_response(self) -> None:
+        self.began += 1
+
+    def end_response(self) -> None:
+        self.ended += 1
+
+    def turn_finished(self, stats: TurnStats) -> None:
+        self.turn_stats.append(stats)
 
     def show_status(self, text: str) -> None:
         self.statuses.append(text)

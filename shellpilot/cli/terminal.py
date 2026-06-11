@@ -11,8 +11,12 @@ from rich.markup import escape
 
 from shellpilot import __version__
 from shellpilot.cli.manual_shell import manual_shell_loop
+from shellpilot.cli.render import turn_stats as render_turn_stats
 from shellpilot.cli.slash import SlashAction, SlashDispatcher
+from shellpilot.cli.streaming import AviationSpinner, ResponseStream
+from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
 from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
+from shellpilot.config.model import Settings
 from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
 from shellpilot.persistence.audit_store import AuditLogger
@@ -20,6 +24,7 @@ from shellpilot.persistence.paths import AppPaths, project_state_dir
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
+from shellpilot.runtime.events import TurnStats
 
 PROMPT = "[bold cyan]\\[AI] >[/bold cyan] "
 
@@ -27,11 +32,35 @@ PROMPT = "[bold cyan]\\[AI] >[/bold cyan] "
 class TerminalUI:
     """RuntimeUI implementation over a rich console."""
 
-    def __init__(self, console: Console) -> None:
+    def __init__(
+        self,
+        console: Console,
+        *,
+        glyphs: Glyphs = UNICODE_GLYPHS,
+        spinner: bool = True,
+    ) -> None:
         self._console = console
+        self._glyphs = glyphs
+        self._stream = ResponseStream(console)
+        self._spinner = AviationSpinner(console, glyphs, enabled=spinner)
+
+    def begin_response(self) -> None:
+        self._spinner.start()
+
+    def end_response(self) -> None:
+        self._spinner.stop()
+        self._stream.finish()
+
+    def turn_finished(self, stats: TurnStats) -> None:
+        self._console.print(
+            render_turn_stats(
+                stats.elapsed_s, stats.context_tokens, stats.context_pct, warn=stats.warn
+            )
+        )
 
     def stream_token(self, token: str) -> None:
-        self._console.print(token, end="", markup=False, highlight=False, soft_wrap=True)
+        self._spinner.stop()
+        self._stream.feed(token)
 
     def show_status(self, text: str) -> None:
         self._console.print(f"[dim]{escape(text)}[/dim]")
@@ -107,7 +136,7 @@ def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple
 
 
 def run_interactive(workspace: Path) -> int:
-    console = Console()
+    console = build_console(Settings())
     env = dict(os.environ)
     paths = AppPaths.default()
     user_file, project_file = config_files(workspace, env, paths)
@@ -121,6 +150,9 @@ def run_interactive(workspace: Path) -> int:
         console.print(f"[red]Config error:[/red] {escape(str(exc))}")
         return 2
     settings = loaded.settings
+    if settings.ui.no_color:
+        console = build_console(settings)
+    glyphs = resolve_glyphs(settings.ui.glyphs, console)
 
     client = OllamaClient(
         base_url=settings.model.base_url,
@@ -157,7 +189,7 @@ def run_interactive(workspace: Path) -> int:
     )
     audit.write("session_start", model=settings.model.default)
 
-    ui = TerminalUI(console)
+    ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner)
     runtime = ConversationRuntime(
         llm=client,
         settings=settings,

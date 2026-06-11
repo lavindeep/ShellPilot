@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from shellpilot.prompts.execution import EXPLAINER_PROMPT
 from shellpilot.prompts.planning import PLANNING_GUIDANCE
 from shellpilot.prompts.system import build_system_prompt
 from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_budget
-from shellpilot.runtime.events import RuntimeUI
+from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.executor import ExecutionOutcome, ToolExecutor
 from shellpilot.runtime.planner import PlanManager, compact_plan_state, make_plan_tools
 from shellpilot.tools.registry import ToolRegistry, default_registry
@@ -157,6 +158,7 @@ class ConversationRuntime:
             )
             return ""
 
+        started = time.monotonic()
         self._last_user_text = text
         if self._audit is not None:
             self._audit.write("user_turn", chars=len(text))
@@ -164,7 +166,20 @@ class ConversationRuntime:
         dropped = self.compact_now()
         if dropped:
             self._ui.show_status(f"Compacted context: dropped {dropped} oldest messages.")
-        return self._tool_loop().content
+        content = self._tool_loop().content
+        self._ui.turn_finished(self._turn_stats(time.monotonic() - started))
+        return content
+
+    def _turn_stats(self, elapsed_s: float) -> TurnStats:
+        used = self.estimated_prompt_tokens()
+        total = self.budget.model_context_tokens
+        pct = min(100, round(100 * used / total)) if total else 0
+        return TurnStats(
+            elapsed_s=elapsed_s,
+            context_tokens=used,
+            context_pct=pct,
+            warn=used > self.budget.compact_at_tokens,
+        )
 
     def _explain_purpose(self, display: str, reasons: tuple[str, ...]) -> str:
         """Short model-written purpose for a dangerous command (section 13.4)."""
@@ -208,13 +223,17 @@ class ConversationRuntime:
                 Message(role="system", content=self._system_message_text()),
                 *self._history,
             ]
-            reply = self._llm.chat(
-                self._model,
-                messages,
-                tools=tools,
-                num_ctx=self.budget.model_context_tokens,
-                on_token=self._ui.stream_token,
-            )
+            self._ui.begin_response()
+            try:
+                reply = self._llm.chat(
+                    self._model,
+                    messages,
+                    tools=tools,
+                    num_ctx=self.budget.model_context_tokens,
+                    on_token=self._ui.stream_token,
+                )
+            finally:
+                self._ui.end_response()
             self._history.append(reply)
             if not reply.tool_calls:
                 return reply

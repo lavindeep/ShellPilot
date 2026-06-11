@@ -2,16 +2,37 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from shellpilot.policy.approvals import ApprovalRequest
 
 
+@dataclass(frozen=True)
+class TurnStats:
+    """Post-turn stats for the UI (design section 31.8)."""
+
+    elapsed_s: float
+    context_tokens: int
+    context_pct: int
+    warn: bool
+
+
 class RuntimeUI(Protocol):
     """What the conversation runtime needs from a user interface."""
 
     def stream_token(self, token: str) -> None: ...
+
+    def begin_response(self) -> None:
+        """The runtime is about to call the model (start a waiting indicator)."""
+        ...
+
+    def end_response(self) -> None:
+        """The model call finished or failed (always called; stop indicators)."""
+        ...
+
+    def turn_finished(self, stats: TurnStats) -> None: ...
 
     def show_status(self, text: str) -> None: ...
 
