@@ -1070,7 +1070,7 @@ Security should be practical, deterministic first, and profile-driven.
 | Profile | Intended User | Behavior |
 |---|---|---|
 | `supervised` | New users, small models, high caution | Ask before every tool with side effects and every command. |
-| `balanced` | Default | Auto-run read-only tools and low-risk inspect commands. Ask for writes, installs, deletes, network writes, and raw shell. |
+| `balanced` | Default | Auto-run read-only tools and low-risk inspect commands. Ask for writes, installs, deletes, network, and raw shell. |
 | `trusted-local` (v2) | Power user in trusted repo | Auto-run low-risk workspace writes and safe allowlisted commands. Ask for dangerous commands and raw shell. Deferred to v2. |
 
 ### 14.2 Risk Levels

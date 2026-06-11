@@ -121,9 +121,23 @@ def test_multiple_spaces_collapsed() -> None:
 def test_header_tags_emit_newlines() -> None:
     html = "<html><body><h1>Title</h1><h2>Subtitle</h2><p>Body</p></body></html>"
     page = extract_text(html)
-    assert "Title" in page.text
-    assert "Subtitle" in page.text
-    assert "Body" in page.text
+    lines = page.text.splitlines()
+    non_empty = [ln.strip() for ln in lines if ln.strip()]
+    # Each heading and the body paragraph should land on separate lines
+    assert "Title" in non_empty
+    assert "Subtitle" in non_empty
+    assert "Body" in non_empty
+    # Verify relative ordering via line indices
+    title_idx = next(i for i, ln in enumerate(non_empty) if ln == "Title")
+    subtitle_idx = next(i for i, ln in enumerate(non_empty) if ln == "Subtitle")
+    body_idx = next(i for i, ln in enumerate(non_empty) if ln == "Body")
+    assert title_idx < subtitle_idx < body_idx
+
+
+def test_title_inside_skip_region_ignored() -> None:
+    html = "<svg><title>inner</title></svg>"
+    page = extract_text(html)
+    assert page.title == ""
 
 
 def test_returns_extracted_page_dataclass() -> None:
