@@ -1555,7 +1555,7 @@ Planned commands:
 | `/help` | Show available slash commands and short examples. |
 | `/exit` | Exit the harness. |
 | `/quit` | Alias for `/exit`. |
-| `/clear` | Clear visible conversation/session state after confirmation. |
+| `/clear` | Clear conversation history after confirmation; also cancels the active plan and resets snapshots, diffs, and failure state. |
 | `/status` | Show current model, profile, cwd, context usage, active plan, and pending approvals. |
 | `/doctor` | Check Python version, Ollama reachability, Gemma 4 model availability, config paths, and workspace access. |
 | `/model` | Show the active model and context metadata. |

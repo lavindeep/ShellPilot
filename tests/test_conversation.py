@@ -1,10 +1,13 @@
 """Tests for the unified conversation runtime with the fake model."""
 
+import json
 from pathlib import Path
 
 from shellpilot.config.model import ContextSettings, Settings
+from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.runtime.conversation import ConversationRuntime
-from tests.fakes.fake_llm import FakeLLM, answer
+from tests.fakes.fake_llm import FakeLLM, answer, tool_call
 from tests.fakes.fake_ui import FakeUI
 
 
@@ -98,3 +101,128 @@ def test_status_snapshot(tmp_path: Path) -> None:
     assert status.profile == "balanced"
     assert status.history_messages == 2
     assert status.estimated_prompt_tokens > 0
+
+
+# ---------------------------------------------------------------------------
+# A4: clear_history resets plan, snapshots, diffs, and failure state
+# ---------------------------------------------------------------------------
+
+
+def _make_runtime_with_audit(
+    fake: FakeLLM, ui: FakeUI, tmp_path: Path, audit: AuditLogger
+) -> ConversationRuntime:
+    return ConversationRuntime(
+        llm=fake,
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=ui,
+        audit=audit,
+    )
+
+
+def test_clear_cancels_active_plan(tmp_path: Path) -> None:
+    """clear_history() cancels the active plan and clears plan_manager.active."""
+    fake = FakeLLM(
+        script=[
+            tool_call(
+                "propose_plan",
+                goal="Do something",
+                steps=["Step one", "Step two", "Step three"],
+                assumptions=[],
+                verification=[],
+            ),
+            # plain-text answers stop the nudge loop (MAX_PLAN_NUDGES=2)
+            answer("Starting step 1."),
+            answer("Still on step 1."),
+            answer("Stopping for now."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path)
+    runtime.run_turn("Do the thing")
+
+    assert runtime.plan_manager.active is not None
+    plan = runtime.plan_manager.active
+    artifact = runtime.plan_manager.artifact_path(plan)
+
+    runtime.clear_history()
+
+    assert runtime.plan_manager.active is None
+    # cancel() writes "cancelled" status to the artifact
+    assert "cancelled" in artifact.read_text().lower()
+
+
+def test_clear_resets_snapshots_and_diffs(tmp_path: Path) -> None:
+    """clear_history() empties snapshots, recent_diffs, and _last_failure_signature."""
+    fake = FakeLLM(script=[])
+    runtime = make_runtime(fake, FakeUI(), tmp_path)
+
+    # Seed a snapshot manually (simulating a prior read_file call)
+    some_file = tmp_path / "hello.txt"
+    some_file.write_bytes(b"hello")
+    runtime.snapshots.record(some_file, b"hello")
+    assert len(runtime.snapshots) == 1
+
+    # Seed a recent diff and a failure signature
+    runtime.recent_diffs.append("diff --git a/x b/x\n")
+    runtime._last_failure_signature = "read_file:file not found"
+
+    runtime.clear_history()
+
+    assert len(runtime.snapshots) == 0
+    assert runtime.recent_diffs == []
+    assert runtime._last_failure_signature is None
+
+
+def test_clear_writes_audit_event(tmp_path: Path) -> None:
+    """clear_history() appends a 'clear' event to the audit log."""
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-clear",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    fake = FakeLLM(script=[])
+    ui = FakeUI()
+    runtime = _make_runtime_with_audit(fake, ui, tmp_path, audit)
+
+    runtime.clear_history()
+
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    clear_events = [e for e in events if e["event"] == "clear"]
+    assert len(clear_events) == 1
+    assert "plan" in clear_events[0].get("summary", "").lower()
+
+
+def test_update_plan_after_clear_reports_no_active_plan(tmp_path: Path) -> None:
+    """After clear, the update_plan tool handler returns 'no active plan'."""
+    fake = FakeLLM(
+        script=[
+            tool_call(
+                "propose_plan",
+                goal="Do something",
+                steps=["Step one", "Step two", "Step three"],
+                assumptions=[],
+                verification=[],
+            ),
+            # Exhaust the two nudge replies, then a plain-text ending
+            answer("Still on step 1."),
+            answer("Still on step 1."),
+            answer("Stopping for now."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path)
+    runtime.run_turn("Do the thing")
+    runtime.clear_history()
+
+    # Call the update_plan tool handler directly (no LLM call needed)
+    from shellpilot.tools.base import ToolContext
+
+    update_spec = next(s for s in runtime.registry.specs() if s.name == "update_plan")
+    ctx = ToolContext(workspace=tmp_path, max_result_tokens=4096)
+    result = update_spec.handler(ctx, {"step": 1, "status": "completed"})
+
+    assert not result.success
+    assert "no active plan" in result.summary.lower()

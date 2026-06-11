@@ -163,9 +163,13 @@ class SlashDispatcher:
         self._console.print(table)
 
     def _clear(self) -> None:
-        if self._confirm("Clear the conversation?"):
+        if self._confirm("Clear the conversation (also cancels the active plan)?"):
+            had_plan = self._runtime.plan_manager.active is not None
             self._runtime.clear_history()
-            self._console.print("[dim]Conversation cleared.[/dim]")
+            if had_plan:
+                self._console.print("[dim]Conversation cleared and active plan cancelled.[/dim]")
+            else:
+                self._console.print("[dim]Conversation cleared.[/dim]")
 
     def _status(self) -> None:
         status = self._runtime.status()

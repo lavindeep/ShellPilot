@@ -177,3 +177,51 @@ def test_export_without_session_store_reports(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/export")
     assert "No session transcript" in harness.output()
+
+
+# ---------------------------------------------------------------------------
+# A4: /clear confirm copy and post-clear feedback
+# ---------------------------------------------------------------------------
+
+
+def test_clear_confirm_prompt_mentions_plan(tmp_path: Path) -> None:
+    """The /clear confirmation prompt mentions plan cancellation."""
+    prompts: list[str] = []
+
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher._confirm = lambda p: (prompts.append(p), False)[1]  # type: ignore[method-assign]
+    harness.dispatcher.handle("/clear")
+
+    assert prompts, "confirm was never called"
+    assert "plan" in prompts[0].lower()
+
+
+def test_clear_with_active_plan_reports_cancellation(tmp_path: Path) -> None:
+    """After /clear with an active plan the console mentions the plan was cancelled."""
+    from tests.fakes.fake_llm import tool_call as tc
+
+    harness = Harness(tmp_path, confirm_answer=True)
+    # Seed an active plan by driving a propose_plan call through the runtime.
+    # After approval step 1 becomes active; three plain-text answers exhaust
+    # the two nudges and then end the turn.
+    harness.fake.script = [
+        tc(
+            "propose_plan",
+            goal="A plan",
+            steps=["Alpha", "Beta", "Gamma"],
+            assumptions=[],
+            verification=[],
+        ),
+        answer("Starting."),
+        answer("Still starting."),
+        answer("Stopping for now."),
+    ]
+    harness.runtime._ui = FakeUI(plan_answer=("y", ""))  # type: ignore[attr-defined]
+    harness.runtime.run_turn("Do the plan")
+
+    assert harness.runtime.plan_manager.active is not None
+    harness.dispatcher.handle("/clear")
+
+    out = harness.output()
+    assert "plan" in out.lower()
+    assert "cancel" in out.lower()

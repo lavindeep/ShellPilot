@@ -64,5 +64,9 @@ class SnapshotStore:
     def forget(self, path: Path) -> None:
         self._snapshots.pop(path, None)
 
+    def clear(self) -> None:
+        """Drop all recorded snapshots (called by /clear to reset session state)."""
+        self._snapshots.clear()
+
     def __len__(self) -> int:
         return len(self._snapshots)
