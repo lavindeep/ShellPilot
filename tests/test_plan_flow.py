@@ -92,6 +92,105 @@ def test_plan_edit_requests_revision(tmp_path: Path) -> None:
     assert any("skip the tests step" in m.content for m in tool_messages)
 
 
+def test_e_then_repropose_single_task_dir_integration(tmp_path: Path) -> None:
+    """Integration: e + re-propose must produce exactly one task directory."""
+    revised_plan = tool_call(
+        "propose_plan",
+        goal="Add a feature",
+        steps=["Inspect code", "Make change", "Verify rollback", "Run tests"],
+        assumptions=["repo is clean"],
+        verification=["pytest"],
+    )
+    fake = FakeLLM(
+        script=[
+            plan_call(),
+            revised_plan,
+            tool_call("update_plan", step=1, status="completed"),
+            tool_call("update_plan", step=2, status="completed"),
+            tool_call("update_plan", step=3, status="completed"),
+            tool_call("update_plan", step=4, status="completed"),
+            answer("All done."),
+        ]
+    )
+    # First approval returns "e", second returns "y"
+    approval_answers: list[tuple[str, str]] = [("e", "add a rollback step"), ("y", "")]
+    call_count = [0]
+
+    class SequencedUI(FakeUI):
+        def ask_plan_approval(self, plan: object, path: str) -> tuple[str, str]:
+            idx = min(call_count[0], len(approval_answers) - 1)
+            call_count[0] += 1
+            answer_val = approval_answers[idx]
+            self.plan_approvals.append((getattr(plan, "task_id", ""), path))
+            return answer_val
+
+    ui = SequencedUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("Please add the feature")
+
+    assert reply == "All done."
+
+    # Exactly ONE task directory on disk
+    tasks_dir = tmp_path / ".shellpilot" / "tasks"
+    task_dirs = [d for d in tasks_dir.iterdir() if d.is_dir()]
+    assert len(task_dirs) == 1, f"expected 1 task dir, found {[d.name for d in task_dirs]}"
+
+    # Revised step is in the PLAN.md
+    plan_text = (task_dirs[0] / "PLAN.md").read_text()
+    assert "Verify rollback" in plan_text
+
+    # Progress log has a revision entry
+    plan = runtime.plan_manager.active
+    assert plan is not None
+    assert any("revised: add a rollback step" in entry for entry in plan.progress_log)
+
+
+def test_clear_with_pending_revision_next_propose_is_fresh(tmp_path: Path) -> None:
+    """After /clear on a pending-revision state, next propose_plan creates a new task."""
+    # First turn: propose, user picks "e"
+    fake1 = FakeLLM(script=[plan_call(), answer("Let me revise.")])
+    ui1 = FakeUI(plan_answer=("e", "make it shorter"))
+    runtime = make_runtime(fake1, ui1, tmp_path)
+    runtime.run_turn("Please add the feature")
+
+    pm = runtime.plan_manager
+    assert pm.pending_revision == "make it shorter"
+
+    # Simulate /clear
+    pm.cancel()
+    assert pm.active is None
+    assert pm.pending_revision is None
+
+    # Second turn: propose fresh — no pending revision
+    fresh_plan = tool_call(
+        "propose_plan",
+        goal="Completely different task",
+        steps=["Step X", "Step Y", "Step Z"],
+    )
+    fake2 = FakeLLM(
+        script=[
+            fresh_plan,
+            tool_call("update_plan", step=1, status="completed"),
+            tool_call("update_plan", step=2, status="completed"),
+            tool_call("update_plan", step=3, status="completed"),
+            answer("New task done."),
+        ]
+    )
+    ui2 = FakeUI(plan_answer=("y", ""))
+    runtime2 = make_runtime(fake2, ui2, tmp_path)
+    # Re-use same plan_manager so state is shared
+    runtime2.plan_manager = pm
+
+    reply = runtime2.run_turn("Do something else")
+    assert reply == "New task done."
+
+    # There are now 2 task directories on disk (original + new one)
+    tasks_dir = tmp_path / ".shellpilot" / "tasks"
+    task_dirs = [d for d in tasks_dir.iterdir() if d.is_dir()]
+    assert len(task_dirs) == 2
+
+
 def test_update_plan_completes_steps(tmp_path: Path) -> None:
     # The model completes step 1 then stops calling tools while step 2 is still
     # active; the bounded nudge fires twice, then the turn ends on plain text.

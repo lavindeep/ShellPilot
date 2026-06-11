@@ -703,7 +703,12 @@ Recommended workflow:
 4. Runtime writes `PLAN.md` under `.shellpilot/tasks/<task-id>/`.
 5. UI shows the rendered plan and plan file path.
 6. User approves, rejects, or suggests revisions.
-7. Model updates the plan file when revisions are requested.
+7. When the user requests revisions, the harness marks the existing task as
+   pending-revision and returns the feedback to the model. The model's next
+   ``propose_plan`` call rewrites the existing task's PLAN.md and progress log
+   **in place** — same task ID, same directory. A revision never creates a
+   second task directory. ``/clear`` (or any ``cancel()`` call) also clears the
+   pending-revision marker so the next ``propose_plan`` starts a fresh task.
 8. On approval, the `propose_plan` tool result instructs the model to continue in the same
    turn: it must call the tool for step 1 immediately, then record progress with
    `update_plan`, and keep executing steps without asking the user again. The user

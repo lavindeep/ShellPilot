@@ -199,3 +199,179 @@ def test_blocker_update_does_not_push_continuation(tmp_path: Path) -> None:
     assert result.success
     assert "Continue with the next step now, in this same turn." not in result.content
     assert "roadblock" in result.content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Plan revision (fix: "e" + re-propose must update the same task, not create new)
+# ---------------------------------------------------------------------------
+
+
+def _approval_asker_sequence(answers: list[tuple[str, str]]) -> Any:
+    """Returns answers in sequence; last answer is repeated if exhausted."""
+    idx = [0]
+
+    def ask(plan: TaskPlan, path: str) -> tuple[str, str]:
+        result = answers[min(idx[0], len(answers) - 1)]
+        idx[0] += 1
+        return result
+
+    return ask
+
+
+def test_e_then_repropose_updates_same_task(tmp_path: Path) -> None:
+    """e + feedback then a new propose_plan must reuse the same task_id and directory."""
+    feedback = "add a rollback step"
+    manager = PlanManager(tmp_path, "balanced")
+    # First approval returns "e", second returns "y"
+    asker = _approval_asker_sequence([("e", feedback), ("y", "")])
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=asker,
+        get_user_intent=lambda: "user intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+
+    # First propose_plan call — user picks "e"
+    result1 = propose.handler(
+        ctx,
+        {
+            "goal": "Deploy the app",
+            "steps": ["Build", "Push", "Start service"],
+        },
+    )
+    assert result1.success
+    assert manager.active is not None
+    original_task_id = manager.active.task_id
+    # The ToolResult must tell the model to stay in the same task
+    assert original_task_id in result1.content
+    assert feedback in result1.content
+
+    # Second propose_plan call — model submits the revised plan
+    result2 = propose.handler(
+        ctx,
+        {
+            "goal": "Deploy the app",
+            "steps": ["Build", "Push", "Rollback if needed", "Start service"],
+        },
+    )
+    assert result2.success
+    assert manager.active is not None
+    # Same task_id — no new task created
+    assert manager.active.task_id == original_task_id
+
+    # Exactly one task directory on disk
+    tasks_dir = tmp_path / ".shellpilot" / "tasks"
+    task_dirs = [d for d in tasks_dir.iterdir() if d.is_dir()]
+    assert len(task_dirs) == 1, f"expected 1 task dir, found {[d.name for d in task_dirs]}"
+    assert task_dirs[0].name == original_task_id
+
+    # PLAN.md reflects the revised steps
+    plan_text = (tasks_dir / original_task_id / "PLAN.md").read_text()
+    assert "Rollback if needed" in plan_text
+
+    # progress_log records the revision entry
+    assert any(f"revised: {feedback}" in entry for entry in manager.active.progress_log)
+
+    # Pending revision marker is cleared
+    assert manager.pending_revision is None
+
+
+def test_approve_after_revision_proceeds_normally(tmp_path: Path) -> None:
+    """After a revision cycle the approved plan can be executed."""
+    feedback = "skip the test step"
+    manager = PlanManager(tmp_path, "balanced")
+    asker = _approval_asker_sequence([("e", feedback), ("y", "")])
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=asker,
+        get_user_intent=lambda: "user intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+
+    propose.handler(ctx, {"goal": "Do thing", "steps": ["Step A", "Step B"]})
+    result = propose.handler(ctx, {"goal": "Do thing", "steps": ["Step A"]})
+
+    assert result.success
+    assert manager.active is not None
+    assert manager.active.status == "active"
+    # Can advance the step without errors
+    err = manager.update_step(1, "completed")
+    assert err == ""
+    assert manager.active.status == "completed"
+
+
+def test_plain_propose_without_pending_revision_creates_fresh_task(tmp_path: Path) -> None:
+    """A plain propose_plan with no pending revision creates a new task (regression guard)."""
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("n"),
+        get_user_intent=lambda: "user intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+
+    # First propose — user rejects (no pending revision)
+    propose.handler(ctx, {"goal": "Task one", "steps": ["A", "B", "C"]})
+
+    # No active plan, no pending revision
+    assert manager.active is None
+    assert manager.pending_revision is None
+
+    # Change approver to accept
+    manager2 = PlanManager(tmp_path, "balanced")
+    tools2 = make_plan_tools(
+        manager2,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "user intent",
+    )
+    propose2 = next(t for t in tools2 if t.definition.name == "propose_plan")
+    propose2.handler(ctx, {"goal": "Task two", "steps": ["X", "Y", "Z"]})
+
+    assert manager2.active is not None
+    assert "Task two" in manager2.active.goal
+
+
+def test_cancel_with_pending_revision_clears_state(tmp_path: Path) -> None:
+    """cancel() must clear pending_revision so the next propose creates a fresh task."""
+    feedback = "add a step"
+    manager = PlanManager(tmp_path, "balanced")
+    asker = _approval_asker_sequence([("e", feedback)])
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=asker,
+        get_user_intent=lambda: "user intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+
+    propose.handler(ctx, {"goal": "Some task", "steps": ["Do X", "Do Y"]})
+
+    # A pending revision is now set
+    assert manager.pending_revision == feedback
+
+    # Simulate /clear cancelling
+    manager.cancel()
+
+    assert manager.active is None
+    assert manager.pending_revision is None
+
+    # Next propose must create a fresh task
+    original_task_dir_count = sum(
+        1 for _ in (tmp_path / ".shellpilot" / "tasks").iterdir() if _.is_dir()
+    )
+
+    manager2 = PlanManager(tmp_path, "balanced")
+    tools2 = make_plan_tools(
+        manager2,
+        ask_plan_approval=_approval_asker("n"),
+        get_user_intent=lambda: "user intent",
+    )
+    propose2 = next(t for t in tools2 if t.definition.name == "propose_plan")
+    propose2.handler(ctx, {"goal": "Fresh task", "steps": ["P", "Q", "R"]})
+
+    # A new task directory was created (total went up by 1)
+    new_count = sum(1 for _ in (tmp_path / ".shellpilot" / "tasks").iterdir() if _.is_dir())
+    assert new_count == original_task_dir_count + 1

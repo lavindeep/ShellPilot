@@ -133,6 +133,7 @@ class PlanManager:
         self._workspace = workspace
         self._profile = profile
         self.active: TaskPlan | None = None
+        self.pending_revision: str | None = None
 
     def set_workspace(self, workspace: Path) -> None:
         """New tasks use the new boundary; an active plan keeps its artifact path."""
@@ -179,12 +180,38 @@ class PlanManager:
         self._write(self.active)
 
     def cancel(self) -> None:
+        self.pending_revision = None
         if self.active is None:
             return
         self.active.status = "cancelled"
         self.active.progress_log.append(f"{_now_iso()}: Plan cancelled.")
         self._write(self.active)
         self.active = None
+
+    def revise(
+        self,
+        *,
+        feedback: str,
+        goal: str,
+        steps: list[str],
+        assumptions: list[str],
+        verification: list[str],
+    ) -> None:
+        """Update the existing active plan in place with revised content.
+
+        Records a ``revised: <feedback>`` progress-log entry and rewrites
+        PLAN.md.  The task_id and directory are preserved — no new task is
+        created.
+        """
+        assert self.active is not None
+        self.active.goal = goal
+        self.active.steps = [PlanStep(title=title) for title in steps]
+        self.active.assumptions = assumptions
+        self.active.verification = verification
+        self.active.status = "proposed"
+        self.active.progress_log.append(f"{_now_iso()}: revised: {feedback}")
+        self.pending_revision = None
+        self._write(self.active)
 
     def update_step(self, index: int, status: str, note: str = "") -> str:
         assert self.active is not None
@@ -244,21 +271,36 @@ def make_plan_tools(
             return ToolResult(
                 success=False, summary="plan needs a goal and at least one step", content=""
             )
-        revising = manager.active is not None and manager.active.status in (
-            "active",
-            "blocked",
-            "proposed",
-        )
-        if revising and manager.active is not None:
-            manager.record_revision(f"Replaced by revised plan for goal: {goal}")
-            manager.cancel()
-        plan = manager.create(
-            goal=goal,
-            user_intent=get_user_intent(),
-            steps=steps,
-            assumptions=[str(item) for item in arguments.get("assumptions", [])],
-            verification=[str(item) for item in arguments.get("verification", [])],
-        )
+
+        pending_feedback = manager.pending_revision
+        if pending_feedback is not None and manager.active is not None:
+            # A revision was requested: update the existing task in place.
+            manager.revise(
+                feedback=pending_feedback,
+                goal=goal,
+                steps=steps,
+                assumptions=[str(item) for item in arguments.get("assumptions", [])],
+                verification=[str(item) for item in arguments.get("verification", [])],
+            )
+            plan = manager.active
+        else:
+            # No pending revision — cancel any stale active plan and create fresh.
+            revising = manager.active is not None and manager.active.status in (
+                "active",
+                "blocked",
+                "proposed",
+            )
+            if revising and manager.active is not None:
+                manager.record_revision(f"Replaced by revised plan for goal: {goal}")
+                manager.cancel()
+            plan = manager.create(
+                goal=goal,
+                user_intent=get_user_intent(),
+                steps=steps,
+                assumptions=[str(item) for item in arguments.get("assumptions", [])],
+                verification=[str(item) for item in arguments.get("verification", [])],
+            )
+
         path = manager.artifact_path(plan)
         choice, revision_text = ask_plan_approval(plan, str(path))
         if choice == "y":
@@ -275,13 +317,15 @@ def make_plan_tools(
                 ),
             )
         if choice == "e":
-            manager.record_revision(f"User requested changes: {revision_text}")
+            manager.pending_revision = revision_text
             return ToolResult(
                 success=True,
                 summary="user requested plan changes",
                 content=(
                     f"The user wants changes to the plan: {revision_text}\n"
-                    "Call propose_plan again with a revised plan that addresses this."
+                    f"Call propose_plan again with a revised plan that addresses this feedback. "
+                    f"Your next propose_plan call will UPDATE the existing task "
+                    f"({plan.task_id}) in place — do not start a new task."
                 ),
             )
         manager.cancel()
