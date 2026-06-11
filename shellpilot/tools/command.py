@@ -31,6 +31,40 @@ EXPECTED_NONZERO: dict[str, frozenset[int]] = {
     "diff": frozenset({1}),
 }
 
+# Prefixes of loader/allocator debug-injection variables that must not leak into
+# child processes.  Presence of MallocStackLogging (and friends) or DYLD_INSERT_*
+# in the parent environment caused every child command to emit malloc diagnostics
+# into stderr — merged into stdout — polluting both the UI and the model's context
+# (the MallocStackLogging incident).
+_STRIP_PREFIXES = ("DYLD_", "LD_", "Malloc")
+
+# Non-interactive overrides: force headless children that would otherwise open a
+# pager (less/more), launch an editor, or issue a credential prompt to behave
+# deterministically instead of blocking on a tty until the 600 s timeout fires.
+_NON_INTERACTIVE: dict[str, str] = {
+    "GIT_PAGER": "cat",
+    "PAGER": "cat",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_EDITOR": "true",
+}
+
+
+def subprocess_env() -> dict[str, str]:
+    """Return a sanitized copy of the parent environment for child processes.
+
+    Strips loader/allocator debug-injection variables (DYLD_*, LD_*, Malloc*)
+    and forces non-interactive behavior for pagers, editors, and credential
+    prompts.  PATH and all other variables pass through untouched so that
+    activated-venv workflows continue to work.
+    """
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not any(k.startswith(prefix) for prefix in _STRIP_PREFIXES)
+    }
+    env.update(_NON_INTERACTIVE)
+    return env
+
 
 @dataclass(frozen=True)
 class CommandRequest:
@@ -59,6 +93,7 @@ def run_command_process(
         request.argv,
         cwd=request.cwd,
         env=request.env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -194,7 +229,12 @@ def _run_command(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
 
     try:
         outcome = run_command_process(
-            CommandRequest(argv=argv, cwd=context.workspace, timeout_seconds=timeout),
+            CommandRequest(
+                argv=argv,
+                cwd=context.workspace,
+                timeout_seconds=timeout,
+                env=subprocess_env(),
+            ),
             max_capture_chars=context.max_capture_chars,
             emit_line=context.emit_output,
         )

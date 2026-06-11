@@ -15,6 +15,7 @@ from shellpilot.tools.command import (
     CommandRequest,
     _precheck_run_command,
     run_command_process,
+    subprocess_env,
 )
 from shellpilot.tools.registry import ToolRegistry
 
@@ -280,3 +281,93 @@ def test_oserror_backstop_not_raised_through_executor(tmp_path: Path) -> None:
     assert not outcome.result.success
     assert "crashed" not in outcome.model_text
     assert "could not start command:" in outcome.result.summary
+
+
+# ---------------------------------------------------------------------------
+# subprocess_env: sanitized, non-interactive environment (section 13.1)
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_env_strips_debug_vars(tmp_path: Path) -> None:
+    """DYLD_*, Malloc*, and LD_* vars injected into parent env are absent in child."""
+    with patch.dict(
+        os.environ,
+        {"DYLD_FAKE_TEST": "1", "Malloc_FAKE_TEST": "1", "LD_FAKE_TEST": "1"},
+    ):
+        env = subprocess_env()
+        outcome = run_command_process(
+            CommandRequest(
+                argv=[
+                    sys.executable,
+                    "-c",
+                    "import os; print(','.join("
+                    "k for k in os.environ"
+                    " if k.startswith(('DYLD_', 'Malloc', 'LD_'))))",
+                ],
+                cwd=tmp_path,
+                timeout_seconds=30,
+                env=env,
+            ),
+            max_capture_chars=10_000,
+        )
+    assert outcome.exit_code == 0
+    assert outcome.output.strip() == ""
+
+
+def test_subprocess_env_forces_non_interactive_vars(tmp_path: Path) -> None:
+    """GIT_PAGER and GIT_TERMINAL_PROMPT are set to non-interactive values."""
+    outcome = run_command_process(
+        CommandRequest(
+            argv=[
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['GIT_PAGER'], os.environ['GIT_TERMINAL_PROMPT'])",
+            ],
+            cwd=tmp_path,
+            timeout_seconds=30,
+            env=subprocess_env(),
+        ),
+        max_capture_chars=10_000,
+    )
+    assert outcome.exit_code == 0
+    pager, prompt = outcome.output.strip().split()
+    assert pager == "cat"
+    assert prompt == "0"
+
+
+def test_subprocess_env_stdin_eof(tmp_path: Path) -> None:
+    """Child that reads stdin gets immediate EOF; completes well within timeout."""
+    start = time.monotonic()
+    outcome = run_command_process(
+        CommandRequest(
+            argv=[sys.executable, "-c", "import sys; print(len(sys.stdin.read()))"],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            env=subprocess_env(),
+        ),
+        max_capture_chars=10_000,
+    )
+    elapsed = time.monotonic() - start
+    assert outcome.exit_code == 0
+    assert outcome.output.strip() == "0"
+    assert elapsed < 5  # well under the 10 s timeout
+
+
+def test_subprocess_env_path_preserved() -> None:
+    """PATH from the parent environment passes through subprocess_env() unchanged."""
+    assert subprocess_env()["PATH"] == os.environ["PATH"]
+
+
+def test_subprocess_env_override_not_forced_in_popen(tmp_path: Path) -> None:
+    """CommandRequest.env is passed to Popen as-is; subprocess_env() is not forced."""
+    outcome = run_command_process(
+        CommandRequest(
+            argv=[sys.executable, "-c", "import os; print(os.environ.get('ONLY', 'missing'))"],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            env={"ONLY": "this", "PATH": os.environ.get("PATH", "")},
+        ),
+        max_capture_chars=10_000,
+    )
+    assert outcome.exit_code == 0
+    assert outcome.output.strip() == "this"

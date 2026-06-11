@@ -1009,6 +1009,7 @@ Execution:
 - Enforce timeout.
 - Kill process group on timeout.
 - Return exit code and captured output.
+- Run with a sanitized copy of the parent environment (`DYLD_*`/`LD_*`/`Malloc*` stripped; pagers, editors, and credential prompts forced non-interactive) and stdin closed (`DEVNULL`) — command output must not depend on debug environment variables, and a command that reads stdin gets immediate EOF instead of hanging to its timeout.
 
 ### 13.2 Raw Shell
 
