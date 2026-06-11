@@ -102,6 +102,7 @@ class TerminalUI:
     def show_plan_progress(self, plan: TaskPlan) -> None:
         for index, step in enumerate(plan.steps, 1):
             self._console.print(Padding(plan_step_line(index, step, self._glyphs), (0, 0, 0, 2)))
+        self._console.print()
 
     def _plain_badges(self) -> bool:
         return self._console.no_color or not self._console.is_terminal

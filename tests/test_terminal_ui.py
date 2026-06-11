@@ -139,3 +139,19 @@ def test_tool_call_and_result_lines() -> None:
     out = console.export_text()
     assert f"{GLYPHS.bullet} patch_file" in out
     assert f"{GLYPHS.check} 1 addition" in out
+
+
+# ---------------------------------------------------------------------------
+# A5: show_plan_progress ends with a blank line
+# ---------------------------------------------------------------------------
+
+
+def test_show_plan_progress_ends_with_blank_line() -> None:
+    """show_plan_progress must append a blank line so the checklist is visually
+    separated from the streamed response that follows."""
+    console = make_console()
+    ui = make_ui(console, [])
+    ui.show_plan_progress(plan())
+    raw = console.export_text(clear=False)
+    # The exported text should end with two newlines (last content line + blank)
+    assert raw.endswith("\n\n"), repr(raw[-20:])
