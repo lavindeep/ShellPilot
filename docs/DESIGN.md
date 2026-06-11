@@ -379,7 +379,7 @@ Each user turn should pass through this pipeline:
 4. Ask Gemma 4 for a response with tool access.
 5. If the model answers directly, print the answer.
 6. If the model requests tools, pass them through the tool broker.
-7. If the task is complex or risky, generate or update a plan.
+7. If the task needs 3 or more distinct steps, propose a plan (section 11.1).
 8. If approval is needed, ask the user.
 9. Execute approved tools/commands.
 10. Feed results back to the model.
@@ -424,7 +424,7 @@ The system prompt should tell Gemma 4 how to behave:
 - Answer directly when the user is asking a question and no inspection is needed.
 - Use normal plain text for conversation; do not wrap ordinary answers in structured tool/action output.
 - Use read-only tools when inspection would materially improve accuracy.
-- Produce a plan before complex or multi-step changes.
+- Propose a plan for multi-step work (3 or more distinct steps, section 11.1); act directly otherwise.
 - Ask a short clarification question only when a required target is missing.
 - Use structured tools for file changes and commands.
 - Stop after completing the current user request.

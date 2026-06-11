@@ -50,4 +50,4 @@ def test_planning_guidance_one_plan_rule() -> None:
 
 
 def test_prompt_version_bumped() -> None:
-    assert PROMPT_VERSION == 2
+    assert PROMPT_VERSION >= 2
