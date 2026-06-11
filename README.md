@@ -13,6 +13,7 @@ ShellPilot gives you one terminal conversation that can answer questions, inspec
 ## What it does
 
 - **One conversation loop.** No separate chat/agent modes — ask a question and it answers; ask for work and it inspects, plans, and acts.
+- **A terminal UI that earns its keep.** Live-rendered markdown responses, Claude-Code-style diff panels with line numbers and word-level highlights, risk badges (`MEDIUM`/`HIGH`/`BLOCKED`), a plan panel with checklist progress, input history and tab-completed slash commands, and an aviation-themed spinner (`taxiing… climbing… cruising…`). Degrades cleanly under `NO_COLOR`, pipes, and ASCII-only terminals.
 - **Plans are artifacts.** Complex tasks get a visible, editable plan saved to `.shellpilot/tasks/<task-id>/PLAN.md`, approved by you before execution and updated as work progresses. If the model hits a roadblock, it records the blocker and replans instead of pushing through.
 - **Deterministic security first.** Command risk is classified by deterministic policy (executable, flags, targets, shell metacharacters, workspace boundary) — never by asking the model whether something is safe. Agent commands run with `shell=False`; there is no agent-accessible raw shell.
 - **Dangerous commands are explained.** High-risk actions show the exact command, a short model-written purpose explanation, and require you to literally type `run`. The explanation can never downgrade the deterministic risk.
@@ -65,11 +66,15 @@ shellpilot          # start the conversation
 
 ```text
 $ shellpilot
-ShellPilot 0.1.0 — model gemma4:e4b, profile balanced
-[AI] > what does this repo do?
+ShellPilot 0.2.0
+gemma4:e4b · balanced · /help for commands
+
+~/my-project · gemma4:e4b · balanced
+❯ what does this repo do?
 ...
-[AI] > fix the off-by-one bug in count_lines and run the tests
-(plan shown → you approve → anchored edit with diff → you approve → tests run)
+~/my-project · gemma4:e4b · balanced
+❯ fix the off-by-one bug in count_lines and run the tests
+(plan panel → you approve → diff panel with risk badge → you approve → tests run)
 ```
 
 | Command | Purpose |
@@ -121,9 +126,9 @@ The same four checks run in CI on Python 3.11 and 3.14 — against the fake mode
 python scripts/benchmark_model.py --trials 10
 ```
 
-## Roadmap (v2)
+## Roadmap
 
-Deferred by design ([docs/DESIGN.md](docs/DESIGN.md) section 25.2): persistent behavior/project memory with approval flow, `trusted-local` profile, selective token-budget compaction, session resume, capability packs.
+Next up in v0.3.0 ([docs/DESIGN.md](docs/DESIGN.md) sections 16 and 25.2): persistent behavior/project memory with a proposal-and-approval flow, session resume with `/export`, and selective token-budget compaction. Deferred further: `trusted-local` profile, capability packs, `/undo`.
 
 ## License
 
