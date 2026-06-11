@@ -47,6 +47,7 @@ class Glyphs:
     chevron: str
     todo: str
     current: str
+    skip: str
     check: str
     cross: str
     ellipsis: str
@@ -59,6 +60,7 @@ UNICODE_GLYPHS = Glyphs(
     chevron="❯",
     todo="☐",
     current="▶",
+    skip="·",
     check="✓",
     cross="✗",
     ellipsis="…",
@@ -71,6 +73,7 @@ ASCII_GLYPHS = Glyphs(
     chevron=">",
     todo="[ ]",
     current="[>]",
+    skip="-",
     check="+",
     cross="x",
     ellipsis="...",
