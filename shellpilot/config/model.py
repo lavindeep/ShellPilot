@@ -18,6 +18,7 @@ def is_tested_model(name: str) -> bool:
 @dataclass(frozen=True)
 class ModelSettings:
     provider: str = "ollama"
+    # deprecated: ignored since v0.4.0; kept so existing configs parse without error.
     family: str = "gemma4"
     default: str = "gemma4:e4b"
     reasoning: bool = True

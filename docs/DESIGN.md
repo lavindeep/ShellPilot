@@ -1347,7 +1347,7 @@ by the harness.
 ```toml
 [model]
 provider = "ollama"
-family = "gemma4"
+family = "gemma4"  # deprecated since v0.4.0; ignored by the runtime; kept so old configs parse
 default = "gemma4:e4b"
 reasoning = true
 base_url = "http://localhost:11434"
@@ -1422,9 +1422,12 @@ picker (Task A8).  Example:
 shellpilot --model gemma4:e2b
 ```
 
-## 18. Ollama And Gemma 4 Integration
+## 18. Ollama And Model Integration
 
-The LLM layer should be local and specific enough to be reliable.
+The LLM layer is local and Ollama-backed. Any model installed in the local Ollama
+instance is selectable. Two families are currently qualified: `gemma4` and `qwen3.5`
+(see `TESTED_FAMILIES` in `shellpilot/config/model.py`). Other models can be used
+but are tagged `untested` in the picker and `/model list` output.
 
 ### 18.1 Ollama Client
 
@@ -1440,21 +1443,22 @@ Responsibilities:
 - Enforce request timeout.
 - Support cancellation.
 
-### 18.2 Gemma Adapter
+### 18.2 Model Families
 
-Responsibilities:
+`TESTED_FAMILIES = ("gemma4", "qwen3.5")` in `shellpilot/config/model.py` is the
+authoritative list of families ShellPilot is qualified against. `is_tested_model(name)`
+returns True when the name starts with any tested family prefix. The boot picker and
+`/model list` show a dim `untested` tag for any installed model outside these families.
+`/model use <name>` accepts any installed model; for untested models it prints a dim
+note directing to `scripts/benchmark_model.py` as the qualification path.
 
-- Define Gemma 4 system prompt conventions.
-- Define tool-call prompt expectations.
-- Handle thinking/reasoning settings.
-- Normalize message format.
-- Provide prompt templates tuned for Gemma 4.
-
-The adapter should keep Gemma-specific behavior out of the rest of the runtime.
+`ModelSettings.family` (config key `[model] family`) is **deprecated since v0.4.0**
+and ignored by the runtime. It is retained in the dataclass so existing config files
+parse without error.
 
 ### 18.3 Model Roles
 
-V1 can keep simple roles:
+Simple roles, all served by the single session model:
 
 | Role | Purpose | Default |
 |---|---|---|
@@ -1583,10 +1587,10 @@ Planned commands:
 | `/quit` | Alias for `/exit`. |
 | `/clear` | Clear conversation history after confirmation; also cancels the active plan and resets snapshots, diffs, and failure state. |
 | `/status` | Show current model, profile, cwd, context usage, active plan, and pending approvals. |
-| `/doctor` | Check Python version, Ollama reachability, Gemma 4 model availability, config paths, and workspace access. |
+| `/doctor` | Check Python version, Ollama reachability, model availability, config paths, and workspace access. |
 | `/model` | Show the active model and context metadata. |
-| `/model list` | List local Ollama models filtered to supported Gemma 4 models by default. |
-| `/model use <name>` | Switch the active local model. |
+| `/model list` | List all installed local models with tested/untested tags. |
+| `/model use <name>` | Switch the active local model (any installed model; untested models print a qualification note). |
 | `/profile` | Show active security profile. |
 | `/profile use <supervised|balanced>` | Switch security profile (`trusted-local` arrives in v2). |
 | `/config show` | Print resolved config with source layers. |

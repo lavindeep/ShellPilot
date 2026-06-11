@@ -93,10 +93,21 @@ def test_status_shows_model_and_context(tmp_path: Path) -> None:
     assert "8192" in out
 
 
-def test_model_list_filters_to_family(tmp_path: Path) -> None:
+def test_model_list_shows_all_models_with_tags(tmp_path: Path) -> None:
+    """All installed models appear in /model list, each tagged tested or untested."""
+    from shellpilot.llm.ollama import LocalModel
+
     harness = Harness(tmp_path)
+    harness.fake.models = [
+        LocalModel(name="gemma4:e4b", size_bytes=4_500_000_000),
+        LocalModel(name="llama3:8b", size_bytes=4_000_000_000),
+    ]
     harness.dispatcher.handle("/model list")
-    assert "gemma4:e4b" in harness.output()
+    out = harness.output()
+    assert "gemma4:e4b" in out
+    assert "llama3:8b" in out
+    assert "tested" in out
+    assert "untested" in out
 
 
 def test_model_use_switches_installed_model(tmp_path: Path) -> None:
@@ -113,6 +124,30 @@ def test_model_use_rejects_missing_model(tmp_path: Path) -> None:
     harness.dispatcher.handle("/model use nope:1b")
     assert harness.runtime.model == "gemma4:e4b"
     assert "not installed" in harness.output()
+
+
+def test_model_use_untested_notes_benchmark(tmp_path: Path) -> None:
+    """/model use <untested> prints a dim note mentioning benchmark path."""
+    from shellpilot.llm.ollama import LocalModel
+
+    harness = Harness(tmp_path)
+    harness.fake.models.append(LocalModel(name="llama3:8b", size_bytes=4_000_000_000))
+    harness.dispatcher.handle("/model use llama3:8b")
+    out = harness.output()
+    assert harness.runtime.model == "llama3:8b"
+    assert "not a tested family" in out
+    assert "benchmark_model.py" in out
+
+
+def test_model_use_saves_last_model(tmp_path: Path) -> None:
+    """/model use <name> persists the choice via save_last_model."""
+    from shellpilot.llm.ollama import LocalModel
+    from shellpilot.persistence.workspace_state import load_last_model
+
+    harness = Harness(tmp_path)
+    harness.fake.models.append(LocalModel(name="gemma4:e2b", size_bytes=2_500_000_000))
+    harness.dispatcher.handle("/model use gemma4:e2b")
+    assert load_last_model(tmp_path) == "gemma4:e2b"
 
 
 def test_config_show_includes_sources(tmp_path: Path) -> None:

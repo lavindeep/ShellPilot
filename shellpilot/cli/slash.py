@@ -28,7 +28,7 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/clear", "Clear the visible conversation after confirmation."),
     ("/status", "Show model, profile, workspace, and context usage."),
     ("/model", "Show the active model and context metadata."),
-    ("/model list", "List local models (Gemma 4 family by default)."),
+    ("/model list", "List installed local models with tested/untested tags."),
     ("/model use <name>", "Switch the active local model."),
     ("/config show", "Print resolved config with source layers."),
     ("/config edit", "Show the user config path for editing."),
@@ -199,39 +199,46 @@ class SlashDispatcher:
             )
             return
         if args[0] == "list":
-            family = self._runtime.settings.model.family
+            from shellpilot.config.model import is_tested_model
+
             models = self._client.list_models()
-            table = Table(title=f"Local models ({family} family)")
+            table = Table(title="Local models")
             table.add_column("Name")
             table.add_column("Size")
-            shown = 0
+            table.add_column("Tag")
             for model in models:
-                if not model.name.startswith(family):
-                    continue
-                table.add_row(model.name, f"{model.size_bytes / 1e9:.1f} GB")
-                shown += 1
-            if shown:
+                if is_tested_model(model.name):
+                    tag = "[sp.accent]tested[/sp.accent]"
+                else:
+                    tag = "[sp.dim]untested[/sp.dim]"
+                table.add_row(model.name, f"{model.size_bytes / 1e9:.1f} GB", tag)
+            if models:
                 self._console.print(table)
             else:
-                self._console.print(
-                    f"[red]No {family} models installed.[/red] Try: ollama pull gemma4:e4b"
-                )
+                self._console.print("[red]No models installed.[/red] Try: ollama pull gemma4:e4b")
             return
         if args[0] == "use" and len(args) > 1:
+            from shellpilot.config.model import TESTED_FAMILIES, is_tested_model
+            from shellpilot.persistence.workspace_state import save_last_model
+
             name = args[1]
             installed = {model.name for model in self._client.list_models()}
             if name not in installed:
                 self._console.print(f"[red]{name} is not installed.[/red] See /model list.")
                 return
-            if not name.startswith(self._runtime.settings.model.family):
-                self._console.print(
-                    f"[yellow]Warning: {name} is outside the supported "
-                    f"{self._runtime.settings.model.family} family.[/yellow]"
-                )
             self._runtime.set_model(name)
+            workspace = self._runtime.status().workspace
+            save_last_model(workspace, name)
             if self._preload is not None:
                 self._preload(name)
             self._console.print(f"Switched to {name}.")
+            if not is_tested_model(name):
+                families = ", ".join(TESTED_FAMILIES)
+                self._console.print(
+                    f"[sp.dim]Note: {name} is not a tested family ({families}); "
+                    "quality may vary. scripts/benchmark_model.py is the qualification "
+                    "path.[/sp.dim]"
+                )
             return
         self._console.print("Usage: /model | /model list | /model use <name>")
 

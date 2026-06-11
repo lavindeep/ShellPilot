@@ -17,6 +17,13 @@ from shellpilot.persistence.paths import AppPaths
 
 TAGS_PAYLOAD = {"models": [{"name": "gemma4:e4b", "size": 4_500_000_000}]}
 NO_GEMMA_PAYLOAD = {"models": [{"name": "llama3:8b", "size": 4_000_000_000}]}
+MIXED_PAYLOAD = {
+    "models": [
+        {"name": "gemma4:e4b", "size": 4_500_000_000},
+        {"name": "llama3:8b", "size": 4_000_000_000},
+    ]
+}
+EMPTY_PAYLOAD: dict[str, list[object]] = {"models": []}
 
 
 def ok_client() -> OllamaClient:
@@ -53,12 +60,44 @@ def test_api_check_reports_reachability() -> None:
     assert not check_ollama_api(down_client()).ok
 
 
-def test_models_check_requires_gemma4() -> None:
+# ---------------------------------------------------------------------------
+# A11: multi-model support — repurposed from gemma-only filter tests
+# ---------------------------------------------------------------------------
+
+
+def test_models_check_passes_with_tested_model() -> None:
+    """Any tested-family model present → check passes (no gemma-only restriction)."""
     assert check_models(ok_client()).ok
-    no_gemma = OllamaClient(
+
+
+def test_models_check_passes_with_untested_only_but_notes_it() -> None:
+    """Untested-only install: check still passes but detail mentions no tested-family model."""
+    client = OllamaClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=NO_GEMMA_PAYLOAD))
     )
-    result = check_models(no_gemma)
+    result = check_models(client)
+    assert result.ok
+    assert "no tested-family model" in result.detail
+
+
+def test_models_check_lists_tested_and_untested() -> None:
+    """Mixed install: detail shows tested models first, then untested label."""
+    client = OllamaClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=MIXED_PAYLOAD))
+    )
+    result = check_models(client)
+    assert result.ok
+    assert "gemma4:e4b" in result.detail
+    assert "untested" in result.detail
+    assert "llama3:8b" in result.detail
+
+
+def test_models_check_fails_when_none_installed() -> None:
+    """Zero models installed: check fails and suggests ollama pull."""
+    client = OllamaClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=EMPTY_PAYLOAD))
+    )
+    result = check_models(client)
     assert not result.ok
     assert "ollama pull" in result.detail
 

@@ -11,11 +11,11 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from shellpilot.config.model import TESTED_FAMILIES, is_tested_model
 from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.persistence.paths import AppPaths
 
 MIN_PYTHON = (3, 11)
-GEMMA_FAMILY_PREFIX = "gemma4"
 
 
 @dataclass(frozen=True)
@@ -52,13 +52,25 @@ def check_models(client: OllamaClient) -> CheckResult:
     try:
         models = client.list_models()
     except OllamaError:
-        return CheckResult("Gemma 4 models", False, "skipped: Ollama API unreachable")
-    gemma = [model.name for model in models if model.name.startswith(GEMMA_FAMILY_PREFIX)]
-    if gemma:
-        return CheckResult("Gemma 4 models", True, ", ".join(sorted(gemma)))
-    return CheckResult(
-        "Gemma 4 models", False, f"none installed; try `ollama pull {GEMMA_FAMILY_PREFIX}:e4b`"
-    )
+        return CheckResult("Models", False, "skipped: Ollama API unreachable")
+    if not models:
+        families = ", ".join(TESTED_FAMILIES)
+        return CheckResult(
+            "Models",
+            False,
+            f"none installed; try `ollama pull {TESTED_FAMILIES[0]}:e4b` (tested: {families})",
+        )
+    tested = sorted(m.name for m in models if is_tested_model(m.name))
+    untested = sorted(m.name for m in models if not is_tested_model(m.name))
+    parts: list[str] = []
+    if tested:
+        parts.append(", ".join(tested))
+    if untested:
+        parts.append(f"untested: {', '.join(untested)}")
+    if not tested:
+        families = ", ".join(TESTED_FAMILIES)
+        parts.append(f"no tested-family model ({families})")
+    return CheckResult("Models", True, "; ".join(parts))
 
 
 def check_dir_writable(label: str, path: Path) -> CheckResult:
