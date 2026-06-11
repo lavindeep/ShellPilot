@@ -154,7 +154,7 @@ def test_clear_cancels_active_plan(tmp_path: Path) -> None:
 
 
 def test_clear_resets_snapshots_and_diffs(tmp_path: Path) -> None:
-    """clear_history() empties snapshots, recent_diffs, and _last_failure_signature."""
+    """clear_history() empties snapshots, recent_diffs, failure sig, and _last_user_text."""
     fake = FakeLLM(script=[])
     runtime = make_runtime(fake, FakeUI(), tmp_path)
 
@@ -168,11 +168,16 @@ def test_clear_resets_snapshots_and_diffs(tmp_path: Path) -> None:
     runtime.recent_diffs.append("diff --git a/x b/x\n")
     runtime._last_failure_signature = "read_file:file not found"
 
+    # Seed _last_user_text directly (same precedent as _last_failure_signature above)
+    runtime._last_user_text = "do something important"
+    assert runtime._last_user_text == "do something important"
+
     runtime.clear_history()
 
     assert len(runtime.snapshots) == 0
     assert runtime.recent_diffs == []
     assert runtime._last_failure_signature is None
+    assert runtime._last_user_text == ""
 
 
 def test_clear_writes_audit_event(tmp_path: Path) -> None:

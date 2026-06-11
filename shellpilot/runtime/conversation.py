@@ -171,6 +171,7 @@ class ConversationRuntime:
         self.snapshots.clear()
         self.recent_diffs.clear()
         self._last_failure_signature = None
+        self._last_user_text = ""
         if self._audit is not None:
             self._audit.write("clear", summary="history, plan, snapshots, diffs")
         if self._session is not None:
