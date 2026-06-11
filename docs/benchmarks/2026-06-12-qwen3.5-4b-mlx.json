@@ -1,0 +1,40 @@
+{
+  "model": "qwen3.5:4b-mlx",
+  "trials": 10,
+  "num_ctx": 8192,
+  "temperature": 0.2,
+  "tool_format": {
+    "read_file": 1.0,
+    "list_dir": 1.0,
+    "search_text": 1.0,
+    "write_file": 1.0,
+    "patch_file": 1.0,
+    "run_command": 1.0,
+    "env_info": 1.0
+  },
+  "exact_span": {
+    "rate": 1.0,
+    "ok": 15,
+    "total": 15,
+    "notes": [
+      "subtotal: whitespace-trim match"
+    ]
+  },
+  "chaining": {
+    "chains": 5,
+    "completed": 1,
+    "per_step_rate": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      0.4,
+      0.2
+    ],
+    "step5_rate": 0.4
+  },
+  "stopping": {
+    "chat_no_tool_rate": 1.0,
+    "stop_when_done_rate": 1.0
+  }
+}
