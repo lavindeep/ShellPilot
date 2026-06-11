@@ -196,6 +196,38 @@ def test_clear_confirm_prompt_mentions_plan(tmp_path: Path) -> None:
     assert "plan" in prompts[0].lower()
 
 
+# ---------------------------------------------------------------------------
+# A10: preload callback in /model use
+# ---------------------------------------------------------------------------
+
+
+def test_model_use_triggers_preload(tmp_path: Path) -> None:
+    """/model use <name> calls the preload callable with the new model name."""
+    from shellpilot.llm.ollama import LocalModel
+
+    preloaded: list[str] = []
+
+    harness = Harness(tmp_path)
+    harness.fake.models.append(LocalModel(name="gemma4:e2b", size_bytes=2_500_000_000))
+    harness.dispatcher._preload = lambda name: preloaded.append(name)  # type: ignore[attr-defined]
+
+    harness.dispatcher.handle("/model use gemma4:e2b")
+
+    assert harness.runtime.model == "gemma4:e2b"
+    assert preloaded == ["gemma4:e2b"]
+
+
+def test_model_use_without_preload_callback_works(tmp_path: Path) -> None:
+    """/model use works fine when no preload callable is provided (default None)."""
+    from shellpilot.llm.ollama import LocalModel
+
+    harness = Harness(tmp_path)
+    harness.fake.models.append(LocalModel(name="gemma4:e2b", size_bytes=2_500_000_000))
+    # No _preload set — should not raise.
+    harness.dispatcher.handle("/model use gemma4:e2b")
+    assert harness.runtime.model == "gemma4:e2b"
+
+
 def test_clear_with_active_plan_reports_cancellation(tmp_path: Path) -> None:
     """After /clear with an active plan the console mentions the plan was cancelled."""
     from tests.fakes.fake_llm import tool_call as tc

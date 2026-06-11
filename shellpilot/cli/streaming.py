@@ -79,7 +79,13 @@ class ResponseStream:
 
 
 class AviationSpinner:
-    """Dim flight-phase status while the model works; erases itself cleanly."""
+    """Dim flight-phase status while the model works; erases itself cleanly.
+
+    When ``start(label=...)`` is given a label, every frame renders as
+    ``{glyph} {label}… {N}s`` instead of the flight-phase verbs.  Existing
+    no-label behaviour (taxiing / climbing / cruising / on approach) is
+    byte-identical to before.
+    """
 
     def __init__(self, console: Console, glyphs: Glyphs, *, enabled: bool) -> None:
         self._console = console
@@ -89,6 +95,7 @@ class AviationSpinner:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._started_at = 0.0
+        self._label: str | Text | None = None
 
     @property
     def active(self) -> bool:
@@ -97,11 +104,22 @@ class AviationSpinner:
     def _frame(self, tick: int) -> Text:
         frames = self._glyphs.spinner_frames
         elapsed = time.monotonic() - self._started_at
+        glyph = frames[tick % len(frames)]
+        if self._label is not None:
+            label_str = self._label if isinstance(self._label, str) else self._label.plain
+            return Text(
+                f"{glyph} {label_str}{self._glyphs.ellipsis} {int(elapsed)}s",
+                style="sp.dim",
+            )
         verb = verb_for_elapsed(elapsed)
         return Text(
-            f"{frames[tick % len(frames)]} {verb}{self._glyphs.ellipsis} {int(elapsed)}s",
+            f"{glyph} {verb}{self._glyphs.ellipsis} {int(elapsed)}s",
             style="sp.dim",
         )
+
+    def _current_label_text(self) -> str:
+        """Return the plain text of the most recent frame (for tests)."""
+        return self._frame(0).plain
 
     def _spin(self) -> None:
         tick = 0
@@ -112,9 +130,13 @@ class AviationSpinner:
             tick += 1
             live.update(self._frame(tick), refresh=True)
 
-    def start(self) -> None:
+    def start(self, label: str | Text | None = None) -> None:
+        """Start the spinner.  When *label* is set the frame shows the label
+        instead of the flight-phase verbs; ``None`` preserves original behaviour.
+        """
         if not self._enabled or self._live is not None:
             return
+        self._label = label
         self._started_at = time.monotonic()
         self._stop_event.clear()
         self._live = Live(
@@ -137,3 +159,4 @@ class AviationSpinner:
             self._thread = None
         self._live.stop()
         self._live = None
+        self._label = None

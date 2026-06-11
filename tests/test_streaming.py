@@ -101,6 +101,39 @@ def test_verb_progression() -> None:
     assert verb_for_elapsed(60) == "on approach"
 
 
+# ---------------------------------------------------------------------------
+# A10: labeled spinner tests
+# ---------------------------------------------------------------------------
+
+
+def test_spinner_label_overrides_verbs() -> None:
+    """When start() is called with a label, frames show the label not flight verbs."""
+    import time
+
+    spinner = AviationSpinner(terminal_console(), GLYPHS, enabled=True)
+    spinner.start(label="fueling gemma4:e4b")
+    # Give the spin thread one tick to produce an updated frame.
+    time.sleep(0.2)
+    # Grab the current frame text from the live renderable.
+    assert spinner.active
+    frame_text = spinner._current_label_text()
+    assert "fueling gemma4:e4b" in frame_text
+    assert "taxiing" not in frame_text
+    spinner.stop()
+    assert not spinner.active
+
+
+def test_spinner_label_none_uses_flight_verbs() -> None:
+    """When start() is called without a label, the flight verbs are used as before."""
+    spinner = AviationSpinner(terminal_console(), GLYPHS, enabled=True)
+    spinner.start()
+    assert spinner.active
+    frame_text = spinner._current_label_text()
+    # Flight verbs are used when no label is set.
+    assert any(v in frame_text for v in ("taxiing", "climbing", "cruising", "on approach"))
+    spinner.stop()
+
+
 def test_runtime_emits_response_hooks_and_turn_stats(tmp_path: Path) -> None:
     loaded = load_config(
         user_config_file=tmp_path / "missing-user.toml",

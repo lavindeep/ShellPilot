@@ -155,3 +155,94 @@ def test_show_plan_progress_ends_with_blank_line() -> None:
     raw = console.export_text(clear=False)
     # The exported text should end with two newlines (last content line + blank)
     assert raw.endswith("\n\n"), repr(raw[-20:])
+
+
+# ---------------------------------------------------------------------------
+# A10: per-tool spinner label tests
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSpinner:
+    """Minimal spinner double that records start/stop calls."""
+
+    def __init__(self) -> None:
+        self.started_labels: list[str | None] = []
+        self.stops: int = 0
+        self._active = False
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def start(self, label: object = None) -> None:
+        self._active = True
+        self.started_labels.append(str(label) if label is not None else None)
+
+    def stop(self) -> None:
+        self._active = False
+        self.stops += 1
+
+
+def _ui_with_recording_spinner(
+    console: Console, answers: list[str]
+) -> tuple[TerminalUI, _RecordingSpinner]:
+    """Return a TerminalUI whose spinner is replaced by a _RecordingSpinner."""
+    ui = make_ui(console, answers)
+    spy = _RecordingSpinner()
+    ui._spinner = spy  # type: ignore[assignment]
+    return ui, spy
+
+
+def test_tool_call_starts_labeled_spinner_and_result_stops_it() -> None:
+    """show_tool_call starts the spinner with a label; show_tool_result stops it."""
+    console = make_console()
+    ui, spy = _ui_with_recording_spinner(console, [])
+
+    ui.show_tool_call("patch_file", {"path": "hello.py"})
+    assert len(spy.started_labels) == 1
+    label = spy.started_labels[0]
+    assert label is not None
+    assert "patch_file" in label
+
+    ui.show_tool_result("patch_file", True, "ok")
+    assert spy.stops >= 1
+
+
+def test_approval_stops_spinner_before_input() -> None:
+    """ask_approval stops the spinner before prompting the user."""
+    console = make_console()
+    ui, spy = _ui_with_recording_spinner(console, ["y"])
+    spy._active = True  # pretend the spinner is running
+
+    ui.ask_approval(medium_request())
+    assert spy.stops >= 1
+
+
+def test_show_error_stops_spinner() -> None:
+    """show_error stops the spinner before printing."""
+    console = make_console()
+    ui, spy = _ui_with_recording_spinner(console, [])
+    spy._active = True
+
+    ui.show_error("something went wrong")
+    assert spy.stops >= 1
+
+
+def test_show_command_output_stops_spinner() -> None:
+    """show_command_output stops the spinner before printing output."""
+    console = make_console()
+    ui, spy = _ui_with_recording_spinner(console, [])
+    spy._active = True
+
+    ui.show_command_output("line of output")
+    assert spy.stops >= 1
+
+
+def test_show_plan_progress_stops_spinner() -> None:
+    """show_plan_progress stops the spinner before printing the checklist."""
+    console = make_console()
+    ui, spy = _ui_with_recording_spinner(console, [])
+    spy._active = True
+
+    ui.show_plan_progress(plan())
+    assert spy.stops >= 1

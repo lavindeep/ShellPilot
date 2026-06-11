@@ -100,6 +100,7 @@ class SlashDispatcher:
         reload_config: Callable[[], LoadedConfig],
         confirm: Callable[[str], bool] = _default_confirm,
         glyphs: Glyphs = UNICODE_GLYPHS,
+        preload: Callable[[str], None] | None = None,
     ) -> None:
         self._runtime = runtime
         self._client = client
@@ -109,6 +110,7 @@ class SlashDispatcher:
         self._reload_config = reload_config
         self._confirm = confirm
         self._glyphs = glyphs
+        self._preload = preload
 
     def handle(self, line: str) -> SlashAction:
         parts = line.strip().split()
@@ -227,6 +229,8 @@ class SlashDispatcher:
                     f"{self._runtime.settings.model.family} family.[/yellow]"
                 )
             self._runtime.set_model(name)
+            if self._preload is not None:
+                self._preload(name)
             self._console.print(f"Switched to {name}.")
             return
         self._console.print("Usage: /model | /model list | /model use <name>")

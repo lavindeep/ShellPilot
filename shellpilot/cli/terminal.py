@@ -10,6 +10,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.markup import escape
 from rich.padding import Padding
+from rich.text import Text
 
 from shellpilot import __version__
 from shellpilot.cli.input import PromptContext, make_input
@@ -88,6 +89,7 @@ class TerminalUI:
         self._console.print(f"[sp.dim]{escape(text)}[/sp.dim]")
 
     def show_error(self, text: str) -> None:
+        self._spinner.stop()
         self._console.print(f"[sp.error]{escape(text)}[/sp.error]")
 
     def show_tool_call(self, name: str, arguments: dict[str, object]) -> None:
@@ -95,14 +97,19 @@ class TerminalUI:
         if len(summary) > 80:
             summary = summary[:79] + self._glyphs.ellipsis
         self._console.print(render_tool_call(name, summary, self._glyphs))
+        label = Text.assemble(("running ", "sp.dim"), (name, "sp.emph"))
+        self._spinner.start(label=label)
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
+        self._spinner.stop()
         self._console.print(render_tool_result(success, summary, self._glyphs))
 
     def show_command_output(self, line: str) -> None:
+        self._spinner.stop()
         self._console.print("    " + line, style="sp.dim", markup=False, highlight=False)
 
     def show_plan_progress(self, plan: TaskPlan) -> None:
+        self._spinner.stop()
         for index, step in enumerate(plan.steps, 1):
             self._console.print(Padding(plan_step_line(index, step, self._glyphs), (0, 0, 0, 2)))
         self._console.print()
@@ -116,6 +123,7 @@ class TerminalUI:
         No head line here: the tool-call line printed just before the approval
         already names the action, so repeating it would duplicate output.
         """
+        self._spinner.stop()
         self._console.print()
         if request.diff:
             self._console.print(Padding(render_diff(request.diff, self._glyphs), (0, 0, 0, 2)))
@@ -134,6 +142,7 @@ class TerminalUI:
             return False
 
     def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
+        self._spinner.stop()
         self._console.print()
         self._console.print(plan_panel(plan, self._glyphs))
         self._console.print(f"[sp.faint]{escape(path)}[/sp.faint]")
@@ -222,6 +231,25 @@ def run_interactive(
         console.print(f"[red]Model {chosen} is not installed.[/red] Try: ollama pull {chosen}")
         return 1
 
+    # ------------------------------------------------------------------
+    # A9/A10: warm the chosen model into memory before the first turn.
+    # Spinner shows "fueling <model>"; errors are best-effort warnings.
+    # ------------------------------------------------------------------
+    _boot_spinner = AviationSpinner(console, glyphs, enabled=settings.ui.spinner)
+
+    def _preload(model_name: str) -> None:
+        label = Text.assemble(("fueling ", "sp.dim"), (model_name, "sp.emph"))
+        _boot_spinner.start(label=label)
+        try:
+            client.preload(model_name, keep_alive=settings.model.keep_alive)
+        except OllamaError as exc:
+            msg = f"Warning: model preload failed: {escape(str(exc))}"
+            console.print(f"[sp.dim][yellow]{msg}[/yellow][/sp.dim]")
+        finally:
+            _boot_spinner.stop()
+
+    _preload(chosen)
+
     if settings.instructions.load_agents_md:
         detected = client.model_context_length(chosen)
         cap = min(1500, (detected or 8192) // 10)
@@ -302,6 +330,7 @@ def run_interactive(
         user_config_file=user_file,
         reload_config=load,
         glyphs=glyphs,
+        preload=_preload,
     )
 
     console.print(banner(__version__, runtime.model, settings.runtime.security_profile))
