@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from rich.padding import Padding
 from shellpilot import __version__
 from shellpilot.cli.input import PromptContext, make_input
 from shellpilot.cli.manual_shell import manual_shell_loop
+from shellpilot.cli.model_picker import choose_model, resolve_preselect, should_show_picker
 from shellpilot.cli.render import (
     approval_cwd,
     approval_info,
@@ -41,6 +43,7 @@ from shellpilot.memory.store import MemoryFormatError, MemoryStore, MemoryStores
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.paths import AppPaths, project_state_dir
 from shellpilot.persistence.sessions import SessionStore
+from shellpilot.persistence.workspace_state import load_last_model, save_last_model
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -200,16 +203,27 @@ def run_interactive(
             "Run `shellpilot doctor` for a full environment check."
         )
         return 1
-    installed = {model.name for model in client.list_models()}
-    if settings.model.default not in installed:
-        console.print(
-            f"[red]Model {settings.model.default} is not installed.[/red] "
-            f"Try: ollama pull {settings.model.default}"
-        )
+    installed_models = client.list_models()
+    installed = {m.name for m in installed_models}
+
+    tty = console.is_terminal and sys.stdin.isatty()
+    if should_show_picker(
+        tty=tty,
+        model_override=model_override,
+        installed_count=len(installed_models),
+    ):
+        preselect = resolve_preselect(settings.model.default, load_last_model(workspace), installed)
+        chosen = choose_model(console, installed_models, preselect)
+        save_last_model(workspace, chosen)
+    else:
+        chosen = settings.model.default
+
+    if chosen not in installed:
+        console.print(f"[red]Model {chosen} is not installed.[/red] Try: ollama pull {chosen}")
         return 1
 
     if settings.instructions.load_agents_md:
-        detected = client.model_context_length(settings.model.default)
+        detected = client.model_context_length(chosen)
         cap = min(1500, (detected or 8192) // 10)
         behavior = load_behavior_instructions(paths.config_dir, workspace, max_tokens=cap)
     else:
@@ -222,7 +236,7 @@ def run_interactive(
         profile=settings.runtime.security_profile,
         redact=settings.privacy.redact_secrets,
     )
-    audit.write("session_start", model=settings.model.default)
+    audit.write("session_start", model=chosen)
 
     sessions_dir = SessionStore.sessions_dir(workspace)
     restored = None
@@ -245,7 +259,7 @@ def run_interactive(
         redact=settings.privacy.redact_secrets,
     )
     session.write_meta(
-        model=settings.model.default,
+        model=chosen,
         profile=settings.runtime.security_profile,
         workspace=workspace,
     )
@@ -273,6 +287,7 @@ def run_interactive(
         workspace=workspace,
         behavior=behavior,
         ui=ui,
+        model=chosen,
         audit=audit,
         session=session,
         memory=memory,

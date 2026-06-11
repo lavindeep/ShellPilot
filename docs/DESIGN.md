@@ -2214,3 +2214,23 @@ Model responses render as rich Markdown, updated live while tokens stream (`rich
 - `NO_COLOR` and non-TTY output degrade cleanly: no ANSI noise, badges become bracketed text, panels and content remain readable.
 - Glyph fallback: `ui.glyphs = "auto" | "unicode" | "ascii"`. The glyph set (`⏺ ⎿ ❯ ◐ ☐ ✓ ▶`) maps to ASCII equivalents; `auto` selects ASCII on terminals that cannot encode the Unicode set.
 - Snapshot tests (section 26.1) cover plan, approval, and diff rendering.
+
+## 32. Model Selection And Preload
+
+### 32.1 Boot Model Picker
+
+Settled 2026-06-11. On every interactive boot, ShellPilot presents a numbered list of all models installed in the local Ollama instance so the user can choose which model to run for the session.
+
+**When the picker is shown:** the picker appears when all three conditions hold: the session is interactive (the console is a TTY and `sys.stdin.isatty()` is true), no `--model` flag was passed on the command line, and more than one model is installed. When any condition fails the session model is `settings.model.default` without prompting.
+
+**List layout:** one row per model — row number, chevron marking the preselected row (`❯` in accent green, a space otherwise), model name in emphasis style, size in GB in dim style, and a dim `untested` tag for any model not in `TESTED_FAMILIES` (see `shellpilot/config/model.py`). Rich named styles from the §31 theme are used throughout; no inline hex.
+
+**Preselection:** the row highlighted by default is the last model the user chose in this workspace (from `.shellpilot/state.json`), falling back to `settings.model.default` if the last model is absent from the current install list.
+
+**Input:** the prompt reads `Select a model [Enter = <preselect>]`. Accepted input: empty Enter (returns preselect), a 1-based row number, or an exact model name. Anything else re-prompts. `EOFError` and `KeyboardInterrupt` return the preselect silently. After a selection `save_last_model` persists the choice for the next boot.
+
+**Module:** `shellpilot/cli/model_picker.py` — three pure functions (`should_show_picker`, `resolve_preselect`, `choose_model`) with console injected for testability.
+
+### 32.2 Model Preload And keep_alive
+
+_Preload behavior (warm-up request before the first user turn, keep_alive policy) is specified in this section and will be filled in when Task A9 ships._
