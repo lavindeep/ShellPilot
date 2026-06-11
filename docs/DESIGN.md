@@ -1900,6 +1900,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 | Export command | Defer unless session sharing becomes important. Scheduled for v0.3.0 with session persistence (settled 2026-06-11). |
 | Prompt toolkit UI | Adopted in v2 (settled 2026-06-11): the section 31 redesign adds input history and slash autocomplete, which is exactly the "standard input becomes painful" bar this row set. |
 | Heavy type system | Start with dataclasses and validation; add `pydantic` only where it clearly reduces bugs. |
+| Sandboxed `run_command` (Seatbelt) | Deferred; v0.6.0 candidate. See section 35. |
 
 ### 25.3 Bloat Control Rules
 
@@ -2256,3 +2257,57 @@ Settled 2026-06-11 (Task A9).
 **Error handling:** `OllamaUnreachableError` and `OllamaResponseError` from a failed preload are caught in `run_interactive`; a dim yellow warning is printed and the session continues — preload is best-effort and must never block the session.
 
 **`/model use <name>`:** after switching the active model via the slash command, `SlashDispatcher` also calls the preload helper so the new model is warm before the next user turn.
+
+<!-- Sections 33 and 34 are reserved for the v0.5.0 web-fetch and multimodal features (see §25.2 B-series tasks). -->
+
+## 35. Sandboxed Execution (Direction)
+
+Research completed 2026-06-11. This section records the decision.
+
+### 35.1 Threat Model And Today's Gap
+
+The policy engine and per-action approvals decide *which* commands run, but an approved command runs with the user's full OS privileges. The Python venv is dependency isolation, not a security boundary. A misclassified or maliciously-crafted approved command can read `~/.ssh`, write outside the workspace, or exfiltrate data over the network. Sandboxing adds a second, mechanical boundary *around* execution, complementing — never replacing — deterministic policy and approval.
+
+### 35.2 Phase 1 (v0.6.0 Candidate): Opt-in Seatbelt Wrapper
+
+macOS `/usr/bin/sandbox-exec` with a generated deny-by-default SBPL profile:
+
+- File writes restricted to the workspace root and the session `$TMPDIR`.
+- Hard-deny writes to `.git/hooks/`, shell rc files, `~/.ssh/`, `~/.aws/`.
+- Network deny-all by default.
+
+This is the production-proven approach of Claude Code, OpenAI Codex CLI, and Gemini CLI on macOS — all ship SBPL profiles; Codex CLI also adds `ptrace(PT_DENY_ATTACH)` and strips `DYLD_*` env vars. Overhead: ~0 RAM, <10 ms per call — fits an 8 GB machine.
+
+Known limitations (recorded honestly):
+
+- SBPL is an undocumented Scheme-like language with silent profile-failure modes; malformed profiles silently allow everything.
+- No PID or memory limits.
+- `sandbox-exec` is man-page-deprecated since macOS 10.13, yet remains functional and load-bearing for major agent CLIs. Seatbelt itself underpins App Sandbox and is not going away.
+- TLS-level egress filtering requires a proxy and is out of scope for Phase 1.
+
+Cross-platform note: a Linux backend would use bubblewrap + Landlock (the Claude Code / Codex CLI pattern) behind the same Python abstraction. Platform detection gates which backend runs; the calling code is identical.
+
+### 35.3 Phase 2 (Future): Virtualized Execution via Apple container
+
+[github.com/apple/container](https://github.com/apple/container) (v1.0.0, June 2026): one lightweight Linux microVM per container on Virtualization.framework, sub-second start, OCI images.
+
+Gates before adoption:
+
+- Requires macOS 26 for full functionality; container-to-container networking is impossible on macOS 15.
+- Guest memory is not released to the host — risky on 8 GB; would need per-turn container restarts.
+- Ecosystem is young: no compose or devcontainer support yet.
+
+Trigger conditions to revisit: macOS 26 widely installed, container v1.x stable for 6+ months, and ≥16 GB hardware as a reasonable baseline.
+
+### 35.4 Decision Record
+
+Settled 2026-06-11. Phase 1 (Seatbelt, opt-in, off by default) is the chosen v0.6.0 candidate. Phase 2 is recorded as the long-term direction.
+
+Config sketch (not binding — final schema decided when implemented):
+
+```toml
+[runtime]
+sandbox = "off"  # "off" | "seatbelt"
+```
+
+The sandbox is off by default. Opt-in via config or a `--sandbox` flag. The switch wraps `run_command` only; Manual Shell, preload calls, and doctor checks are unaffected.

@@ -133,7 +133,7 @@ python scripts/benchmark_model.py --trials 10
 
 ## Roadmap
 
-v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31) and v0.3.0 (memory system, session resume/export, selective compaction). v3 candidates per section 25.2: `trusted-local` profile, capability packs, `/undo`.
+v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31) and v0.3.0 (memory system, session resume/export, selective compaction). v3 candidates per section 25.2: `trusted-local` profile, capability packs, `/undo`. The next privacy milestone is opt-in sandboxed command execution via macOS Seatbelt (`sandbox-exec`), the same boundary used by Claude Code and Codex CLI — tracked as a v0.6.0 candidate in section 35.
 
 ## License
 
