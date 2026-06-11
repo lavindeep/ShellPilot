@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from shellpilot.cli.slash import SlashAction, SlashDispatcher
@@ -148,6 +149,27 @@ def test_model_use_saves_last_model(tmp_path: Path) -> None:
     harness.fake.models.append(LocalModel(name="gemma4:e2b", size_bytes=2_500_000_000))
     harness.dispatcher.handle("/model use gemma4:e2b")
     assert load_last_model(tmp_path) == "gemma4:e2b"
+
+
+def test_model_use_survives_unwritable_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/model use still switches the model if save_last_model raises OSError."""
+    import shellpilot.persistence.workspace_state as ws_mod
+    from shellpilot.llm.ollama import LocalModel
+
+    harness = Harness(tmp_path)
+    harness.fake.models.append(LocalModel(name="gemma4:e2b", size_bytes=2_500_000_000))
+    monkeypatch.setattr(
+        ws_mod,
+        "save_last_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("read-only")),
+    )
+
+    harness.dispatcher.handle("/model use gemma4:e2b")
+
+    assert harness.runtime.model == "gemma4:e2b"
+    assert "Warning: could not save model choice" in harness.output()
 
 
 def test_config_show_includes_sources(tmp_path: Path) -> None:

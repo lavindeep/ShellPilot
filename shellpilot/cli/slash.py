@@ -199,7 +199,7 @@ class SlashDispatcher:
             )
             return
         if args[0] == "list":
-            from shellpilot.config.model import is_tested_model
+            from shellpilot.config.model import TESTED_FAMILIES, is_tested_model
 
             models = self._client.list_models()
             table = Table(title="Local models")
@@ -215,7 +215,9 @@ class SlashDispatcher:
             if models:
                 self._console.print(table)
             else:
-                self._console.print("[red]No models installed.[/red] Try: ollama pull gemma4:e4b")
+                self._console.print(
+                    f"[red]No models installed.[/red] Try: ollama pull {TESTED_FAMILIES[0]}:e4b"
+                )
             return
         if args[0] == "use" and len(args) > 1:
             from shellpilot.config.model import TESTED_FAMILIES, is_tested_model
@@ -228,7 +230,10 @@ class SlashDispatcher:
                 return
             self._runtime.set_model(name)
             workspace = self._runtime.status().workspace
-            save_last_model(workspace, name)
+            try:
+                save_last_model(workspace, name)
+            except OSError as exc:
+                self._console.print(f"[dim]Warning: could not save model choice: {exc}[/dim]")
             if self._preload is not None:
                 self._preload(name)
             self._console.print(f"Switched to {name}.")
