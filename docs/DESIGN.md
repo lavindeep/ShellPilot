@@ -1613,7 +1613,7 @@ Planned commands:
 | `/model list` | List all installed local models with tested/untested tags. |
 | `/model use <name>` | Switch the active local model (any installed model; untested models print a qualification note). |
 | `/profile` | Show active security profile. |
-| `/profile use <supervised|balanced>` | Switch security profile (`trusted-local` arrives in v2). |
+| `/profile use <supervised|balanced>` | Switch security profile for this session only (reverts on restart; set `[runtime] security_profile` in config.toml to make it permanent). `trusted-local` arrives in v2. |
 | `/config show` | Print resolved config with source layers. |
 | `/config edit` | Open or print the user config path for editing. |
 | `/config reload` | Reload config from disk. |

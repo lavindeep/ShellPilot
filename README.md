@@ -103,7 +103,7 @@ gemma4:e4b · balanced · /help for commands
 | `/compact`, `/compact status`, `/compact auto on\|off` | Compact context now; show usage; toggle auto-compaction. |
 | `/export <path>` | Export this session's transcript to markdown. |
 | `/model`, `/model list`, `/model use <name>` | Show active model; list all installed models with tested/untested tags; switch model. |
-| `/profile`, `/profile use <supervised\|balanced>` | Show or switch the security profile. |
+| `/profile`, `/profile use <supervised\|balanced>` | Show or switch the security profile for this session (switch lasts until exit; set `[runtime] security_profile` in config.toml to make it permanent). |
 | `/tools` | List tools available under the active profile. |
 | `/config show`, `/config edit`, `/config reload` | Print resolved config; show config path; reload from disk. |
 | `/cwd`, `/cwd set <path>` | Show or change the workspace boundary. |
