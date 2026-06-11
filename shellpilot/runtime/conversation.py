@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from shellpilot.config.model import Settings
 from shellpilot.llm.client import LLMClient
-from shellpilot.llm.messages import Message, tool_result, user
+from shellpilot.llm.messages import ImageRef, Message, tool_result, user
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.memory.store import MemoryStores
 from shellpilot.persistence.audit_store import AuditLogger
@@ -22,6 +23,10 @@ from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.executor import ExecutionOutcome, ToolExecutor
 from shellpilot.runtime.planner import PlanManager, compact_plan_state, make_plan_tools
 from shellpilot.tools.registry import ToolRegistry, default_registry
+
+# Coarse per-image vision-encoder cost; deliberately NOT the b64 length
+# (that would wildly overestimate and thrash compaction).
+IMAGE_TOKEN_ESTIMATE = 1024
 
 MIN_KEPT_MESSAGES = 4
 MAX_CONSECUTIVE_MALFORMED = 2
@@ -203,6 +208,7 @@ class ConversationRuntime:
         total = estimate_tokens(self._system_message_text())
         for message in self._history:
             total += estimate_tokens(message.content)
+            total += IMAGE_TOKEN_ESTIMATE * len(message.images)
         return total
 
     def status(self) -> RuntimeStatus:
@@ -267,7 +273,7 @@ class ConversationRuntime:
             changed += 1
         return changed
 
-    def run_turn(self, text: str) -> str:
+    def run_turn(self, text: str, *, images: Sequence[ImageRef] = ()) -> str:
         """One user turn: budget-check, compact, call the model, stream, record."""
         if estimate_tokens(text) > self.budget.max_user_message_tokens:
             self._ui.show_status(
@@ -289,8 +295,11 @@ class ConversationRuntime:
         started = time.monotonic()
         self._last_user_text = text
         if self._audit is not None:
-            self._audit.write("user_turn", chars=len(text))
-        self._record(user(text))
+            audit_kwargs: dict[str, object] = {"chars": len(text)}
+            if images:
+                audit_kwargs["images"] = len(images)
+            self._audit.write("user_turn", **audit_kwargs)
+        self._record(user(text, images=tuple(images)))
         if self._settings.runtime.auto_compact:
             adjusted = self.compact_now()
             if adjusted:

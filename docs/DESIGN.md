@@ -1639,6 +1639,8 @@ Planned commands:
 | `/prefs edit` | Show the memory file paths for hand-editing; `/memory show` reloads. |
 | `/shell` | Enter Manual Shell mode. |
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
+| `/attach <path>` | Stage an image file to send with the next user message (vision-capable models only). Path is validated eagerly; bytes are re-read at send time. *(v0.5.0)* |
+| `/attach` | List currently staged images, or report "No attachments staged." *(v0.5.0)* |
 
 All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped and appear in the table above.
 

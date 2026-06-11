@@ -314,3 +314,106 @@ def test_clear_with_active_plan_reports_cancellation(tmp_path: Path) -> None:
     out = harness.output()
     assert "plan" in out.lower()
     assert "cancel" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# B9: /attach command
+# ---------------------------------------------------------------------------
+
+
+class AttachHarness(Harness):
+    """Harness with an AttachmentQueue injected into the dispatcher."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        from shellpilot.cli.attachments import AttachmentQueue
+
+        super().__init__(tmp_path)
+        self.attachments: AttachmentQueue = AttachmentQueue()
+        self.dispatcher._attachments = self.attachments  # type: ignore[attr-defined]
+
+    def build(self, tmp_path: Path, *, vision: bool = True) -> None:
+        """Rebuild dispatcher with a vision-capable or vision-lacking FakeLLM."""
+        caps = ("completion", "tools", "vision") if vision else ("completion", "tools")
+        self.fake.capabilities = caps
+
+
+def test_attach_stages_and_reports(tmp_path: Path) -> None:
+    """/attach <valid-image> stages the file and prints its name + 'next message'."""
+    from shellpilot.cli.attachments import AttachmentQueue
+    from tests.conftest import TINY_PNG
+
+    img = tmp_path / "photo.png"
+    img.write_bytes(TINY_PNG)
+
+    attachments: AttachmentQueue = AttachmentQueue()
+    harness = Harness(tmp_path)
+    harness.dispatcher._attachments = attachments  # type: ignore[attr-defined]
+
+    harness.dispatcher.handle(f"/attach {img}")
+
+    out = harness.output()
+    assert "photo.png" in out
+    assert "next message" in out.lower()
+    # The path was queued
+    assert attachments.paths == [img]
+
+
+def test_attach_rejects_non_vision_model(tmp_path: Path) -> None:
+    """/attach on a non-vision model prints a friendly error and does NOT stage."""
+    from shellpilot.cli.attachments import AttachmentQueue
+    from tests.conftest import TINY_PNG
+
+    img = tmp_path / "photo.png"
+    img.write_bytes(TINY_PNG)
+
+    attachments: AttachmentQueue = AttachmentQueue()
+    harness = Harness(tmp_path)
+    harness.fake.capabilities = ("completion", "tools")  # no vision
+    harness.dispatcher._attachments = attachments  # type: ignore[attr-defined]
+
+    harness.dispatcher.handle(f"/attach {img}")
+
+    out = harness.output()
+    # Should mention the model and suggest /model use
+    assert "/model use" in out
+    # Nothing staged
+    assert attachments.paths == []
+
+
+def test_attach_bare_lists_staged(tmp_path: Path) -> None:
+    """Bare /attach lists staged files (or 'No attachments staged')."""
+    from shellpilot.cli.attachments import AttachmentQueue
+
+    attachments: AttachmentQueue = AttachmentQueue()
+    harness = Harness(tmp_path)
+    harness.dispatcher._attachments = attachments  # type: ignore[attr-defined]
+
+    # No files staged yet
+    harness.dispatcher.handle("/attach")
+    out = harness.output()
+    assert "no attachments" in out.lower()
+
+    # Stage a phantom path directly (list, not validate)
+    attachments.paths.append(tmp_path / "img.png")
+    harness.dispatcher.handle("/attach")
+    out2 = harness.output()
+    assert "img.png" in out2
+
+
+def test_attach_rejects_bad_file(tmp_path: Path) -> None:
+    """/attach on a non-image file prints an error and does NOT stage."""
+    from shellpilot.cli.attachments import AttachmentQueue
+
+    bad = tmp_path / "data.csv"
+    bad.write_text("a,b,c")
+
+    attachments: AttachmentQueue = AttachmentQueue()
+    harness = Harness(tmp_path)
+    harness.dispatcher._attachments = attachments  # type: ignore[attr-defined]
+
+    harness.dispatcher.handle(f"/attach {bad}")
+
+    out = harness.output()
+    # Some error message, nothing staged
+    assert len(out.strip()) > 0
+    assert attachments.paths == []

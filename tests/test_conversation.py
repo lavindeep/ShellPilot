@@ -200,6 +200,73 @@ def test_clear_writes_audit_event(tmp_path: Path) -> None:
     assert "plan" in clear_events[0].get("summary", "").lower()
 
 
+# ---------------------------------------------------------------------------
+# B9: run_turn images= + image token estimate
+# ---------------------------------------------------------------------------
+
+
+def test_run_turn_passes_images_into_user_message(tmp_path: Path) -> None:
+    """run_turn(text, images=...) records a user message carrying the ImageRef."""
+    import base64
+    import hashlib
+
+    from shellpilot.llm.messages import ImageRef
+    from tests.conftest import TINY_PNG
+
+    data_b64 = base64.b64encode(TINY_PNG).decode()
+    ref = ImageRef(
+        path=str(tmp_path / "sample.png"),
+        sha256=hashlib.sha256(TINY_PNG).hexdigest(),
+        data_b64=data_b64,
+    )
+
+    fake = FakeLLM(script=[answer("I see a white pixel.")])
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    runtime.run_turn("What is in this image?", images=(ref,))
+
+    # The FakeLLM received a message containing the image ref
+    call = fake.calls[0]
+    user_messages = [m for m in call.messages if m.role == "user"]
+    assert len(user_messages) == 1
+    assert user_messages[0].images == (ref,)
+
+    # And it is in the recorded history too
+    history_user = [m for m in runtime._history if m.role == "user"]
+    assert len(history_user) == 1
+    assert history_user[0].images == (ref,)
+
+
+def test_image_token_estimate_counted(tmp_path: Path) -> None:
+    """Messages with images contribute IMAGE_TOKEN_ESTIMATE tokens to the estimate."""
+    import base64
+    import hashlib
+
+    from shellpilot.llm.messages import ImageRef
+    from shellpilot.runtime.conversation import IMAGE_TOKEN_ESTIMATE
+    from tests.conftest import TINY_PNG
+
+    data_b64 = base64.b64encode(TINY_PNG).decode()
+    ref = ImageRef(
+        path="/tmp/img.png",
+        sha256=hashlib.sha256(TINY_PNG).hexdigest(),
+        data_b64=data_b64,
+    )
+
+    fake_no_image = FakeLLM(script=[answer("plain reply")])
+    runtime_no_image = make_runtime(fake_no_image, FakeUI(), tmp_path)
+    runtime_no_image.run_turn("hello, no image")
+    estimate_no_image = runtime_no_image.estimated_prompt_tokens()
+
+    fake_with_image = FakeLLM(script=[answer("image reply")])
+    runtime_with_image = make_runtime(fake_with_image, FakeUI(), tmp_path)
+    runtime_with_image.run_turn("hello, with image", images=(ref,))
+    estimate_with_image = runtime_with_image.estimated_prompt_tokens()
+
+    assert estimate_with_image >= estimate_no_image + IMAGE_TOKEN_ESTIMATE
+
+
 def test_update_plan_after_clear_reports_no_active_plan(tmp_path: Path) -> None:
     """After clear, the update_plan tool handler returns 'no active plan'."""
     fake = FakeLLM(

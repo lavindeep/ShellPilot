@@ -13,6 +13,7 @@ from rich.padding import Padding
 from rich.text import Text
 
 from shellpilot import __version__
+from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.input import PromptContext, make_input
 from shellpilot.cli.manual_shell import manual_shell_loop
 from shellpilot.cli.model_picker import choose_model, resolve_preselect, should_show_picker
@@ -322,6 +323,7 @@ def run_interactive(
     )
     if restored is not None:
         runtime.restore_history(restored.messages)
+    attachments = AttachmentQueue()
     dispatcher = SlashDispatcher(
         runtime=runtime,
         client=client,
@@ -331,6 +333,7 @@ def run_interactive(
         reload_config=load,
         glyphs=glyphs,
         preload=_preload,
+        attachments=attachments,
     )
 
     console.print(banner(__version__, runtime.model, settings.runtime.security_profile))
@@ -365,7 +368,14 @@ def run_interactive(
                 manual_shell_loop(console, workspace, audit)
             continue
         try:
-            runtime.run_turn(line)
+            staged_paths = attachments.take()
+            refs = []
+            for p in staged_paths:
+                try:
+                    refs.append(load_image(p))
+                except AttachmentError as exc:
+                    ui.show_status(f"Attachment dropped ({p.name}): {exc}")
+            runtime.run_turn(line, images=tuple(refs))
         except KeyboardInterrupt:
             ui.show_status("Interrupted.")
         except OllamaError as exc:

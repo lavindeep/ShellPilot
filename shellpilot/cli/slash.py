@@ -9,6 +9,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.render import plan_panel, render_diff
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs
 from shellpilot.config.loader import ConfigError, LoadedConfig
@@ -56,6 +57,8 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/prefs show", "Show behavior preferences."),
     ("/prefs edit", "Show the memory file paths for hand-editing."),
     ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
+    ("/attach <path>", "Stage an image to send with your next message (vision models only)."),
+    ("/attach", "List currently staged images."),
 ]
 
 
@@ -101,6 +104,7 @@ class SlashDispatcher:
         confirm: Callable[[str], bool] = _default_confirm,
         glyphs: Glyphs = UNICODE_GLYPHS,
         preload: Callable[[str], None] | None = None,
+        attachments: AttachmentQueue | None = None,
     ) -> None:
         self._runtime = runtime
         self._client = client
@@ -111,6 +115,7 @@ class SlashDispatcher:
         self._confirm = confirm
         self._glyphs = glyphs
         self._preload = preload
+        self._attachments = attachments
 
     def handle(self, line: str) -> SlashAction:
         parts = line.strip().split()
@@ -152,6 +157,8 @@ class SlashDispatcher:
             self._memory(args)
         elif command == "/prefs":
             self._prefs(args)
+        elif command == "/attach":
+            self._attach(args)
         else:
             self._console.print(f"[red]Unknown command: {command}[/red] — type /help for commands.")
         return SlashAction.CONTINUE
@@ -566,6 +573,53 @@ class SlashDispatcher:
                 "[green]yes[/green]" if enabled else "[red]no[/red]",
             )
         self._console.print(table)
+
+    def _attach(self, args: list[str]) -> None:
+        """Stage an image for the next user message, or list staged images."""
+        queue = self._attachments
+        if queue is None:
+            self._console.print("[dim]Attachment staging is not available this session.[/dim]")
+            return
+
+        if not args:
+            # Bare /attach: list currently staged files
+            if not queue.paths:
+                self._console.print("[dim]No attachments staged.[/dim]")
+            else:
+                for p in queue.paths:
+                    self._console.print(f"  {p.name}")
+            return
+
+        # /attach <path>
+        raw = " ".join(args)
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = (self._runtime.status().workspace / raw).resolve()
+
+        # Validate the file eagerly (extension, existence, size)
+        try:
+            load_image(candidate)
+        except AttachmentError as exc:
+            self._console.print(f"[red]Cannot attach:[/red] {exc}")
+            return
+
+        # Check vision capability before staging
+        if "vision" not in self._client.model_capabilities(self._runtime.model):
+            self._console.print(
+                f"[yellow]{self._runtime.model}[/yellow] does not support vision. "
+                "Use /model use to switch to a vision-capable model, then try again."
+            )
+            return
+
+        queue.stage(candidate)
+        size = candidate.stat().st_size
+        human_size = (
+            f"{size / 1024 / 1024:.1f} MB" if size >= 1024 * 1024 else f"{size / 1024:.1f} KB"
+        )
+        self._console.print(
+            f"Attached [bold]{candidate.name}[/bold] ({human_size})"
+            " — it will be sent with your next message."
+        )
 
     def _compact(self, args: list[str]) -> None:
         import dataclasses
