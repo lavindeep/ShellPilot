@@ -175,3 +175,42 @@ def test_keep_alive_toml_override(tmp_path: Path) -> None:
     )
     assert loaded.settings.model.keep_alive == "30m"
     assert loaded.sources["model.keep_alive"] == "user"
+
+
+# ---------------------------------------------------------------------------
+# B5: [tools] config section
+# ---------------------------------------------------------------------------
+
+
+def test_tools_web_defaults_off(tmp_path: Path) -> None:
+    """tools.web is False by default (no config files)."""
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert loaded.settings.tools.web is False
+    assert loaded.sources["tools.web"] == "default"
+
+
+def test_tools_web_toml_override(tmp_path: Path) -> None:
+    """tools.web = true in a project or user toml flips it on and records the source."""
+    project = write_toml(tmp_path / "proj.toml", "[tools]\nweb = true\n")
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=project,
+        env={},
+    )
+    assert loaded.settings.tools.web is True
+    assert loaded.sources["tools.web"] == "project"
+
+
+def test_tools_web_rejects_non_boolean(tmp_path: Path) -> None:
+    """tools.web must be a boolean; a string value is a config error."""
+    user = write_toml(tmp_path / "user.toml", '[tools]\nweb = "yes"\n')
+    with pytest.raises(ConfigError, match="tools.web"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )

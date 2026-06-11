@@ -1409,6 +1409,13 @@ show_full_tool_output = false
 # v2 visual design (section 31), settled 2026-06-11:
 glyphs = "auto"   # auto | unicode | ascii
 spinner = true    # aviation status spinner while the model works
+
+[tools]
+# Off by default: enabling this causes network egress (DuckDuckGo search +
+# pages you approve). Every request requires per-turn user approval.
+# There is deliberately no SHELLPILOT_TOOLS_WEB env var — enabling network
+# egress must be an explicit config-file act, not an ambient env var.
+web = false
 ```
 
 ### 17.4 Environment Variables and CLI Overrides

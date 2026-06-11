@@ -80,6 +80,13 @@ class UiSettings:
 
 
 @dataclass(frozen=True)
+class ToolSettings:
+    # Enabling web grounding causes network egress; it must be an explicit
+    # config-file act, not something that can be toggled by an env var.
+    web: bool = False
+
+
+@dataclass(frozen=True)
 class Settings:
     model: ModelSettings = field(default_factory=ModelSettings)
     runtime: RuntimeSettings = field(default_factory=RuntimeSettings)
@@ -88,3 +95,4 @@ class Settings:
     instructions: InstructionSettings = field(default_factory=InstructionSettings)
     privacy: PrivacySettings = field(default_factory=PrivacySettings)
     ui: UiSettings = field(default_factory=UiSettings)
+    tools: ToolSettings = field(default_factory=ToolSettings)

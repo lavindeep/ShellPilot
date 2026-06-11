@@ -23,6 +23,7 @@ from shellpilot.config.model import (
     PrivacySettings,
     RuntimeSettings,
     Settings,
+    ToolSettings,
     UiSettings,
     WorkspaceSettings,
 )
@@ -40,6 +41,7 @@ SECTIONS: dict[str, type] = {
     "instructions": InstructionSettings,
     "privacy": PrivacySettings,
     "ui": UiSettings,
+    "tools": ToolSettings,
 }
 
 ENV_MAP: dict[str, str] = {
@@ -48,6 +50,8 @@ ENV_MAP: dict[str, str] = {
     "SHELLPILOT_PROFILE": "runtime.security_profile",
     "SHELLPILOT_NO_COLOR": "ui.no_color",
     "SHELLPILOT_UI_GLYPHS": "ui.glyphs",
+    # tools.web is deliberately absent: enabling network egress must be an
+    # explicit config-file act, not an ambient environment variable.
 }
 
 ALLOWED_VALUES: dict[str, tuple[str, ...]] = {
