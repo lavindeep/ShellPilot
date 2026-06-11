@@ -90,28 +90,37 @@ gemma4:e4b · balanced · /help for commands
 | `shellpilot` | Interactive session in the current directory (`--cwd` to point elsewhere). |
 | `shellpilot --resume [id]` | Resume the latest (or a specific) saved session in this workspace. |
 | `shellpilot --model <name>` | Start with a specific model, skipping the boot picker. |
-| `shellpilot doctor` | Check Python, Ollama reachability, installed Gemma models, writable paths. |
+| `shellpilot doctor` | Check Python, Ollama reachability, installed models, and writable paths. |
 | `shellpilot config show` | Print resolved config with the source layer of every key. |
+| `shellpilot config edit` | Show the user config file path for hand-editing. |
 | `/help` | All slash commands. |
-| `/status`, `/compact status` | Model, profile, context usage, thresholds, active plan. |
-| `/plan`, `/plan cancel`, `/plan revise <text>` | Inspect or steer the active plan. |
+| `/status` | Model, profile, workspace, and context usage. |
+| `/clear` | Clear the visible conversation (with confirmation). |
+| `/plan`, `/plan path`, `/plan cancel`, `/plan revise <text>` | Inspect, locate, or steer the active plan. |
 | `/diff` | Diffs from this session's agent edits. |
-| `/memory show`, `/memory add <text>`, `/memory forget <id>` | Inspect and curate stored memory. |
-| `/compact auto on\|off`, `/export` | Compaction control; markdown transcript export. |
-| `/model list`, `/model use <name>` | List all installed local models with tested/untested tags; switch the active model. |
-| `/profile use <supervised\|balanced>` | Switch the security profile. |
+| `/memory show`, `/memory add <text>`, `/memory forget <id>`, `/memory compact` | Inspect, curate, and model-compact stored memory. |
+| `/prefs show`, `/prefs edit` | Inspect behavior preferences; show memory file paths. |
+| `/compact`, `/compact status`, `/compact auto on\|off` | Compact context now; show usage; toggle auto-compaction. |
+| `/export <path>` | Export this session's transcript to markdown. |
+| `/model`, `/model list`, `/model use <name>` | Show active model; list all installed models with tested/untested tags; switch model. |
+| `/profile`, `/profile use <supervised\|balanced>` | Show or switch the security profile. |
+| `/tools` | List tools available under the active profile. |
+| `/config show`, `/config edit`, `/config reload` | Print resolved config; show config path; reload from disk. |
+| `/cwd`, `/cwd set <path>` | Show or change the workspace boundary. |
 | `/logs` | Recent audit events and the log file path. |
 | `/shell` | Manual Shell (raw `shell=True`, model not involved). `/exit-shell` returns. |
 | `/attach <path>` | Stage an image to send with your next message (vision models). Bare `/attach` lists staged images. |
+| `/doctor` | Check Python, Ollama, models, and paths from within a session. |
+| `/exit`, `/quit` | Exit ShellPilot. |
 
 ### Security profiles
 
 | Profile | Behavior |
 |---|---|
-| `supervised` | Ask before every side-effecting tool and every command. |
+| `supervised` | Auto-run read-only tools; ask before every side-effecting tool and every command. |
 | `balanced` (default) | Auto-run read-only tools and low-risk commands (`ls`, `git status`, `pytest`); ask for writes, installs, deletes, network, and anything risky. |
 
-High-risk commands (`rm -rf`, `sudo`, force-pushes, credential paths, …) always show a purpose explanation and require typing `run`.
+Both profiles ask before every network request (web search, web fetch). High-risk commands (`rm -rf`, `sudo`, force-pushes, credential paths, …) always show a purpose explanation and require typing `run`. Explicitly blocked commands are rejected outright in both profiles.
 
 ### Configuration
 
@@ -120,9 +129,17 @@ Layered, highest wins: CLI flags → `SHELLPILOT_*` env vars → `<repo>/.shellp
 ```toml
 [model]
 default = "gemma4:e4b"
+keep_alive = "5m"        # how long Ollama keeps the model warm between prompts
 
 [runtime]
 security_profile = "balanced"
+
+[tools]
+web = false              # set true to enable web_search + web_fetch (always asks)
+
+[ui]
+theme = "default"
+glyphs = "auto"          # auto | unicode | ascii
 ```
 
 Behavior instructions: ShellPilot reads `AGENTS.md` from your config directory (global) and the workspace root (project) at session start and follows them. It never writes those files.
@@ -136,7 +153,7 @@ ruff check . && ruff format --check . && mypy shellpilot --strict && pytest
 The same four checks run in CI on Python 3.11 and 3.14 — against the fake model only, so CI needs no GPU or Ollama. To re-measure a local model's capabilities (tool-call reliability, exact-span reproduction, chaining, stopping):
 
 ```bash
-python scripts/benchmark_model.py --trials 10
+python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 ```
 
 ## Roadmap
