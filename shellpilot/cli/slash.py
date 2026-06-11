@@ -49,6 +49,17 @@ HELP_ROWS: list[tuple[str, str]] = [
 ]
 
 
+def command_words() -> list[str]:
+    """Completion phrases derived from HELP_ROWS: split combined rows, drop <args>."""
+    words: list[str] = []
+    for entry, _ in HELP_ROWS:
+        for raw in entry.split(","):
+            phrase = " ".join(part for part in raw.split() if not part.startswith("<"))
+            if phrase and phrase not in words:
+                words.append(phrase)
+    return words
+
+
 def render_config(loaded: LoadedConfig, console: Console) -> None:
     table = Table(title="Resolved configuration")
     table.add_column("Key")
