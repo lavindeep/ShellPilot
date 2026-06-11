@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 from pathlib import Path
 
 from shellpilot.config.loader import load_config
-from shellpilot.llm.messages import Message, ToolCall
+from shellpilot.llm.messages import ImageRef, Message, ToolCall
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.sessions import SessionStore, session_markdown
 from shellpilot.runtime.conversation import ConversationRuntime
+from tests.conftest import TINY_PNG
 from tests.fakes.fake_llm import FakeLLM, answer
 from tests.fakes.fake_ui import FakeUI
 
@@ -136,3 +140,67 @@ def test_session_markdown_renders_transcript(tmp_path: Path) -> None:
     assert "fix the bug" in text
     assert "patch_file" in text
     assert "patched ok" in text
+
+
+# ---------------------------------------------------------------------------
+# B8: transcript image refs — path+hash only, never bytes
+# ---------------------------------------------------------------------------
+
+
+def _make_image_ref(data: bytes, path: str = "/tmp/shot.png") -> ImageRef:
+    sha256 = hashlib.sha256(data).hexdigest()
+    data_b64 = base64.b64encode(data).decode()
+    return ImageRef(path=path, sha256=sha256, data_b64=data_b64)
+
+
+def test_record_message_stores_image_refs_not_bytes(tmp_path: Path) -> None:
+    """record_message serialises path and sha256 but NEVER the base64 payload."""
+    ref = _make_image_ref(TINY_PNG, path="/home/user/screenshot.png")
+    msg = Message(role="user", content="look", images=(ref,))
+    store = make_store(tmp_path)
+    store.record_message(msg)
+
+    raw = store.path.read_text(encoding="utf-8")
+    record = json.loads(raw.strip())
+
+    # Path and sha256 must be present.
+    assert record["images"] == [{"path": ref.path, "sha256": ref.sha256}]
+    # The base64 payload must never appear in the raw line.
+    assert ref.data_b64 not in raw
+
+
+def test_load_drops_images(tmp_path: Path) -> None:
+    """Round-trip: loaded messages have images=() (visual context not restored on resume)."""
+    ref = _make_image_ref(TINY_PNG)
+    msg = Message(role="user", content="see this", images=(ref,))
+    store = make_store(tmp_path)
+    store.record_message(msg)
+
+    loaded = SessionStore.load(store.path)
+    assert len(loaded.messages) == 1
+    assert loaded.messages[0].images == ()
+    assert loaded.messages[0].content == "see this"
+
+
+def test_export_notes_attached_images(tmp_path: Path) -> None:
+    """session_markdown lists each image as '- image: <path> (sha256 <8chars>…)'."""
+    ref = _make_image_ref(TINY_PNG, path="/home/user/diagram.png")
+    msg = Message(role="user", content="explain this diagram", images=(ref,))
+    store = make_store(tmp_path)
+    store.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    store.record_message(msg)
+    store.record_message(Message(role="assistant", content="Sure."))
+
+    # Load drops images, so we test markdown on the live message directly.
+    from shellpilot.persistence.sessions import LoadedSession
+
+    session = LoadedSession(
+        session_id="test",
+        model="gemma4:e4b",
+        profile="balanced",
+        messages=[msg, Message(role="assistant", content="Sure.")],
+    )
+    text = session_markdown(session)
+    assert "image:" in text
+    assert ref.path in text
+    assert ref.sha256[:8] in text

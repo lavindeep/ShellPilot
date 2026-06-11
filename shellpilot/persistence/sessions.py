@@ -74,16 +74,17 @@ class SessionStore:
 
     def record_message(self, message: Message) -> None:
         content = redact_secrets(message.content) if self._redact else message.content
-        self._append(
-            {
-                "type": "message",
-                "role": message.role,
-                "content": content,
-                "tool_calls": [
-                    {"name": call.name, "arguments": call.arguments} for call in message.tool_calls
-                ],
-            }
-        )
+        record: dict[str, Any] = {
+            "type": "message",
+            "role": message.role,
+            "content": content,
+            "tool_calls": [
+                {"name": call.name, "arguments": call.arguments} for call in message.tool_calls
+            ],
+        }
+        if message.images:
+            record["images"] = [{"path": ref.path, "sha256": ref.sha256} for ref in message.images]
+        self._append(record)
 
     def record_clear(self) -> None:
         self._append({"type": "clear"})
@@ -95,6 +96,12 @@ class SessionStore:
 
     @staticmethod
     def load(path: Path) -> LoadedSession:
+        """Read a session transcript from disk and reconstruct the message history.
+
+        Images are intentionally NOT restored: like snapshots, visual context
+        does not survive a session boundary.  The model re-reads images via
+        tools if needed.  Loaded messages always have images=().
+        """
         model = ""
         profile = ""
         messages: list[Message] = []
@@ -113,6 +120,7 @@ class SessionStore:
                     ToolCall(name=call["name"], arguments=call["arguments"])
                     for call in record.get("tool_calls", [])
                 )
+                # images field is ignored on load — visual context is not restored.
                 messages.append(
                     Message(role=record["role"], content=record["content"], tool_calls=calls)
                 )
@@ -131,6 +139,10 @@ def session_markdown(session: LoadedSession) -> str:
     for message in session.messages:
         if message.role == "user":
             lines += ["## You", "", message.content, ""]
+            for ref in message.images:
+                lines.append(f"- image: {ref.path} (sha256 {ref.sha256[:8]}…)")
+            if message.images:
+                lines.append("")
         elif message.role == "assistant":
             if message.content.strip():
                 lines += ["## ShellPilot", "", message.content, ""]
