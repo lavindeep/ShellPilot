@@ -64,6 +64,8 @@ class UiSettings:
     show_reasoning_summary: bool = True
     show_full_tool_output: bool = False
     no_color: bool = False
+    glyphs: str = "auto"  # auto | unicode | ascii (design section 31.9)
+    spinner: bool = True
 
 
 @dataclass(frozen=True)

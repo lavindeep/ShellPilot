@@ -47,6 +47,7 @@ ENV_MAP: dict[str, str] = {
     "SHELLPILOT_MODEL": "model.default",
     "SHELLPILOT_PROFILE": "runtime.security_profile",
     "SHELLPILOT_NO_COLOR": "ui.no_color",
+    "SHELLPILOT_UI_GLYPHS": "ui.glyphs",
 }
 
 ALLOWED_VALUES: dict[str, tuple[str, ...]] = {
@@ -54,6 +55,7 @@ ALLOWED_VALUES: dict[str, tuple[str, ...]] = {
     "privacy.allow_sensitive_reads": ("ask", "never", "always"),
     "workspace.boundary": ("start_cwd",),
     "model.provider": ("ollama",),
+    "ui.glyphs": ("auto", "unicode", "ascii"),
 }
 
 TRUE_WORDS = ("1", "true", "yes", "on")

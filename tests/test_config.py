@@ -107,3 +107,29 @@ def test_invalid_toml_reports_file(tmp_path: Path) -> None:
     user = write_toml(tmp_path / "user.toml", "not toml ][")
     with pytest.raises(ConfigError, match="user.toml"):
         load_config(user_config_file=user, project_config_file=tmp_path / "missing.toml", env={})
+
+
+def test_ui_glyphs_and_spinner_defaults(tmp_path: Path) -> None:
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert loaded.settings.ui.glyphs == "auto"
+    assert loaded.settings.ui.spinner is True
+
+
+def test_ui_glyphs_validated(tmp_path: Path) -> None:
+    user = write_toml(tmp_path / "user.toml", '[ui]\nglyphs = "fancy"\n')
+    with pytest.raises(ConfigError, match="ui.glyphs"):
+        load_config(user_config_file=user, project_config_file=tmp_path / "missing.toml", env={})
+
+
+def test_ui_glyphs_env_override(tmp_path: Path) -> None:
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={"SHELLPILOT_UI_GLYPHS": "ascii"},
+    )
+    assert loaded.settings.ui.glyphs == "ascii"
+    assert loaded.sources["ui.glyphs"] == "env"
