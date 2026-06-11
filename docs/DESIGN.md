@@ -532,19 +532,14 @@ Complex tasks require a plan. The plan should be visible and editable before exe
 
 ### 11.1 When To Plan
 
-Planning is required when:
+Planning is required when the task needs 3 or more distinct steps. All related setup
+must be folded into one plan; a second follow-up plan for work already known at proposal
+time is not allowed. (Settled 2026-06-11)
 
-- The task has 3 or more meaningful steps.
-- The task modifies files.
-- The task runs commands that can change workspace state.
-- The task involves package installation.
-- The task touches configuration, security, persistence, or architecture.
-- The user explicitly asks for a plan.
+Planning is NOT required (do the action directly) when:
 
-Planning is optional when:
-
-- The task is a direct answer.
-- The task is one read-only inspection.
+- The task is a direct answer or single read-only inspection.
+- The task is a single command or a single file edit.
 - The task is a simple low-risk command like `pwd` or `python -m pytest`.
 
 ### 11.2 Plan Shape
@@ -1447,6 +1442,8 @@ Prompt principles:
 - Tool calls should be reserved for local evidence, shell commands, search, file operations, memory operations, and verification.
 - The model should not work ahead of the current step.
 - The model should not ask for approval directly. The runtime owns approvals.
+- Plans must go through the propose_plan tool. The model must never write a plan as chat text or ask for approval in prose. (Settled 2026-06-11)
+- After a plan is approved, the model continues in the same turn until the plan is complete or genuinely blocked. It must not stop to announce a step or request permission it already has. (Settled 2026-06-11)
 - (v2) The model should propose memory updates through a schema.
 - The model should summarize evidence and uncertainty.
 
@@ -1459,7 +1456,8 @@ The main system prompt should communicate:
 - Use tools when inspection is needed.
 - Use tools for bash commands, project search, file operations, memory operations, and verification.
 - Do not call tools for ordinary conversation when plain text is enough.
-- Plan before complex or risky tasks.
+- For multi-step work call propose_plan; never write a plan as chat text or ask for approval in prose. (Settled 2026-06-11)
+- After plan approval, keep working in the same turn until done or blocked. (Settled 2026-06-11)
 - Do not hide shell commands.
 - Respect the active security profile.
 - Do not store secrets in memory.

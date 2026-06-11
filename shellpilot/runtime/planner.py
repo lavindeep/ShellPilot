@@ -348,9 +348,9 @@ def make_plan_tools(
         definition=ToolDefinition(
             name="propose_plan",
             description=(
-                "Propose a step-by-step plan for a complex task and ask the user to "
-                "approve it. Required before multi-step changes, file modifications, "
-                "package installs, or risky commands."
+                "Propose a step-by-step plan for a multi-step task and ask the user to "
+                "approve it. Required for tasks needing 3 or more distinct steps. "
+                "Do not use it for a single command or a single file edit — do those directly."
             ),
             parameters={
                 "goal": {"type": "string", "description": "One-sentence task goal."},
