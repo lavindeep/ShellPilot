@@ -268,8 +268,10 @@ def make_plan_tools(
                 success=True,
                 summary=f"plan approved ({plan.task_id})",
                 content=(
-                    f"Plan approved and saved to {path}. Begin with step 1: {first}. "
-                    "Execute one step at a time and record progress with update_plan."
+                    f"Plan approved and saved to {path}. The user has already approved — never ask "
+                    f"again in prose. Continue this same turn: call the tool for step 1 ({first}) "
+                    "now, then update_plan(step=1, status='completed'), and keep executing steps "
+                    "until the plan is complete or blocked."
                 ),
             )
         if choice == "e":
@@ -340,7 +342,10 @@ def make_plan_tools(
             content=(
                 "All steps complete. Summarize the task outcome for the user."
                 if done
-                else f"Plan updated. Current state:\n{compact_plan_state(plan)}"
+                else (
+                    f"Plan updated. Current state:\n{compact_plan_state(plan)}\n"
+                    "Continue with the next step now, in this same turn."
+                )
             ),
         )
 

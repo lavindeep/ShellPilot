@@ -700,9 +700,15 @@ Recommended workflow:
 5. UI shows the rendered plan and plan file path.
 6. User approves, rejects, or suggests revisions.
 7. Model updates the plan file when revisions are requested.
-8. Runtime executes one step at a time.
-9. Runtime updates the plan file after each meaningful step.
-10. Runtime writes a final outcome summary into the plan file when the task finishes.
+8. On approval, the `propose_plan` tool result instructs the model to continue in the same
+   turn: it must call the tool for step 1 immediately, then record progress with
+   `update_plan`, and keep executing steps without asking the user again. The user
+   approval has already been captured; the model must not re-ask in prose.
+9. Each `update_plan` call for a non-final step instructs the model to continue with the
+   next step in the same turn. The final completion result instructs the model to summarize
+   the outcome instead.
+10. Runtime updates the plan file after each meaningful step.
+11. Runtime writes a final outcome summary into the plan file when the task finishes.
 
 The user should not have to manually edit source files. The normal edit interaction is:
 
