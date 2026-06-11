@@ -37,6 +37,7 @@ from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
 from shellpilot.config.model import Settings
 from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
+from shellpilot.memory.store import MemoryFormatError, MemoryStore, MemoryStores, project_id_for
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.paths import AppPaths, project_state_dir
 from shellpilot.persistence.sessions import SessionStore
@@ -240,6 +241,22 @@ def run_interactive(workspace: Path, resume: str | None = None) -> int:
         workspace=workspace,
     )
 
+    try:
+        memory = MemoryStores(
+            global_store=MemoryStore(
+                paths.config_dir / "memory.json", redact=settings.privacy.redact_secrets
+            ),
+            project_store=MemoryStore(
+                project_state_dir(workspace) / "memory.json",
+                project_id=project_id_for(workspace),
+                redact=settings.privacy.redact_secrets,
+            ),
+        )
+    except MemoryFormatError as exc:
+        console.print(f"[sp.error]Memory file problem:[/sp.error] {escape(str(exc))}")
+        console.print("[sp.dim]Continuing without stored memory this session.[/sp.dim]")
+        memory = None
+
     ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner)
     runtime = ConversationRuntime(
         llm=client,
@@ -249,6 +266,7 @@ def run_interactive(workspace: Path, resume: str | None = None) -> int:
         ui=ui,
         audit=audit,
         session=session,
+        memory=memory,
     )
     if restored is not None:
         runtime.restore_history(restored.messages)

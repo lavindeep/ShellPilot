@@ -10,6 +10,7 @@ from shellpilot.config.model import Settings
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import Message, tool_result, user
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.memory.store import MemoryStores
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.sessions import SessionStore
 from shellpilot.persistence.snapshots import SnapshotStore
@@ -67,9 +68,11 @@ class ConversationRuntime:
         registry: ToolRegistry | None = None,
         audit: AuditLogger | None = None,
         session: SessionStore | None = None,
+        memory: MemoryStores | None = None,
     ) -> None:
         self._audit = audit
         self._session = session
+        self._memory = memory
         self._llm = llm
         self._settings = settings
         self._workspace = workspace
@@ -111,6 +114,10 @@ class ConversationRuntime:
     @property
     def session(self) -> SessionStore | None:
         return self._session
+
+    @property
+    def memory(self) -> MemoryStores | None:
+        return self._memory
 
     def _record(self, message: Message) -> None:
         """Append to history and the session transcript together."""
@@ -155,6 +162,11 @@ class ConversationRuntime:
             profile=self._settings.runtime.security_profile,
             behavior_block=self._behavior.as_prompt_block(),
         )
+        if self._memory is not None:
+            memory_cap = max(200, self.budget.model_context_tokens // 16)
+            memory_block = self._memory.render(max_tokens=memory_cap)
+            if memory_block:
+                prompt = f"{prompt}\n\n{memory_block}"
         prompt = f"{prompt}\n\n{PLANNING_GUIDANCE}"
         plan = self.plan_manager.active
         if plan is not None and plan.status in ("active", "blocked"):
