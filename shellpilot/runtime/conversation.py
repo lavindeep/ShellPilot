@@ -67,7 +67,10 @@ class ConversationRuntime:
         self.recent_diffs: list[str] = []
         self.plan_manager = PlanManager(workspace, settings.runtime.security_profile)
         for spec in make_plan_tools(
-            self.plan_manager, ui.ask_plan_approval, lambda: self._last_user_text
+            self.plan_manager,
+            ui.ask_plan_approval,
+            lambda: self._last_user_text,
+            on_step_change=ui.show_plan_progress,
         ):
             self._registry.register(spec)
         self.budget = self._resolve_budget()

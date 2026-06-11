@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from shellpilot.policy.approvals import ApprovalRequest
+    from shellpilot.runtime.planner import TaskPlan
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,10 @@ class RuntimeUI(Protocol):
 
     def ask_approval(self, request: ApprovalRequest) -> bool: ...
 
-    def ask_plan_approval(self, rendered: str, path: str) -> tuple[str, str]:
+    def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
         """Returns (choice, revision_text); choice is 'y', 'e', or 'n'."""
+        ...
+
+    def show_plan_progress(self, plan: TaskPlan) -> None:
+        """A plan step changed status; show the updated checklist."""
         ...

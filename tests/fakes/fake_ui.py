@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from shellpilot.policy.approvals import ApprovalRequest
     from shellpilot.runtime.events import TurnStats
+    from shellpilot.runtime.planner import TaskPlan
 
 
 @dataclass
@@ -25,6 +26,7 @@ class FakeUI:
     approve_actions: bool = True
     plan_approvals: list[tuple[str, str]] = field(default_factory=list)
     plan_answer: tuple[str, str] = ("y", "")
+    plan_progress: list[list[str]] = field(default_factory=list)
 
     def stream_token(self, token: str) -> None:
         self.tokens.append(token)
@@ -57,6 +59,9 @@ class FakeUI:
         self.approval_requests.append(request)
         return self.approve_actions
 
-    def ask_plan_approval(self, rendered: str, path: str) -> tuple[str, str]:
-        self.plan_approvals.append((rendered, path))
+    def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
+        self.plan_approvals.append((plan.task_id, path))
         return self.plan_answer
+
+    def show_plan_progress(self, plan: TaskPlan) -> None:
+        self.plan_progress.append([step.status for step in plan.steps])

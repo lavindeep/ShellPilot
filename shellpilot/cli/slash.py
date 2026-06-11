@@ -9,6 +9,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from shellpilot.cli.render import plan_panel, render_diff
+from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs
 from shellpilot.config.loader import ConfigError, LoadedConfig
 from shellpilot.llm.client import LLMClient
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -89,6 +91,7 @@ class SlashDispatcher:
         user_config_file: Path,
         reload_config: Callable[[], LoadedConfig],
         confirm: Callable[[str], bool] = _default_confirm,
+        glyphs: Glyphs = UNICODE_GLYPHS,
     ) -> None:
         self._runtime = runtime
         self._client = client
@@ -97,6 +100,7 @@ class SlashDispatcher:
         self._user_config_file = user_config_file
         self._reload_config = reload_config
         self._confirm = confirm
+        self._glyphs = glyphs
 
     def handle(self, line: str) -> SlashAction:
         parts = line.strip().split()
@@ -228,15 +232,13 @@ class SlashDispatcher:
             self._console.print("Usage: /config show | /config edit | /config reload")
 
     def _plan(self, args: list[str]) -> None:
-        from shellpilot.runtime.planner import render_plan_terminal
-
         manager = self._runtime.plan_manager
         plan = manager.active
         if plan is None:
             self._console.print("[dim]No active plan.[/dim]")
             return
         if not args:
-            self._console.print(render_plan_terminal(plan))
+            self._console.print(plan_panel(plan, self._glyphs))
             self._console.print(f"[dim]Status: {plan.status}[/dim]")
             return
         if args[0] == "path":
@@ -284,7 +286,7 @@ class SlashDispatcher:
             self._console.print("[dim]No agent edits this session.[/dim]")
             return
         for diff in diffs[-5:]:
-            self._console.print(diff, markup=False, highlight=False)
+            self._console.print(render_diff(diff, self._glyphs))
 
     def _profile(self, args: list[str]) -> None:
         import dataclasses

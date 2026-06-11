@@ -224,14 +224,16 @@ class PlanManager:
         self._write(self.active)
 
 
-PlanApprovalAsker = Callable[[str, str], tuple[str, str]]
+PlanApprovalAsker = Callable[["TaskPlan", str], tuple[str, str]]
 UserIntentGetter = Callable[[], str]
+PlanProgressShower = Callable[["TaskPlan"], None]
 
 
 def make_plan_tools(
     manager: PlanManager,
     ask_plan_approval: PlanApprovalAsker,
     get_user_intent: UserIntentGetter,
+    on_step_change: PlanProgressShower | None = None,
 ) -> list[ToolSpec]:
     """Plan tools close over the manager and the UI approval flow."""
 
@@ -258,7 +260,7 @@ def make_plan_tools(
             verification=[str(item) for item in arguments.get("verification", [])],
         )
         path = manager.artifact_path(plan)
-        choice, revision_text = ask_plan_approval(render_plan_terminal(plan), str(path))
+        choice, revision_text = ask_plan_approval(plan, str(path))
         if choice == "y":
             manager.approve()
             first = plan.steps[0].title if plan.steps else "the task"
@@ -311,6 +313,8 @@ def make_plan_tools(
             if error:
                 return ToolResult(success=False, summary=error, content=error)
             messages.append(f"step {step} -> {status}")
+            if on_step_change is not None and manager.active is not None:
+                on_step_change(manager.active)
         elif arguments.get("note"):
             manager.log(str(arguments["note"]))
             messages.append("noted")

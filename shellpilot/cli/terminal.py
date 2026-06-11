@@ -8,11 +8,29 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.markup import escape
+from rich.padding import Padding
 
 from shellpilot import __version__
+from shellpilot.cli.input import PromptContext, make_input
 from shellpilot.cli.manual_shell import manual_shell_loop
-from shellpilot.cli.render import turn_stats as render_turn_stats
-from shellpilot.cli.slash import SlashAction, SlashDispatcher
+from shellpilot.cli.render import (
+    approval_cwd,
+    approval_info,
+    banner,
+    plan_panel,
+    plan_step_line,
+    render_diff,
+)
+from shellpilot.cli.render import (
+    tool_call as render_tool_call,
+)
+from shellpilot.cli.render import (
+    tool_result as render_tool_result,
+)
+from shellpilot.cli.render import (
+    turn_stats as render_turn_stats,
+)
+from shellpilot.cli.slash import SlashAction, SlashDispatcher, command_words
 from shellpilot.cli.streaming import AviationSpinner, ResponseStream
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
 from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
@@ -25,8 +43,7 @@ from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import TurnStats
-
-PROMPT = "[bold cyan]\\[AI] >[/bold cyan] "
+from shellpilot.runtime.planner import TaskPlan
 
 
 class TerminalUI:
@@ -63,56 +80,63 @@ class TerminalUI:
         self._stream.feed(token)
 
     def show_status(self, text: str) -> None:
-        self._console.print(f"[dim]{escape(text)}[/dim]")
+        self._console.print(f"[sp.dim]{escape(text)}[/sp.dim]")
 
     def show_error(self, text: str) -> None:
-        self._console.print(f"[red]{escape(text)}[/red]")
+        self._console.print(f"[sp.error]{escape(text)}[/sp.error]")
 
     def show_tool_call(self, name: str, arguments: dict[str, object]) -> None:
-        rendered = " ".join(f"{key}={value!r}" for key, value in arguments.items())
-        self._console.print(f"[dim]→ {escape(name)} {escape(rendered)}[/dim]")
+        summary = ", ".join(f"{key}={value!r}" for key, value in arguments.items())
+        if len(summary) > 80:
+            summary = summary[:79] + self._glyphs.ellipsis
+        self._console.print(render_tool_call(name, summary, self._glyphs))
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
-        mark = "[green]✓[/green]" if success else "[red]✗[/red]"
-        self._console.print(f"[dim]{mark} {escape(summary)}[/dim]")
+        self._console.print(render_tool_result(success, summary, self._glyphs))
 
     def show_command_output(self, line: str) -> None:
-        self._console.print(escape(line), markup=False, highlight=False)
+        self._console.print("    " + line, style="sp.dim", markup=False, highlight=False)
+
+    def show_plan_progress(self, plan: TaskPlan) -> None:
+        for index, step in enumerate(plan.steps, 1):
+            self._console.print(Padding(plan_step_line(index, step, self._glyphs), (0, 0, 0, 2)))
+
+    def _plain_badges(self) -> bool:
+        return self._console.no_color or not self._console.is_terminal
 
     def ask_approval(self, request: ApprovalRequest) -> bool:
-        """Approval UX per design section 20: high risk requires typing 'run'."""
-        risk_color = "red" if request.risk is RiskLevel.HIGH else "yellow"
-        self._console.print(
-            f"\n[{risk_color} bold]{request.risk.value.capitalize()} risk "
-            f"{request.kind}[/{risk_color} bold]"
-        )
-        self._console.print(f"CWD: {request.cwd}")
-        self._console.print(f"Command: {escape(request.display)}")
-        if request.purpose:
-            self._console.print(f"Purpose: {escape(request.purpose)}")
-        elif request.reasons:
-            self._console.print(f"Why flagged: {escape('; '.join(request.reasons))}")
+        """Badge-block approval (section 31.5); high risk requires typing 'run'.
+
+        No head line here: the tool-call line printed just before the approval
+        already names the action, so repeating it would duplicate output.
+        """
+        self._console.print()
         if request.diff:
-            self._console.print(escape(request.diff), markup=False, highlight=False)
+            self._console.print(Padding(render_diff(request.diff, self._glyphs), (0, 0, 0, 2)))
+        self._console.print(approval_info(request, plain_badge=self._plain_badges()))
+        self._console.print(approval_cwd(request))
         try:
             if request.risk is RiskLevel.HIGH:
                 answer = self._console.input(
-                    'Run it? Type "run" to execute, or press Enter to cancel: '
+                    '  Type [sp.risk.high]"run"[/sp.risk.high] to execute, '
+                    "or press Enter to cancel: "
                 )
                 return answer.strip().lower() == "run"
-            answer = self._console.input("Approve? \\[y/N] ")
+            answer = self._console.input("  Approve? [sp.dim]\\[y/n][/sp.dim] ")
             return answer.strip().lower() in ("y", "yes")
         except (EOFError, KeyboardInterrupt):
             return False
 
-    def ask_plan_approval(self, rendered: str, path: str) -> tuple[str, str]:
+    def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
         self._console.print()
-        self._console.print(escape(rendered), markup=False, highlight=False)
-        self._console.print(f"[dim]Plan saved to {escape(path)}[/dim]")
+        self._console.print(plan_panel(plan, self._glyphs))
+        self._console.print(f"[sp.faint]{escape(path)}[/sp.faint]")
         try:
             while True:
                 answer = (
-                    self._console.input("Approve plan? \\[y]es / \\[e]dit / \\[n]o: ")
+                    self._console.input(
+                        "Approve plan? [sp.dim]\\[y]es / \\[e]dit / \\[n]o[/sp.dim] "
+                    )
                     .strip()
                     .lower()
                 )
@@ -205,21 +229,24 @@ def run_interactive(workspace: Path) -> int:
         loaded=loaded,
         user_config_file=user_file,
         reload_config=load,
+        glyphs=glyphs,
     )
 
-    console.print(
-        f"[bold]ShellPilot {__version__}[/bold] — model {runtime.model}, "
-        f"profile {settings.runtime.security_profile}"
-    )
-    console.print(f"[dim]Workspace: {workspace} — /help for commands, /exit to quit.[/dim]")
+    console.print(banner(__version__, runtime.model, settings.runtime.security_profile))
+    reader = make_input(console, paths.state_dir, command_words(), glyphs)
 
     while True:
+        status = runtime.status()
+        context = PromptContext(
+            workspace=status.workspace, model=status.model, profile=status.profile
+        )
+        console.print()
         try:
-            line = console.input(PROMPT).strip()
+            line = reader.read(context)
         except EOFError:
             break
         except KeyboardInterrupt:
-            console.print("[dim](Ctrl-C — use /exit to quit)[/dim]")
+            console.print("[sp.dim](Ctrl-C — use /exit to quit)[/sp.dim]")
             continue
         if not line:
             continue
@@ -232,12 +259,9 @@ def run_interactive(workspace: Path) -> int:
             continue
         try:
             runtime.run_turn(line)
-            console.print()
         except KeyboardInterrupt:
-            console.print()
             ui.show_status("Interrupted.")
         except OllamaError as exc:
-            console.print()
             ui.show_error(f"Model call failed: {exc}")
     audit.write("session_end")
     return 0
