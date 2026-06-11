@@ -248,7 +248,7 @@ shellpilot doctor
 - Python version.
 - Ollama availability.
 - Ollama API reachability.
-- Installed Gemma 4 models.
+- Installed local models (with tested/untested family tags).
 - State/config directories.
 - Write access to project workspace.
 
@@ -1872,7 +1872,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 | Area | Include |
 |---|---|
 | Runtime | One conversation loop with plain text by default and tools only when useful. |
-| Model | Ollama + Gemma 4 local integration. |
+| Model | Ollama + multi-model local integration (gemma4 default; TESTED_FAMILIES registry). |
 | UI | `rich` terminal output, simple input, slash commands. |
 | Config | Basic layered config with TOML and environment overrides. |
 | Planning | `.shellpilot/tasks/<task-id>/PLAN.md` artifacts. |
@@ -2089,7 +2089,7 @@ V1 ends here. The phases below are v2.
 The rebuild is usable when:
 
 - A fresh clone can be installed locally with documented commands.
-- `shellpilot doctor` validates Ollama and Gemma 4 availability.
+- `shellpilot doctor` validates Ollama reachability and installed model availability.
 - The user can start one conversation loop.
 - The assistant can answer simple questions without tools.
 - The assistant can inspect project files with read-only tools.
