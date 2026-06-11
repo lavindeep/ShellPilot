@@ -93,6 +93,11 @@ class ConversationRuntime:
             on_step_change=ui.show_plan_progress,
         ):
             self._registry.register(spec)
+        if memory is not None:
+            from shellpilot.tools.memory_tools import make_memory_tools
+
+            for spec in make_memory_tools(memory):
+                self._registry.register(spec)
         self.budget = self._resolve_budget()
 
     @property

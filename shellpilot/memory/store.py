@@ -90,6 +90,13 @@ class MemoryStore:
     def facts(self) -> tuple[ProjectFact, ...]:
         return tuple(self._facts)
 
+    def reload(self) -> None:
+        """Re-read the file (e.g. after the user hand-edited it via /prefs edit)."""
+        self._preferences = []
+        self._facts = []
+        if self.path.is_file():
+            self._load()
+
     def _load(self) -> None:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))

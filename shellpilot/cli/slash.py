@@ -49,6 +49,12 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/profile use <name>", "Switch profile: supervised or balanced."),
     ("/logs", "Show recent local audit events."),
     ("/export <path>", "Export this session's transcript to markdown."),
+    ("/memory show", "Show stored preferences and project facts with ids."),
+    ("/memory add <text>", "Add a global behavior preference after confirmation."),
+    ("/memory forget <id>", "Remove a memory entry after confirmation."),
+    ("/memory compact", "Model-assisted preference cleanup, approved before saving."),
+    ("/prefs show", "Show behavior preferences."),
+    ("/prefs edit", "Show the memory file paths for hand-editing."),
     ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
 ]
 
@@ -140,6 +146,10 @@ class SlashDispatcher:
             self._logs()
         elif command == "/export":
             self._export(args)
+        elif command == "/memory":
+            self._memory(args)
+        elif command == "/prefs":
+            self._prefs(args)
         else:
             self._console.print(f"[red]Unknown command: {command}[/red] — type /help for commands.")
         return SlashAction.CONTINUE
@@ -354,6 +364,173 @@ class SlashDispatcher:
         if self._runtime.audit is not None:
             self._runtime.audit.write("export", summary=str(target))
         self._console.print(f"Exported transcript to {target}")
+
+    def _memory(self, args: list[str]) -> None:
+        stores = self._runtime.memory
+        if stores is None:
+            self._console.print("[dim]Memory is not available this session.[/dim]")
+            return
+        action = args[0] if args else "show"
+        if action == "show":
+            stores.global_store.reload()
+            stores.project_store.reload()
+            block = stores.render(max_tokens=4000)
+            if block:
+                self._console.print(block, markup=False, highlight=False)
+            else:
+                self._console.print("[dim]No stored memory yet.[/dim]")
+            self._console.print(f"[dim]Global: {stores.global_store.path}[/dim]")
+            self._console.print(f"[dim]Project: {stores.project_store.path}[/dim]")
+            return
+        if action == "add":
+            text = " ".join(args[1:]).strip()
+            if not text:
+                self._console.print("Usage: /memory add <preference text>")
+                return
+            if self._confirm(f'Add global preference "{text}"?'):
+                preference = stores.global_store.add_preference(text, scope="global", source="user")
+                self._audit_memory(f"add {preference.id}")
+                self._console.print(f"Saved {preference.id}.")
+            return
+        if action == "forget":
+            if len(args) < 2:
+                self._console.print("Usage: /memory forget <id>")
+                return
+            entry_id = args[1]
+            store = stores.find_store(entry_id)
+            if store is None:
+                self._console.print(f"[red]No memory entry {entry_id}.[/red] See /memory show.")
+                return
+            if self._confirm(f"Forget {entry_id}?"):
+                store.remove(entry_id)
+                self._audit_memory(f"forget {entry_id}")
+                self._console.print(f"Removed {entry_id}.")
+            return
+        if action == "compact":
+            self._memory_compact(stores)
+            return
+        self._console.print(
+            "Usage: /memory show | /memory add <text> | /memory forget <id> | /memory compact"
+        )
+
+    def _audit_memory(self, summary: str) -> None:
+        if self._runtime.audit is not None:
+            self._runtime.audit.write("memory_update", summary=summary)
+
+    def _memory_compact(self, stores: object) -> None:
+        import json
+
+        from shellpilot.llm.messages import Message
+        from shellpilot.memory.store import MemoryStores, Preference
+        from shellpilot.prompts.memory import MEMORY_COMPACT_PROMPT
+
+        assert isinstance(stores, MemoryStores)
+        by_store = {
+            "global": stores.global_store,
+            "project": stores.project_store,
+        }
+        all_preferences = {
+            preference.id: (name, preference)
+            for name, store in by_store.items()
+            for preference in store.preferences
+        }
+        if len(all_preferences) < 2:
+            self._console.print("[dim]Not enough preferences to compact.[/dim]")
+            return
+        entries = json.dumps(
+            [
+                {"id": p.id, "scope": p.scope, "text": p.text, "source": p.source}
+                for _, p in all_preferences.values()
+            ],
+            indent=2,
+        )
+        try:
+            reply = self._client.chat(
+                self._runtime.model,
+                [Message(role="user", content=MEMORY_COMPACT_PROMPT.format(entries=entries))],
+                num_ctx=min(4096, self._runtime.budget.model_context_tokens),
+            )
+        except Exception as exc:  # noqa: BLE001 - optimization is best-effort
+            self._console.print(f"[red]Memory compaction failed:[/red] {exc}")
+            return
+        content = reply.content.strip()
+        start, end = content.find("["), content.rfind("]")
+        if start == -1 or end <= start:
+            self._console.print("[red]The model did not return a valid entry list.[/red]")
+            return
+        try:
+            final_entries = json.loads(content[start : end + 1])
+        except json.JSONDecodeError:
+            self._console.print("[red]The model did not return valid JSON.[/red]")
+            return
+        final_ids = {str(e.get("id", "")) for e in final_entries if isinstance(e, dict)}
+        unknown = final_ids - set(all_preferences)
+        if unknown:
+            self._console.print(f"[red]Optimization rejected:[/red] unknown ids {unknown}.")
+            return
+        dropped_user = [
+            pid
+            for pid, (_, p) in all_preferences.items()
+            if p.source == "user" and pid not in final_ids
+        ]
+        if dropped_user:
+            self._console.print(
+                f"[red]Optimization rejected:[/red] it would drop user entries {dropped_user}."
+            )
+            return
+        kept = len(final_ids)
+        if not self._confirm(f"Apply optimization: {len(all_preferences)} preferences -> {kept}?"):
+            return
+        for name, store in by_store.items():
+            new_preferences = []
+            for entry in final_entries:
+                if not isinstance(entry, dict):
+                    continue
+                pid = str(entry.get("id", ""))
+                store_name, original = all_preferences[pid]
+                if store_name != name:
+                    continue
+                text = str(entry.get("text", "")).strip() or original.text
+                new_preferences.append(
+                    Preference(
+                        id=original.id,
+                        scope=original.scope,
+                        text=text,
+                        source=original.source,
+                        updated_at=original.updated_at,
+                    )
+                )
+            store.replace_all(new_preferences, list(store.facts))
+        self._audit_memory(f"compact {len(all_preferences)} -> {kept}")
+        self._console.print(f"Memory compacted: {len(all_preferences)} -> {kept} preferences.")
+
+    def _prefs(self, args: list[str]) -> None:
+        stores = self._runtime.memory
+        if stores is None:
+            self._console.print("[dim]Memory is not available this session.[/dim]")
+            return
+        action = args[0] if args else "show"
+        if action == "show":
+            preferences = list(stores.global_store.preferences) + list(
+                stores.project_store.preferences
+            )
+            if not preferences:
+                self._console.print("[dim]No behavior preferences stored.[/dim]")
+                return
+            for preference in preferences:
+                self._console.print(
+                    f"[{preference.id}] ({preference.scope}, {preference.source}) "
+                    f"{preference.text}",
+                    markup=False,
+                    highlight=False,
+                )
+            return
+        if action == "edit":
+            self._console.print(f"Global memory: {stores.global_store.path}")
+            self._console.print(f"Project memory: {stores.project_store.path}")
+            self._console.print("Edit by hand, then run /memory show to reload.")
+            return
+        self._console.print("Usage: /prefs show | /prefs edit")
 
     def _tools(self) -> None:
         profile = self._runtime.settings.runtime.security_profile

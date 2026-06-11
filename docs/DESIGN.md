@@ -1171,11 +1171,15 @@ The assistant may inspect these only when:
 
 ## 16. Memory System (v2)
 
-The full memory system in this section is deferred to v2.
+Implemented in v0.3.0 (settled 2026-06-11) following this section's design, with these implementation notes:
 
-V1 behavior instructions are static: the runtime reads `~/.config/<app>/AGENTS.md` and `<project>/AGENTS.md` at session start and includes them in the system context. The user edits these files directly; the assistant does not write them. There are no memory tools, no proposal flow, and no optimization in v1.
+- Stores: global `memory.json` in the user config dir, project `.shellpilot/memory.json` with `project_id`. Versioned schema, explicit validation (unknown versions rejected), atomic writes, secrets redacted before disk.
+- Facts carry an `id` (e.g. `fact_001`) — an addition to the 16.5 example schema — so `/memory forget` can address them.
+- Tools: `memory_read` (read-only, auto) and `memory_propose_update` (the model's only write path; MEDIUM risk, approval required in every profile, with a diff-style preview). The runtime injects a budget-capped Memory block into the system prompt each turn.
+- `/memory compact` optimization (16.4) covers preferences; facts are structured and excluded for now. A deterministic guard rejects any optimization that drops or invents ids, or drops a `source: user` entry — regardless of what the model returns.
+- AGENTS.md remains read-only and is loaded alongside memory; `trusted-local` auto-save (16.3) remains moot until that profile exists.
 
-The rest of this section is kept as the v2 design so implementation can start from a settled direction.
+V1 behavior instructions were static AGENTS.md only; that path still works unchanged.
 
 Memory should become a first-class feature, not just a project file index.
 
@@ -1569,19 +1573,16 @@ Planned commands:
 | `/compact auto off` | Disable automatic token-budget compaction. |
 | `/logs` | Show recent local audit/session events. |
 | `/export <path>` | Export this session's transcript to markdown (default `.shellpilot/exports/<session-id>.md`). |
+| `/memory show` | Show project and behavior memory summaries with entry ids. |
+| `/memory add <text>` | Add a global behavior preference after confirmation. |
+| `/memory forget <id>` | Remove a memory entry after confirmation. |
+| `/memory compact` | Model-assisted preference optimization, approved before saving (section 16.4). |
+| `/prefs show` | Show behavior preferences. |
+| `/prefs edit` | Show the memory file paths for hand-editing; `/memory show` reloads. |
 | `/shell` | Enter Manual Shell mode. |
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
 
-Scheduled for v2, v0.3.0 release (settled 2026-06-11):
-
-| Command | Purpose |
-|---|---|
-| `/memory show` | Show project and behavior memory summaries. |
-| `/memory add <text>` | Add a memory entry with approval. |
-| `/memory forget <id>` | Remove a memory entry after confirmation. |
-| `/memory compact` | Optimize memory entries while preserving explicit user instructions. |
-| `/prefs show` | Show behavior preferences. |
-| `/prefs edit` | Edit human-readable behavior preferences. |
+All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped and appear in the table above.
 
 Deferred to v3 candidates:
 
