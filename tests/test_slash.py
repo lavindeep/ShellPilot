@@ -160,3 +160,14 @@ def test_profile_use_switches_and_audits(tmp_path: Path) -> None:
     harness.dispatcher.handle("/profile use trusted-local")
     assert harness.runtime.settings.runtime.security_profile == "supervised"  # rejected
     assert "not a v1 profile" in harness.output()
+
+
+def test_compact_auto_toggle(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    assert harness.runtime.settings.runtime.auto_compact is True
+    harness.dispatcher.handle("/compact auto off")
+    assert harness.runtime.settings.runtime.auto_compact is False
+    harness.dispatcher.handle("/compact status")
+    assert "Automatic compaction: off" in harness.output()
+    harness.dispatcher.handle("/compact auto on")
+    assert harness.runtime.settings.runtime.auto_compact is True

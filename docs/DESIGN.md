@@ -1335,6 +1335,7 @@ security_profile = "balanced"
 max_plan_steps = 10
 max_tool_turns = 12
 command_timeout_seconds = 600
+auto_compact = true  # selective token-budget compaction (v0.3.0, section 20.2)
 
 [context]
 model_context_tokens = "auto"
@@ -1562,8 +1563,10 @@ Planned commands:
 | `/plan cancel` | Cancel the active plan. |
 | `/plan revise <instruction>` | Ask the assistant to revise the active plan before continuing. |
 | `/diff` | Show pending or recent file diffs from agent edits. |
-| `/compact` | Truncate older conversation context now. |
-| `/compact status` | Show estimated context usage, model context length, and truncation thresholds. |
+| `/compact` | Compact older conversation context now (selective, section 20.2). |
+| `/compact status` | Show estimated context usage, model context length, and compaction thresholds. |
+| `/compact auto on` | Enable automatic token-budget compaction. |
+| `/compact auto off` | Disable automatic token-budget compaction. |
 | `/logs` | Show recent local audit/session events. |
 | `/shell` | Enter Manual Shell mode. |
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
@@ -1578,8 +1581,6 @@ Scheduled for v2, v0.3.0 release (settled 2026-06-11):
 | `/memory compact` | Optimize memory entries while preserving explicit user instructions. |
 | `/prefs show` | Show behavior preferences. |
 | `/prefs edit` | Edit human-readable behavior preferences. |
-| `/compact auto on` | Enable automatic token-budget compaction. |
-| `/compact auto off` | Disable automatic token-budget compaction. |
 | `/export` | Export session summary, logs, or task transcript. |
 
 Deferred to v3 candidates:
@@ -1594,7 +1595,13 @@ Deferred to v3 candidates:
 
 `/compact` must be reliable because the harness depends on long-running local context.
 
-V1 compaction is deliberately simple: when estimated context crosses the threshold, the runtime truncates or summarizes the oldest conversation turns first. Selective token-budget compaction, which scores and compresses individual context items, is v2.
+V1 compaction was deliberately simple: oldest-first truncation. Selective token-budget compaction shipped in v0.3.0 (settled 2026-06-11) as three deterministic passes, cheapest loss first:
+
+1. Digest old tool results in place (head/tail excerpt with an omission marker). Allowed everywhere except the in-flight exchange; snapshot staleness checks still force a fresh read before any write.
+2. Drop the oldest non-user messages outside the recent window. An assistant tool call takes its tool-result messages with it so no orphans confuse the model.
+3. Last resort: drop the oldest user messages, always keeping the newest one.
+
+No model call is involved — compaction is deterministic by design, matching the policy-first philosophy. Model-written summaries of dropped turns were considered and deliberately omitted. `/compact auto on|off` toggles automatic compaction (`[runtime] auto_compact`, default on); with it off, a turn that would exceed the hard limit is refused with guidance instead.
 
 Even simple truncation must preserve:
 

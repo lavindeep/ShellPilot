@@ -23,6 +23,20 @@ from shellpilot.tools.registry import ToolRegistry, default_registry
 
 MIN_KEPT_MESSAGES = 4
 MAX_CONSECUTIVE_MALFORMED = 2
+TOOL_DIGEST_HEAD = 200
+TOOL_DIGEST_TAIL = 200
+
+
+def _digest_text(content: str) -> str:
+    """Head/tail digest for an old tool result; deterministic, no model call."""
+    if len(content) <= TOOL_DIGEST_HEAD + TOOL_DIGEST_TAIL + 60:
+        return content
+    omitted = len(content) - TOOL_DIGEST_HEAD - TOOL_DIGEST_TAIL
+    return (
+        content[:TOOL_DIGEST_HEAD]
+        + f"\n[... {omitted} chars compacted ...]\n"
+        + content[-TOOL_DIGEST_TAIL:]
+    )
 
 
 @dataclass(frozen=True)
@@ -140,16 +154,57 @@ class ConversationRuntime:
             history_messages=len(self._history),
         )
 
+    def _over_threshold(self) -> bool:
+        return self.estimated_prompt_tokens() > self.budget.compact_at_tokens
+
+    def _old_region(self) -> int:
+        """Messages before this index are compactable; the recent window is not."""
+        return max(0, len(self._history) - MIN_KEPT_MESSAGES)
+
     def compact_now(self) -> int:
-        """Drop oldest turns down to the compaction threshold; returns messages dropped."""
-        dropped = 0
-        while (
-            self.estimated_prompt_tokens() > self.budget.compact_at_tokens
-            and len(self._history) > MIN_KEPT_MESSAGES
-        ):
-            self._history.pop(0)
-            dropped += 1
-        return dropped
+        """Selective compaction (section 20.2): cheapest context first.
+
+        Pass 1 digests old tool results in place; pass 2 drops old non-user
+        messages (an assistant tool call takes its tool results with it, so no
+        orphans confuse the model); pass 3, last resort, drops the oldest user
+        messages while always keeping the newest one. Plan state and snapshot
+        metadata live outside history and are never touched.
+        """
+        changed = 0
+        # Digestion may reach everything except the in-flight exchange (last 2
+        # messages); snapshot staleness checks still force a fresh read before
+        # any write, so losing exact tool text is safe. Drops below stay gated
+        # by the wider MIN_KEPT_MESSAGES window.
+        for index in range(max(0, len(self._history) - 2)):
+            if not self._over_threshold():
+                break
+            message = self._history[index]
+            if message.role == "tool":
+                digest = _digest_text(message.content)
+                if digest != message.content:
+                    self._history[index] = Message(role="tool", content=digest)
+                    changed += 1
+        while self._over_threshold():
+            drop_index = next(
+                (i for i in range(self._old_region()) if self._history[i].role != "user"),
+                None,
+            )
+            if drop_index is None:
+                break
+            removed = self._history.pop(drop_index)
+            changed += 1
+            if removed.tool_calls:
+                # The results belong to the dropped call; orphans confuse the model.
+                while drop_index < len(self._history) and self._history[drop_index].role == "tool":
+                    self._history.pop(drop_index)
+                    changed += 1
+        while self._over_threshold():
+            user_indices = [i for i, m in enumerate(self._history) if m.role == "user"]
+            if len(user_indices) <= 1:
+                break
+            self._history.pop(user_indices[0])
+            changed += 1
+        return changed
 
     def run_turn(self, text: str) -> str:
         """One user turn: budget-check, compact, call the model, stream, record."""
@@ -161,14 +216,24 @@ class ConversationRuntime:
             )
             return ""
 
+        if not self._settings.runtime.auto_compact and (
+            self.estimated_prompt_tokens() + estimate_tokens(text) > self.budget.hard_limit_tokens
+        ):
+            self._ui.show_status(
+                "Context is over the hard limit and automatic compaction is off. "
+                "Run /compact (or /clear), or turn it back on with /compact auto on."
+            )
+            return ""
+
         started = time.monotonic()
         self._last_user_text = text
         if self._audit is not None:
             self._audit.write("user_turn", chars=len(text))
         self._history.append(user(text))
-        dropped = self.compact_now()
-        if dropped:
-            self._ui.show_status(f"Compacted context: dropped {dropped} oldest messages.")
+        if self._settings.runtime.auto_compact:
+            adjusted = self.compact_now()
+            if adjusted:
+                self._ui.show_status(f"Compacted context: adjusted {adjusted} messages.")
         content = self._tool_loop().content
         self._ui.turn_finished(self._turn_stats(time.monotonic() - started))
         return content

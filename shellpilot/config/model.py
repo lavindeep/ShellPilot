@@ -22,6 +22,7 @@ class RuntimeSettings:
     max_plan_steps: int = 10
     max_tool_turns: int = 12
     command_timeout_seconds: int = 600
+    auto_compact: bool = True  # selective token-budget compaction (section 20.2)
 
 
 @dataclass(frozen=True)

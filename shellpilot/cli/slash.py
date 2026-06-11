@@ -33,8 +33,9 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/config show", "Print resolved config with source layers."),
     ("/config edit", "Show the user config path for editing."),
     ("/config reload", "Reload config from disk."),
-    ("/compact", "Truncate older conversation context now."),
+    ("/compact", "Compact older conversation context now."),
     ("/compact status", "Show context usage and compaction thresholds."),
+    ("/compact auto <on|off>", "Toggle automatic token-budget compaction."),
     ("/plan", "Show the active plan."),
     ("/plan path", "Show the active plan artifact path."),
     ("/plan cancel", "Cancel the active plan after confirmation."),
@@ -347,20 +348,36 @@ class SlashDispatcher:
         self._console.print(table)
 
     def _compact(self, args: list[str]) -> None:
+        import dataclasses
+
         if args and args[0] == "status":
             status = self._runtime.status()
             budget = status.budget
+            auto = "on" if self._runtime.settings.runtime.auto_compact else "off"
             self._console.print(f"Model: {status.model}")
             self._console.print(f"Detected context: {budget.model_context_tokens} tokens")
             self._console.print(f"Current prompt estimate: {status.estimated_prompt_tokens} tokens")
             self._console.print(f"Compact at: {budget.compact_at_tokens} tokens")
             self._console.print(f"Hard limit: {budget.hard_limit_tokens} tokens")
-            self._console.print("Automatic compaction: on")
+            self._console.print(f"Automatic compaction: {auto}")
             plan = self._runtime.plan_manager.active
             self._console.print(f"Active plan: {'yes' if plan is not None else 'no'}")
             return
-        dropped = self._runtime.compact_now()
-        if dropped:
-            self._console.print(f"[dim]Compacted: dropped {dropped} oldest messages.[/dim]")
+        if args and args[0] == "auto":
+            if len(args) > 1 and args[1] in ("on", "off"):
+                settings = self._runtime.settings
+                new_runtime = dataclasses.replace(settings.runtime, auto_compact=args[1] == "on")
+                self._runtime.update_settings(dataclasses.replace(settings, runtime=new_runtime))
+                if self._runtime.audit is not None:
+                    self._runtime.audit.write(
+                        "config_change", setting="auto_compact", value=args[1]
+                    )
+                self._console.print(f"Automatic compaction: {args[1]}")
+                return
+            self._console.print("Usage: /compact auto on | /compact auto off")
+            return
+        adjusted = self._runtime.compact_now()
+        if adjusted:
+            self._console.print(f"[dim]Compacted: adjusted {adjusted} messages.[/dim]")
         else:
             self._console.print("[dim]Nothing to compact.[/dim]")
