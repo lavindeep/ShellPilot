@@ -348,6 +348,14 @@ def run_interactive(
         audit.write("session_resume", summary=restored.session_id)
     reader = make_input(console, paths.state_dir, command_words(), glyphs)
 
+    # When a turn completes (normally or via the inner KeyboardInterrupt handler)
+    # a buffered SIGINT can be delivered to the very next reader.read() call,
+    # firing the outer KeyboardInterrupt handler and printing the hint AFTER the
+    # prompt has already appeared.  _turn_just_ran tracks this: set to True after
+    # every turn dispatch so the outer handler silently discards the stale
+    # interrupt instead of printing the hint.
+    _turn_just_ran = False
+
     while True:
         status = runtime.status()
         context = PromptContext(
@@ -356,10 +364,15 @@ def run_interactive(
         console.print()
         try:
             line = reader.read(context)
+            _turn_just_ran = False
         except EOFError:
             break
         except KeyboardInterrupt:
-            console.print("[sp.dim](Ctrl-C — use /exit to quit)[/sp.dim]")
+            if _turn_just_ran:
+                # Stale interrupt from a completed turn — discard it silently.
+                _turn_just_ran = False
+            else:
+                console.print("[sp.dim](Ctrl-C — use /exit to quit)[/sp.dim]")
             continue
         if not line:
             continue
@@ -386,5 +399,7 @@ def run_interactive(
             ui.show_status("Interrupted.")
         except OllamaError as exc:
             ui.show_error(f"Model call failed: {exc}")
+        finally:
+            _turn_just_ran = True
     audit.write("session_end")
     return 0
