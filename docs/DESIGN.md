@@ -1062,8 +1062,11 @@ Preferred order:
 - A packed shell line (shell syntax in `argv[0]` or a single-token command string with spaces).
 - An `argv[0]` that resolves to a missing or non-executable path (path-separator form).
 - An `argv[0]` that is not found on `PATH` (bare-name form).
+- A standalone shell-operator token (e.g. `|`, `>`, `&&`) appearing anywhere in `argv`. Note: `;` is deliberately exempt — `find -exec ... ;` passes a literal `;` argument to `find`, and a stray `;` elsewhere fails naturally without harm.
 
 When a PATH miss is detected, the runtime produces deterministic suggestions: it probes `<name>3` first (covers `python→python3`, `pip→pip3`) and then scans PATH for close matches via `difflib`. Example message: `executable 'python' not found on PATH — did you mean: python3?`
+
+When a packed single-token command contains no shell syntax markers, the runtime computes `shlex.split` on the token and appends a deterministic `Did you mean argv=[...]?` suggestion to the rejection message, e.g. `Did you mean argv=["python", "-m", "unittest", "test_calculator.py"]?`. Packed tokens that contain shell syntax (pipes, redirects) receive no suggestion since the shell operators cannot be expressed in `argv`.
 
 Approvals are never spent on commands that cannot start. The model receives a normal failed tool result and may correct the arguments and retry.
 

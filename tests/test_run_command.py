@@ -144,6 +144,88 @@ def test_redirection_in_first_token_is_rejected(tmp_path: Path) -> None:
     assert msg is not None
 
 
+# ---------------------------------------------------------------------------
+# Shell-operator tokens anywhere in argv (A-5 Gap 1)
+# ---------------------------------------------------------------------------
+
+
+def test_pipe_token_in_argv_is_rejected(tmp_path: Path) -> None:
+    """argv containing a standalone | token is rejected pre-approval."""
+    msg = _precheck_run_command(ctx(tmp_path), {"argv": ["ls", "-la", "|", "grep", "py"]})
+    assert msg is not None
+    assert "'|'" in msg
+
+
+def test_pipe_token_pre_approval_no_ask(tmp_path: Path) -> None:
+    """No approval request is made when argv contains a pipe token."""
+    asker, calls = _approval_spy()
+    executor = _make_executor(tmp_path, ask_approval=asker)
+    call = ToolCall(name="run_command", arguments={"argv": ["ls", "-la", "|", "grep", "py"]})
+    outcome = executor.execute(call)
+    assert not outcome.result.success  # type: ignore[union-attr]
+    assert len(calls) == 0, "approval must not be requested for shell-operator argv"
+
+
+def test_double_ampersand_token_is_rejected(tmp_path: Path) -> None:
+    """Standalone && token is rejected."""
+    msg = _precheck_run_command(ctx(tmp_path), {"argv": ["true", "&&", "true"]})
+    assert msg is not None
+    assert "'&&'" in msg
+
+
+def test_redirect_out_token_is_rejected(tmp_path: Path) -> None:
+    """Standalone > token is rejected."""
+    msg = _precheck_run_command(ctx(tmp_path), {"argv": ["echo", ">", "out.txt"]})
+    assert msg is not None
+    assert "'>'" in msg
+
+
+def test_find_exec_semicolon_not_rejected(tmp_path: Path) -> None:
+    """find -exec ... ; passes a literal ; token — must NOT be rejected by operator check."""
+    # find may or may not be on PATH; we only care that operator check doesn't fire.
+    msg = _precheck_run_command(
+        ctx(tmp_path),
+        {"argv": ["find", ".", "-name", "*.py", "-exec", "head", "-1", "{}", ";"]},
+    )
+    # If find is not on PATH the msg will mention "not found", not "shell operator"
+    if msg is not None:
+        assert "shell operator" not in msg
+
+
+def test_regex_pipe_in_arg_not_rejected(tmp_path: Path) -> None:
+    """A token that merely contains | (e.g. a regex) is NOT rejected."""
+    msg = _precheck_run_command(ctx(tmp_path), {"argv": ["grep", "-E", "a|b", "file.txt"]})
+    # grep is on PATH on any standard system; if not, the miss message won't mention operator
+    if msg is not None:
+        assert "shell operator" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Did-you-mean suggestion for packed single-token lines (A-5 Gap 2)
+# ---------------------------------------------------------------------------
+
+
+def test_packed_clean_token_suggests_split_argv(tmp_path: Path) -> None:
+    """Packed token with no shell syntax gets a Did you mean argv=[...] suggestion."""
+    msg = _precheck_run_command(ctx(tmp_path), {"argv": ["python -m unittest test_calculator.py"]})
+    assert msg is not None
+    assert 'Did you mean argv=["python", "-m", "unittest", "test_calculator.py"]?' in msg
+
+
+def test_packed_with_shell_syntax_no_suggestion(tmp_path: Path) -> None:
+    """Packed token containing shell syntax does NOT get a Did you mean suggestion."""
+    msg = _precheck_run_command(ctx(tmp_path), {"argv": ["echo hi > f.txt"]})
+    assert msg is not None
+    assert "Did you mean" not in msg
+
+
+def test_packed_unbalanced_quote_no_crash_no_suggestion(tmp_path: Path) -> None:
+    """Packed token with unbalanced quote raises no crash and produces no suggestion."""
+    msg = _precheck_run_command(ctx(tmp_path), {"argv": ["echo 'oops"]})
+    assert msg is not None
+    assert "Did you mean" not in msg
+
+
 def test_empty_argv_is_rejected(tmp_path: Path) -> None:
     """Empty argv is rejected pre-approval via precheck."""
     msg = _precheck_run_command(ctx(tmp_path), {"argv": []})

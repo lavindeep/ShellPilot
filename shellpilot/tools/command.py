@@ -7,7 +7,9 @@ Manual Shell (section 13.2), where the user types the command themselves.
 from __future__ import annotations
 
 import difflib
+import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -174,6 +176,14 @@ def _success(argv: list[str], outcome: CommandOutcome) -> bool:
 
 _SHELL_SYNTAX_MARKERS = (">", "<", "|", ";", "&&", "||", "$(", "`")
 
+# Tokens that ARE standalone shell operators when they appear anywhere in argv.
+# NOTE: ";" is deliberately excluded — find -exec ... ; passes a literal ";"
+# token as an argument to find, and a stray ";" elsewhere fails naturally
+# without harm (the OS rejects the exec without any security concern).
+_SHELL_OPERATOR_TOKENS = frozenset(
+    {"|", "<", ">", ">>", "<<", "&", "&&", "||", "1>", "2>", "2>&1", "1>&2"}
+)
+
 
 def _packed_shell_line(argv: list[str]) -> bool:
     """Detect a whole shell command packed into one argv token (section 13.3).
@@ -234,7 +244,7 @@ def _precheck_run_command(context: ToolContext, arguments: dict[str, Any]) -> st
     if not argv:
         return "argv must not be empty"
     if _packed_shell_line(argv):
-        return (
+        base_msg = (
             "argv must be separate tokens without shell syntax — "
             "this looks like a shell command packed into one string. run_command "
             "executes WITHOUT a shell: pass each argument as its own argv token, "
@@ -242,6 +252,25 @@ def _precheck_run_command(context: ToolContext, arguments: dict[str, Any]) -> st
             "available — to write a file ask the user, and for shell-native "
             "syntax suggest Manual Shell (/shell)."
         )
+        # Append a did-you-mean suggestion when the single token has no shell
+        # syntax markers (i.e. it is a plain multi-word command, not a pipeline).
+        if len(argv) == 1 and not any(marker in argv[0] for marker in _SHELL_SYNTAX_MARKERS):
+            try:
+                tokens = shlex.split(argv[0])
+                if len(tokens) >= 2:
+                    base_msg += f" Did you mean argv={json.dumps(tokens)}?"
+            except ValueError:
+                pass  # unbalanced quotes — skip suggestion
+        return base_msg
+    # Reject standalone shell-operator tokens anywhere in argv (not just argv[0]).
+    for token in argv:
+        if token in _SHELL_OPERATOR_TOKENS:
+            return (
+                f"argv token {token!r} is a shell operator — run_command executes "
+                "WITHOUT a shell, so pipes and redirection cannot work. Run the "
+                "command without it and process the output yourself, or suggest "
+                "Manual Shell (/shell) for shell-native syntax."
+            )
     return _resolve_executable(context, argv[0])
 
 
