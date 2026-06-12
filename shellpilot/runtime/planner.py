@@ -7,6 +7,7 @@ compact plan state into the model context on every planned step.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
-from shellpilot.persistence.json_store import atomic_write_text
+from shellpilot.persistence.json_store import atomic_write_json, atomic_write_text
 from shellpilot.persistence.paths import project_state_dir
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
@@ -23,6 +24,8 @@ from shellpilot.tools.filesystem import ALL_PROFILES
 
 STEP_STATUSES = ("pending", "active", "completed", "skipped")
 PLAN_STATUSES = ("proposed", "active", "blocked", "completed", "cancelled")
+
+STATE_VERSION = 1
 
 
 def _now_iso() -> str:
@@ -59,6 +62,54 @@ class TaskPlan:
     blockers: list[str] = field(default_factory=list)
     revisions: list[str] = field(default_factory=list)
     progress_log: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskPlan:
+        steps = [
+            PlanStep(
+                title=str(s.get("title", "")),
+                status=str(s.get("status", "pending")),
+                note=str(s.get("note", "")),
+            )
+            for s in data.get("steps", [])
+            if isinstance(s, dict)
+        ]
+        return cls(
+            task_id=str(data["task_id"]),
+            goal=str(data["goal"]),
+            user_intent=str(data["user_intent"]),
+            workspace=Path(str(data["workspace"])),
+            profile=str(data["profile"]),
+            steps=steps,
+            assumptions=[str(x) for x in data.get("assumptions", [])],
+            verification=[str(x) for x in data.get("verification", [])],
+            status=str(data.get("status", "proposed")),
+            created=str(data.get("created", _now_iso())),
+            updated=str(data.get("updated", _now_iso())),
+            decisions=[str(x) for x in data.get("decisions", [])],
+            open_questions=[str(x) for x in data.get("open_questions", [])],
+            blockers=[str(x) for x in data.get("blockers", [])],
+            revisions=[str(x) for x in data.get("revisions", [])],
+            progress_log=[str(x) for x in data.get("progress_log", [])],
+        )
+
+
+def load_plan(workspace: Path, task_id: str) -> TaskPlan | None:
+    """Load plan from state.json sidecar; returns None on any error (self-healing)."""
+    sidecar = project_state_dir(workspace) / "tasks" / task_id / "state.json"
+    try:
+        raw = sidecar.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("state_version") != STATE_VERSION:
+        return None
+    try:
+        return TaskPlan.from_dict(data)
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 def _section(title: str, items: list[str], empty: str = "- Pending.") -> str:
@@ -142,6 +193,7 @@ class PlanManager:
         self._step_se_failures: int = 0
         self._step_se_successes: int = 0
         self._guard_active_index: int | None = None
+        self.on_change: Callable[[TaskPlan | None], None] | None = None
 
     def set_workspace(self, workspace: Path) -> None:
         """New tasks use the new boundary; an active plan keeps its artifact path."""
@@ -152,7 +204,33 @@ class PlanManager:
 
     def _write(self, plan: TaskPlan) -> None:
         plan.updated = _now_iso()
+        # Write sidecar first (crash-tolerant: sidecar before pointer)
+        sidecar_path = self.artifact_path(plan).parent / "state.json"
+        payload: dict[str, Any] = {
+            "state_version": STATE_VERSION,
+            "task_id": plan.task_id,
+            "goal": plan.goal,
+            "user_intent": plan.user_intent,
+            "workspace": str(plan.workspace),
+            "profile": plan.profile,
+            "steps": [{"title": s.title, "status": s.status, "note": s.note} for s in plan.steps],
+            "assumptions": plan.assumptions,
+            "verification": plan.verification,
+            "status": plan.status,
+            "created": plan.created,
+            "updated": plan.updated,
+            "decisions": plan.decisions,
+            "open_questions": plan.open_questions,
+            "blockers": plan.blockers,
+            "revisions": plan.revisions,
+            "progress_log": plan.progress_log,
+        }
+        atomic_write_json(sidecar_path, payload)
+        # Write PLAN.md
         atomic_write_text(self.artifact_path(plan), render_plan_markdown(plan))
+        # Fire on_change AFTER both files written
+        if self.on_change is not None:
+            self.on_change(self.active)
 
     def create(
         self,
@@ -190,11 +268,21 @@ class PlanManager:
     def cancel(self) -> None:
         self.pending_revision = None
         if self.active is None:
+            if self.on_change is not None:
+                self.on_change(None)
             return
         self.active.status = "cancelled"
         self.active.progress_log.append(f"{_now_iso()}: Plan cancelled.")
-        self._write(self.active)
+        self._write(self.active)  # fires on_change(active) where active.status=="cancelled"
         self.active = None
+
+    def restore(self, plan: TaskPlan) -> None:
+        """Rehydrate a plan from a prior session without writing files or firing on_change."""
+        self.active = plan
+        # Reset transient completion-guard counters
+        self._step_se_failures = 0
+        self._step_se_successes = 0
+        self._guard_active_index = None
 
     def revise(
         self,

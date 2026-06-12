@@ -689,6 +689,30 @@ The runtime should load the active `PLAN.md` before each planned step and includ
 
 The plan file should not become a verbose transcript. It should remain a concise operational reference.
 
+#### Plan persistence and session-resume (v0.6.0)
+
+Plans survive session boundaries through two cooperating mechanisms.
+
+**`state.json` sidecar.** Every `_write` call atomically writes a machine-readable sidecar alongside `PLAN.md`:
+
+```text
+<workspace>/.shellpilot/tasks/<task-id>/state.json
+```
+
+The sidecar carries `state_version: 1` and the full `TaskPlan` fields in JSON.  It is written *before* the session pointer record (crash-tolerant ordering: a pointer without a readable sidecar is a no-op on restore; a sidecar without a pointer is unreferenced state). The self-healing loader (`load_plan`) returns `None` on any error — missing file, corrupt JSON, wrong version, or field error — and never raises.
+
+**Active-plan pointer in the session transcript.** The session JSONL file carries `active_plan` records that track the live pointer:
+
+```json
+{"type": "active_plan", "task_id": "<task-id or null>"}
+```
+
+The pointer is `task_id` while the plan status is `proposed`, `active`, or `blocked`; it is `null` for terminal statuses (`completed`, `cancelled`).  A `clear` record resets the pointer to `null`. Duplicate writes are suppressed: a new record is only appended when the pointer value changes.  The last `active_plan` record in a transcript wins on load.
+
+**On `--resume`.** The boot sequence reads the pointer from the transcript, loads the sidecar with `load_plan`, and calls `PlanManager.restore` only when the sidecar status is still live (`proposed`/`active`/`blocked`). The restore path primes the dedupe cache so no new session record is written. If the plan pointer references a different workspace (e.g. the session was moved), `load_plan` returns `None` because the task directory does not exist under the new workspace — no restore, no crash.
+
+Plans are project-local: the sidecar lives inside the workspace `.shellpilot/tasks/` directory, so carrying a session file to a different workspace is safe.
+
 Rendered plan example:
 
 ```text
@@ -1406,6 +1430,11 @@ not user-editable config.  The current schema (version 1) holds a single key:
 a model, and read on the next launch so the picker can pre-select the same model.
 The file is written atomically; a missing or unreadable file is silently ignored
 by the harness.
+
+Per-task plan state is stored in a separate sidecar at
+`.shellpilot/tasks/<task-id>/state.json` (STATE_VERSION 1), written atomically
+alongside `PLAN.md` on every plan mutation.  See section 11.3 for the schema and
+restore behaviour.
 
 ### 17.3 Overrides Layer
 

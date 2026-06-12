@@ -31,6 +31,7 @@ class LoadedSession:
     model: str
     profile: str
     messages: list[Message]
+    active_plan_task_id: str | None = None
 
 
 class SessionStore:
@@ -95,6 +96,9 @@ class SessionStore:
     def record_clear(self) -> None:
         self._append({"type": "clear"})
 
+    def record_active_plan(self, task_id: str | None) -> None:
+        self._append({"type": "active_plan", "task_id": task_id})
+
     def _append(self, record: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
@@ -111,6 +115,7 @@ class SessionStore:
         model = ""
         profile = ""
         messages: list[Message] = []
+        active_plan_task_id: str | None = None
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -126,6 +131,10 @@ class SessionStore:
                 profile = record.get("profile", profile)
             elif kind == "clear":
                 messages.clear()
+                active_plan_task_id = None
+            elif kind == "active_plan":
+                raw = record.get("task_id")
+                active_plan_task_id = str(raw) if isinstance(raw, str) else None
             elif kind == "message":
                 role = record.get("role")
                 if not role:
@@ -146,7 +155,13 @@ class SessionStore:
                         tool_calls=calls,
                     )
                 )
-        return LoadedSession(session_id=path.stem, model=model, profile=profile, messages=messages)
+        return LoadedSession(
+            session_id=path.stem,
+            model=model,
+            profile=profile,
+            messages=messages,
+            active_plan_task_id=active_plan_task_id,
+        )
 
 
 def session_markdown(session: LoadedSession) -> str:

@@ -355,6 +355,12 @@ def run_interactive(
     )
     if restored is not None:
         runtime.restore_history(restored.messages)
+        runtime.restore_active_plan(restored.active_plan_task_id)
+        restored_plan = runtime.plan_manager.active
+        if restored_plan is not None:
+            console.print(plan_panel(restored_plan, glyphs))
+            tid = escape(restored_plan.task_id)
+            console.print(f"[sp.dim]Active plan restored: {tid} ({restored_plan.status}).[/sp.dim]")
     attachments = AttachmentQueue()
     dispatcher = SlashDispatcher(
         runtime=runtime,

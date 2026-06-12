@@ -24,7 +24,7 @@ from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_bu
 from shellpilot.runtime.context import ContextAssembler, ContextSnapshot
 from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.executor import ExecutionOutcome, ToolExecutor
-from shellpilot.runtime.planner import PlanManager, compact_plan_state, make_plan_tools
+from shellpilot.runtime.planner import PlanManager, TaskPlan, compact_plan_state, make_plan_tools
 from shellpilot.skills.model import Skill
 from shellpilot.tools.images import make_view_image_tool
 from shellpilot.tools.registry import ToolRegistry, default_registry
@@ -59,6 +59,22 @@ PLAN_CONTINUE_NUDGE = (
     'blocking you, record it with update_plan(blocker="<evidence>"). Only if you '
     "need information that the user alone can provide: ask the user plainly and stop."
 )
+
+
+class _Unset:
+    """Sentinel type: distinct from None, which is a valid recorded plan pointer."""
+
+
+_UNSET = _Unset()
+
+
+def _plan_pointer(plan: TaskPlan | None) -> str | None:
+    """Map a plan to its session-pointer value: task_id for live statuses, None otherwise."""
+    if plan is None:
+        return None
+    if plan.status in ("proposed", "active", "blocked"):
+        return plan.task_id
+    return None
 
 
 def _digest_text(content: str) -> str:
@@ -121,6 +137,8 @@ class ConversationRuntime:
         self.snapshots = SnapshotStore()
         self.recent_diffs: list[str] = []
         self.plan_manager = PlanManager(workspace, settings.runtime.security_profile)
+        self._last_recorded_plan_ptr: str | None | _Unset = _UNSET
+        self.plan_manager.on_change = self._on_plan_change
         for spec in make_plan_tools(
             self.plan_manager,
             ui.ask_plan_approval,
@@ -189,6 +207,31 @@ class ConversationRuntime:
         requires fresh reads in the new process.
         """
         self._history = list(messages)
+
+    def _on_plan_change(self, plan: TaskPlan | None) -> None:
+        """Deduplicated session recorder: only write a pointer when it changes."""
+        ptr = _plan_pointer(plan)
+        last = self._last_recorded_plan_ptr
+        if not isinstance(last, _Unset) and ptr == last:
+            return
+        self._last_recorded_plan_ptr = ptr
+        if self._session is not None:
+            self._session.record_active_plan(ptr)
+
+    def restore_active_plan(self, task_id: str | None) -> None:
+        """Restore an active plan from a prior session. None → no-op."""
+        if task_id is None:
+            return
+        from shellpilot.runtime.planner import load_plan
+
+        plan = load_plan(self._workspace, task_id)
+        if plan is None:
+            return
+        if plan.status not in ("proposed", "active", "blocked"):
+            return
+        self.plan_manager.restore(plan)
+        # Prime the dedupe cache so restore doesn't trigger a new session record
+        self._last_recorded_plan_ptr = task_id
 
     def _resolve_budget(self) -> ContextBudget:
         detected = self._llm.model_context_length(self._model)
