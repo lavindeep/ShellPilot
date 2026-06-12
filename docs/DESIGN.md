@@ -1461,6 +1461,48 @@ harness never writes TOML (`tomllib` is read-only by design).
 act).  An entry for `model.options` in `overrides.json` is silently skipped
 with a warning.
 
+**Slash commands**
+
+Three slash commands manage the overrides file at runtime:
+
+- `/config set <key> <value>` — validate and persist a single key/value.
+  Values are coerced exactly like env-var strings (`"40"` → 40, `"true"` →
+  `True`, `"auto"` → `None` for `int | None` fields, `"0.8"` → float).
+  **Validate before persist**: if `validate_override` raises `ConfigError`,
+  the error is printed in red and the file is never touched.  This invariant
+  means a corrupt entry can never reach `overrides.json` via the CLI.
+  The new value takes effect immediately for live keys (via `update_settings`).
+  A subset of keys are *boot-only* (theme, model client, tool registration,
+  keep_alive preload, etc.); for those a dim note is appended: "takes effect
+  next session".  For `model.default` specifically the note adds "use
+  `/model use <name>` to switch now".
+
+- `/config unset <key>` — remove the override for `<key>`.  If no override
+  exists the command is a silent no-op with a message.  After removal the
+  value reverts to the next layer down (project, user, or default), and the
+  source is shown.  `/config reset <key>` is an alias.
+
+- `/config reset` (no key) — clear **all** overrides after y/N confirmation
+  (default No).  Reports `cleared N override(s).`  All values revert to the
+  underlying config stack.
+
+Every set/unset/reset operation reloads the full config stack (same path as
+`/config reload`) and calls `update_settings` so live settings are always
+coherent.  Self-heal warnings produced during reload are printed immediately
+after the operation.
+
+Warnings are also displayed at boot: immediately after the initial
+`load_config` succeeds, the CLI prints each warning so the user sees
+self-heal notices even on the first launch.
+
+**Session-only vs persistent changes**
+
+`/profile use <name>` and `/compact auto on|off` are session-only quick
+toggles — they mutate the in-memory settings but do not write to disk.
+`/config set` is the persistent path: it writes `overrides.json` and the
+change survives across sessions until explicitly removed with
+`/config unset` or `/config reset`.
+
 ### 17.4 Example Config
 
 ```toml

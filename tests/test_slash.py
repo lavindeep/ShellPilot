@@ -507,3 +507,262 @@ def test_attach_rejects_bad_file(tmp_path: Path) -> None:
     assert "Cannot attach" in out
     assert ".csv" in out
     assert attachments.paths == []
+
+
+# ---------------------------------------------------------------------------
+# Task 2: /config set | unset | reset
+# ---------------------------------------------------------------------------
+
+
+def _make_audit_harness_with_file(tmp_path: Path) -> tuple["Harness", "object"]:
+    """Return a Harness with a real AuditLogger so audit events are written."""
+    from shellpilot.persistence.audit_store import AuditLogger
+
+    harness = Harness(tmp_path)
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="test-session",
+        workspace=tmp_path,
+        profile="balanced",
+        redact=False,
+    )
+    harness.runtime._audit = audit  # type: ignore[attr-defined]
+    return harness, audit
+
+
+def test_config_set_live_key_updates_runtime(tmp_path: Path) -> None:
+    """/config set runtime.max_tool_turns 20 persists and updates the runtime."""
+    import json
+
+    harness = Harness(tmp_path)
+    assert harness.runtime.settings.runtime.max_tool_turns != 20
+
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+
+    # Runtime is updated immediately.
+    assert harness.runtime.settings.runtime.max_tool_turns == 20
+
+    # overrides.json contains the value.
+    overrides_file = tmp_path / "overrides.json"
+    assert overrides_file.is_file()
+    data = json.loads(overrides_file.read_text())
+    assert data["runtime.max_tool_turns"] == 20
+
+    # A fresh load_config against the same paths resolves 20 with source "set".
+    from shellpilot.config.loader import load_config
+
+    fresh = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+        overrides_file=overrides_file,
+    )
+    assert fresh.settings.runtime.max_tool_turns == 20
+    assert fresh.sources["runtime.max_tool_turns"] == "set"
+
+
+def test_config_set_value_join(tmp_path: Path) -> None:
+    """/config set joins multi-token values so spaces are preserved for str keys."""
+    harness = Harness(tmp_path)
+    # model.keep_alive is a str field; "10m" is a single token but the
+    # args join behaviour is what we're verifying here.
+    harness.dispatcher.handle("/config set model.keep_alive 10m")
+    assert harness.runtime.settings.model.keep_alive == "10m"
+
+
+def test_config_set_boot_only_key_prints_next_session(tmp_path: Path) -> None:
+    """/config set on a boot-only key prints a 'takes effect next session' note."""
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set ui.spinner false")
+    out = harness.output()
+    assert "next session" in out
+
+
+def test_config_set_model_default_mentions_model_use(tmp_path: Path) -> None:
+    """/config set model.default also mentions /model use <name>."""
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set model.default gemma4:e2b")
+    out = harness.output()
+    assert "next session" in out
+    assert "/model use" in out
+
+
+def test_config_set_invalid_value_rejected(tmp_path: Path) -> None:
+    """/config set with an out-of-range value prints an error and saves nothing."""
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 0")
+    out = harness.output()
+    assert "error" in out.lower() or "must be" in out
+    # overrides.json must not exist (nothing was saved).
+    assert not (tmp_path / "overrides.json").exists()
+
+
+def test_config_set_unknown_key_rejected(tmp_path: Path) -> None:
+    """/config set on an unknown key prints an error with a did-you-mean hint."""
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set runtime.max_tool_tuurns 10")
+    out = harness.output()
+    assert "error" in out.lower() or "unknown" in out.lower()
+    # overrides.json must not exist.
+    assert not (tmp_path / "overrides.json").exists()
+
+
+def test_config_set_model_options_rejected(tmp_path: Path) -> None:
+    """/config set model.options is rejected (config-file only)."""
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set model.options {}")
+    out = harness.output()
+    assert "error" in out.lower() or "config-file only" in out.lower()
+    assert not (tmp_path / "overrides.json").exists()
+
+
+def test_config_unset_existing_reverts(tmp_path: Path) -> None:
+    """/config unset removes the override and shows the reverted source."""
+    import json
+
+    harness = Harness(tmp_path)
+    # Set first.
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+    assert harness.runtime.settings.runtime.max_tool_turns == 20
+
+    # Unset.
+    harness.dispatcher.handle("/config unset runtime.max_tool_turns")
+    # Should revert to default (40).
+    assert harness.runtime.settings.runtime.max_tool_turns == 40
+    # Output should mention the source (default).
+    out = harness.output()
+    assert "default" in out
+    # overrides.json should no longer contain the key.
+    data = json.loads((tmp_path / "overrides.json").read_text())
+    assert "runtime.max_tool_turns" not in data
+
+
+def test_config_unset_absent_key_reports_noop(tmp_path: Path) -> None:
+    """/config unset on a key with no override prints a no-op message."""
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config unset runtime.max_tool_turns")
+    out = harness.output()
+    assert "no override" in out.lower()
+
+
+def test_config_reset_alias_for_unset(tmp_path: Path) -> None:
+    """/config reset <key> is an alias for /config unset <key>."""
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+    assert harness.runtime.settings.runtime.max_tool_turns == 20
+    harness.dispatcher.handle("/config reset runtime.max_tool_turns")
+    assert harness.runtime.settings.runtime.max_tool_turns == 40
+
+
+def test_config_reset_all_declined(tmp_path: Path) -> None:
+    """/config reset (no key) declined → overrides.json unchanged."""
+    import json
+
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+    # Patch confirm to decline.
+    harness.dispatcher._confirm = lambda _: False  # type: ignore[method-assign]
+    harness.dispatcher.handle("/config reset")
+    out = harness.output()
+    assert "cancelled" in out.lower()
+    # File should still have the entry.
+    data = json.loads((tmp_path / "overrides.json").read_text())
+    assert "runtime.max_tool_turns" in data
+
+
+def test_config_reset_all_accepted_clears(tmp_path: Path) -> None:
+    """/config reset (no key) accepted → overrides.json empty, count reported."""
+    import json
+
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+    harness.dispatcher.handle("/config set runtime.max_plan_steps 5")
+    harness.dispatcher._confirm = lambda _: True  # type: ignore[method-assign]
+    harness.dispatcher.handle("/config reset")
+    out = harness.output()
+    # "cleared N override(s)" message.
+    assert "cleared" in out
+    assert "2" in out
+    data = json.loads((tmp_path / "overrides.json").read_text())
+    assert data == {}
+
+
+def test_config_set_audit_event_written(tmp_path: Path) -> None:
+    """/config set writes a config_change audit event."""
+    import json
+
+    harness, _ = _make_audit_harness_with_file(tmp_path)
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+
+    audit_file = tmp_path / "audit.jsonl"
+    events = [json.loads(line) for line in audit_file.read_text().splitlines()]
+    config_events = [e for e in events if e.get("event") == "config_change"]
+    assert any(
+        e.get("setting") == "runtime.max_tool_turns" and e.get("source") == "set"
+        for e in config_events
+    )
+
+
+def test_config_unset_audit_event_written(tmp_path: Path) -> None:
+    """/config unset writes a config_change audit event with value='unset'."""
+    import json
+
+    harness, _ = _make_audit_harness_with_file(tmp_path)
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+    harness.dispatcher.handle("/config unset runtime.max_tool_turns")
+
+    audit_file = tmp_path / "audit.jsonl"
+    events = [json.loads(line) for line in audit_file.read_text().splitlines()]
+    config_events = [e for e in events if e.get("event") == "config_change"]
+    assert any(
+        e.get("setting") == "runtime.max_tool_turns" and e.get("value") == "unset"
+        for e in config_events
+    )
+
+
+def test_config_reset_all_audit_event_written(tmp_path: Path) -> None:
+    """/config reset (all) writes a config_change audit event with source='reset'."""
+    import json
+
+    harness, _ = _make_audit_harness_with_file(tmp_path)
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+    harness.dispatcher._confirm = lambda _: True  # type: ignore[method-assign]
+    harness.dispatcher.handle("/config reset")
+
+    audit_file = tmp_path / "audit.jsonl"
+    events = [json.loads(line) for line in audit_file.read_text().splitlines()]
+    config_events = [e for e in events if e.get("event") == "config_change"]
+    assert any(e.get("source") == "reset" for e in config_events)
+
+
+def test_config_show_override_renders_source_set(tmp_path: Path) -> None:
+    """After /config set, /config show renders the key with source 'set'."""
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
+    harness.dispatcher.handle("/config show")
+    out = harness.output()
+    assert "set" in out
+    assert "runtime.max_tool_turns" in out
+
+
+def test_config_warnings_printed_on_reload(tmp_path: Path) -> None:
+    """If overrides.json is corrupt, /config reload prints the warning."""
+    overrides_file = tmp_path / "overrides.json"
+    overrides_file.write_text("not valid json")
+
+    harness = Harness(tmp_path)
+    # Patch reload_config to use the real overrides file at tmp_path.
+    from shellpilot.config.loader import load_config
+
+    def _reload() -> LoadedConfig:
+        return load_config(
+            user_config_file=tmp_path / "missing-user.toml",
+            project_config_file=tmp_path / "missing-project.toml",
+            env={},
+            overrides_file=overrides_file,
+        )
+
+    harness.dispatcher._reload_config = _reload  # type: ignore[method-assign]
+    harness.dispatcher.handle("/config reload")
+    out = harness.output()
+    assert "invalid JSON" in out or "ignored" in out

@@ -217,6 +217,8 @@ def run_interactive(
     except ConfigError as exc:
         console.print(f"[red]Config error:[/red] {escape(str(exc))}")
         return 2
+    for _warning in loaded.warnings:
+        console.print(f"[dim]{escape(_warning)}[/dim]")
     settings = loaded.settings
     if settings.ui.no_color:
         console = build_console(settings)

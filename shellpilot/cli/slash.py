@@ -13,7 +13,8 @@ from rich.table import Table
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.render import plan_panel, render_diff
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs
-from shellpilot.config.loader import ConfigError, LoadedConfig
+from shellpilot.config.loader import BOOT_ONLY_KEYS, ConfigError, LoadedConfig, validate_override
+from shellpilot.config.overrides import load_overrides, overrides_path, save_overrides
 from shellpilot.llm.client import LLMClient
 from shellpilot.runtime.conversation import ConversationRuntime
 
@@ -35,6 +36,9 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/config show", "Print resolved config with source layers."),
     ("/config edit", "Show the user config path for editing."),
     ("/config reload", "Reload config from disk."),
+    ("/config set <key> <value>", "Persist a runtime override to overrides.json."),
+    ("/config unset <key>", "Remove a persisted override and revert to the underlying layer."),
+    ("/config reset", "Clear all persisted overrides after confirmation."),
     ("/compact", "Compact older conversation context now."),
     ("/compact status", "Show context usage and compaction thresholds."),
     ("/compact auto <on|off>", "Toggle automatic token-budget compaction."),
@@ -256,13 +260,17 @@ class SlashDispatcher:
             return
         self._console.print("Usage: /model | /model list | /model use <name>")
 
-    def _config(self, args: list[str]) -> None:
+    def _config(self, args: list[str]) -> None:  # noqa: C901 - intentionally one handler
         action = args[0] if args else "show"
         if action == "show":
             render_config(self._loaded, self._console)
         elif action == "edit":
             self._console.print(f"User config: {self._user_config_file}")
             self._console.print("Edit the file, then run /config reload.")
+            self._console.print(
+                "[dim]Tip: use /config set <key> <value> "
+                "to make persistent changes in-program.[/dim]"
+            )
         elif action == "reload":
             try:
                 self._loaded = self._reload_config()
@@ -271,8 +279,114 @@ class SlashDispatcher:
                 return
             self._runtime.update_settings(self._loaded.settings)
             self._console.print("[dim]Config reloaded.[/dim]")
+            self._print_config_warnings()
+        elif action == "set":
+            self._config_set(args[1:])
+        elif action in ("unset", "reset") and len(args) > 1:
+            self._config_unset(args[1])
+        elif action == "reset" and len(args) == 1:
+            self._config_reset_all()
         else:
-            self._console.print("Usage: /config show | /config edit | /config reload")
+            self._console.print(
+                "Usage: /config show | /config edit | /config reload"
+                " | /config set <key> <value>"
+                " | /config unset <key>"
+                " | /config reset [<key>]"
+            )
+
+    def _overrides_path(self) -> Path:
+        return overrides_path(self._user_config_file.parent)
+
+    def _print_config_warnings(self) -> None:
+        for warning in self._loaded.warnings:
+            self._console.print(f"[dim]{warning}[/dim]")
+
+    @staticmethod
+    def _resolve_setting_value(loaded: LoadedConfig, key: str) -> object:
+        """Return the effective value for a dotted key from a LoadedConfig."""
+        section, _, field = key.partition(".")
+        return getattr(getattr(loaded.settings, section), field)
+
+    def _config_set(self, args: list[str]) -> None:
+        if len(args) < 2:
+            self._console.print("Usage: /config set <key> <value>")
+            return
+        key = args[0]
+        raw_value = " ".join(args[1:])
+        # Validate before touching disk — errors can never be saved.
+        try:
+            coerced = validate_override(key, raw_value)
+        except ConfigError as exc:
+            self._console.print(f"[red]Config error:[/red] {exc}")
+            return
+        # Capture old effective value before overwrite.
+        old_value = self._resolve_setting_value(self._loaded, key)
+        # Read → mutate → save (atomic).
+        path = self._overrides_path()
+        current, _ = load_overrides(path)
+        current[key] = coerced
+        save_overrides(path, current)
+        # Reload (same path as /config reload) to pick up the new layer.
+        try:
+            self._loaded = self._reload_config()
+        except ConfigError as exc:
+            self._console.print(f"[red]Config reload failed:[/red] {exc}")
+            return
+        self._runtime.update_settings(self._loaded.settings)
+        new_value = self._resolve_setting_value(self._loaded, key)
+        self._console.print(f"{key}: {old_value!r} → {new_value!r}")
+        if key in BOOT_ONLY_KEYS:
+            note = "(saved — takes effect next session)"
+            if key == "model.default":
+                note += " — use /model use <name> to switch now"
+            self._console.print(f"[dim]{note}[/dim]")
+        # Audit.
+        if self._runtime.audit is not None:
+            self._runtime.audit.write(
+                "config_change", setting=key, value=str(coerced), source="set"
+            )
+        self._print_config_warnings()
+
+    def _config_unset(self, key: str) -> None:
+        path = self._overrides_path()
+        current, _ = load_overrides(path)
+        if key not in current:
+            self._console.print(f"[dim]no override set for {key}[/dim]")
+            return
+        del current[key]
+        save_overrides(path, current)
+        # Reload to pick up the reverted layer.
+        try:
+            self._loaded = self._reload_config()
+        except ConfigError as exc:
+            self._console.print(f"[red]Config reload failed:[/red] {exc}")
+            return
+        self._runtime.update_settings(self._loaded.settings)
+        new_value = self._resolve_setting_value(self._loaded, key)
+        source = self._loaded.sources.get(key, "default")
+        self._console.print(f"{key}: {new_value!r} (from {source})")
+        if self._runtime.audit is not None:
+            self._runtime.audit.write("config_change", setting=key, value="unset", source="unset")
+        self._print_config_warnings()
+
+    def _config_reset_all(self) -> None:
+        path = self._overrides_path()
+        current, _ = load_overrides(path)
+        if not self._confirm("Clear all config overrides?"):
+            self._console.print("cancelled.")
+            return
+        count = len(current)
+        save_overrides(path, {})
+        try:
+            self._loaded = self._reload_config()
+        except ConfigError as exc:
+            self._console.print(f"[red]Config reload failed:[/red] {exc}")
+            return
+        self._runtime.update_settings(self._loaded.settings)
+        self._console.print(f"cleared {count} override(s).")
+        if self._runtime.audit is not None:
+            self._runtime.audit.write("config_change", setting="*", value="reset", source="reset")
+        self._print_config_warnings()
 
     def _plan(self, args: list[str]) -> None:
         manager = self._runtime.plan_manager

@@ -70,6 +70,25 @@ MIN_VALUES: dict[str, int] = {
     "runtime.max_plan_steps": 1,
 }
 
+# Keys consumed only at boot (console/theme construction, model client,
+# keep_alive preload, store construction, tool registration).  Everything else
+# takes effect next turn via update_settings.
+BOOT_ONLY_KEYS: frozenset[str] = frozenset(
+    {
+        "model.reasoning",
+        "model.base_url",
+        "model.keep_alive",
+        "model.default",
+        "instructions.load_agents_md",
+        "privacy.redact_secrets",
+        "ui.theme",
+        "ui.no_color",
+        "ui.glyphs",
+        "ui.spinner",
+        "tools.web",
+    }
+)
+
 TRUE_WORDS = ("1", "true", "yes", "on")
 FALSE_WORDS = ("0", "false", "no", "off", "")
 
