@@ -8,10 +8,12 @@ resolved by the CLI before calling load_config.
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import tomllib
 import types
 import typing
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +80,7 @@ class LoadedConfig:
 
     settings: Settings
     sources: dict[str, str]
+    warnings: tuple[str, ...] = dc_field(default_factory=tuple)
 
 
 def _field_types() -> dict[str, Any]:
@@ -200,9 +203,16 @@ def load_config(
     project_config_file: Path,
     env: dict[str, str],
     cli_overrides: dict[str, Any] | None = None,
+    overrides_file: Path | None = None,
 ) -> LoadedConfig:
+    from shellpilot.config.overrides import load_overrides
+
+    if overrides_file is None:
+        overrides_file = user_config_file.parent / "overrides.json"
+
     values = _defaults_flat()
     sources = {key: "default" for key in values}
+    warnings: list[str] = []
 
     for layer_name, path in (("user", user_config_file), ("project", project_config_file)):
         if not path.is_file():
@@ -210,6 +220,29 @@ def load_config(
         for key, raw in _flatten(_read_toml(path), path).items():
             values[key] = _coerce(key, raw)
             sources[key] = layer_name
+
+    # Overrides layer: after user+project, before env/CLI.  Self-healing:
+    # unknown keys, invalid values, and file-level errors are collected as
+    # warnings and never raise.
+    raw_overrides, file_warnings = load_overrides(overrides_file)
+    warnings.extend(file_warnings)
+    for key, raw in raw_overrides.items():
+        if key not in _SCHEMA:
+            close = difflib.get_close_matches(key, _SCHEMA.keys(), n=1, cutoff=0.6)
+            hint = f"; did you mean {close[0]!r}?" if close else ""
+            warnings.append(f"overrides: unknown key {key!r}{hint} — entry ignored")
+            continue
+        if key == "model.options":
+            warnings.append(
+                "overrides: model.options is config-file only and cannot be set "
+                "via overrides — entry ignored"
+            )
+            continue
+        try:
+            values[key] = _coerce(key, raw)
+            sources[key] = "set"
+        except ConfigError as exc:
+            warnings.append(f"overrides: {key}={raw!r} — {exc} — entry ignored")
 
     for env_name, key in ENV_MAP.items():
         if env_name in env:
@@ -222,8 +255,56 @@ def load_config(
 
     section_instances: dict[str, Any] = {}
     for section, cls in SECTIONS.items():
-        kwargs = {
-            field.name: values[f"{section}.{field.name}"] for field in dataclasses.fields(cls)
-        }
+        kwargs = {f.name: values[f"{section}.{f.name}"] for f in dataclasses.fields(cls)}
         section_instances[section] = cls(**kwargs)
-    return LoadedConfig(settings=Settings(**section_instances), sources=sources)
+    return LoadedConfig(
+        settings=Settings(**section_instances),
+        sources=sources,
+        warnings=tuple(warnings),
+    )
+
+
+def validate_override(key: str, value: Any) -> Any:
+    """Validate and coerce a single key/value for use as a runtime override.
+
+    String inputs are coerced exactly like env-var strings (e.g. ``"40"``→40,
+    ``"true"``/``"false"``→bool, ``"auto"``→None for ``int | None`` fields,
+    ``"0.8"``→float).
+
+    Raises :class:`ConfigError` for:
+    - unknown keys (with a close-match hint when one exists)
+    - ``model.options`` (config-file only)
+    - values that fail type/range/enum validation
+    """
+    if key not in _SCHEMA:
+        close = difflib.get_close_matches(key, _SCHEMA.keys(), n=1, cutoff=0.6)
+        if close:
+            raise ConfigError(f"unknown config key: {key!r}; did you mean {close[0]!r}?")
+        raise ConfigError(f"unknown config key: {key!r}")
+    if key == "model.options":
+        raise ConfigError("model.options is config-file only and cannot be set via /config set")
+    # Coerce strings exactly as env-var parsing does.
+    if isinstance(value, str):
+        annotation = _SCHEMA[key]
+        if annotation is bool:
+            return _coerce_env(key, value)
+        if annotation is int:
+            # _coerce_env parses the string; then _coerce enforces MIN_VALUES.
+            coerced_int = _coerce_env(key, value)
+            return _coerce(key, coerced_int)
+        if _is_optional_int(annotation):
+            if value == "auto":
+                return None
+            try:
+                coerced = int(value)
+            except (ValueError, TypeError) as exc:
+                raise ConfigError(f'{key}: expected an integer or "auto", got {value!r}') from exc
+            return _coerce(key, coerced)
+        if annotation is float:
+            try:
+                coerced_f = float(value)
+            except (ValueError, TypeError) as exc:
+                raise ConfigError(f"{key}: expected a number, got {value!r}") from exc
+            return _coerce(key, coerced_f)
+        # str annotation: fall through to normal _coerce
+    return _coerce(key, value)

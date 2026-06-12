@@ -1366,9 +1366,10 @@ Highest precedence wins:
 
 1. CLI flags.
 2. Environment variables.
-3. Project config.
-4. User config.
-5. Defaults.
+3. **Runtime overrides** (`overrides.json` — see §17.3).
+4. Project config.
+5. User config.
+6. Defaults.
 
 ### 17.2 Config Locations
 
@@ -1400,7 +1401,67 @@ a model, and read on the next launch so the picker can pre-select the same model
 The file is written atomically; a missing or unreadable file is silently ignored
 by the harness.
 
-### 17.3 Example Config
+### 17.3 Overrides Layer
+
+The overrides layer sits between env/CLI (explicit per-launch intent, always
+on top) and the project config file.  It lets users persist runtime changes —
+made inside the program via `/config set` — across sessions without editing
+TOML by hand.
+
+**File location**
+
+```text
+<user config dir>/overrides.json   # same directory as config.toml
+```
+
+Example (`~/.config/shellpilot/overrides.json`):
+
+```json
+{
+  "model.default": "gemma4:e2b",
+  "runtime.max_tool_turns": 20
+}
+```
+
+The file contains a flat JSON object mapping dotted keys to values.  It is
+written and read exclusively by the harness; users should not edit it by hand
+(use `/config set` / `/config unset` / `/config reset` instead).
+
+**Precedence position**
+
+```
+CLI flags  >  env vars  >  overrides.json  >  project config  >  user config  >  defaults
+```
+
+A `/config set` always visibly wins over the project file, which means a team
+project config can be overridden for local experimentation without touching
+the shared file.
+
+**Self-heal contract**
+
+Errors in `overrides.json` **never raise** — the program always boots:
+
+- Missing file → treated as empty (no warnings).
+- Unreadable file, corrupt JSON, or a top-level value that is not an object →
+  entire file ignored with one warning collected into `LoadedConfig.warnings`;
+  the bad file is left on disk.
+- Individual invalid entries (unknown key, wrong type, out-of-range value) →
+  entry skipped with a per-entry warning; remaining valid entries still apply.
+
+Warnings are surfaced to the user by the CLI on start-up (Task 2).
+
+This is the opposite of `config.toml` handling: hand-edited TOML is
+user-owned and fails loudly with `ConfigError` exactly as today.  The
+harness never writes TOML (`tomllib` is read-only by design).
+
+**`model.options` exclusion**
+
+`model.options` cannot be set via the overrides layer.  It is config-file only
+(same rationale as `tools.web` — a sampling change must be an explicit config
+act).  An entry for `model.options` in `overrides.json` is silently skipped
+with a warning.
+
+### 17.4 Example Config
 
 ```toml
 [model]
@@ -1477,7 +1538,7 @@ web = false
 
 `[model.options]` is the supported lever for diagnosing model-side decoding issues. When the v0.5.0 repeated-generation incident was investigated the harness was ruled out (n=1) and model-side sampling was the remaining suspect; `repeat_penalty`, `repeat_last_n`, `temperature`, and `seed` are exactly the knobs that table exposes, passed straight through to Ollama without ShellPilot interpreting them. The whole table is replaced wholesale by the higher-precedence layer (project over user), never merged key by key.
 
-### 17.4 Environment Variables and CLI Overrides
+### 17.5 Environment Variables and CLI Overrides
 
 Recommended environment variables:
 
