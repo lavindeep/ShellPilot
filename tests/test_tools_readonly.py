@@ -320,3 +320,53 @@ def test_search_text_always_mode_includes_sensitive_files(tmp_path: Path) -> Non
     assert result.success
     assert ".env:1" in result.content
     assert "skipped" not in result.content
+
+
+def test_search_text_approved_sensitive_root_is_searched(tmp_path: Path) -> None:
+    # A handler call over an explicitly sensitive root represents post-approval
+    # execution: in ask mode the executor only invokes the handler after the user
+    # approved. The subtree must be searched in full, not re-skipped.
+    aws = tmp_path / ".aws"
+    aws.mkdir()
+    (aws / "credentials").write_text("aws_secret = needle\n")
+    result = SEARCH_TEXT.handler(ctx(tmp_path, "ask"), {"pattern": "needle", "path": ".aws"})
+
+    assert result.success
+    assert ".aws/credentials:1" in result.content
+    assert "skipped" not in result.content
+
+
+def test_search_text_approved_sensitive_subpath_root_is_searched(tmp_path: Path) -> None:
+    # Component matching covers any path component, so a sub-path under a
+    # sensitive directory is itself an authorized root.
+    sub = tmp_path / ".aws" / "sub"
+    sub.mkdir(parents=True)
+    (sub / "credentials").write_text("aws_secret = needle\n")
+    result = SEARCH_TEXT.handler(ctx(tmp_path, "ask"), {"pattern": "needle", "path": ".aws/sub"})
+
+    assert result.success
+    assert ".aws/sub/credentials:1" in result.content
+    assert "skipped" not in result.content
+
+
+def test_search_text_classifier_flags_aws_root(tmp_path: Path) -> None:
+    (tmp_path / ".aws").mkdir()
+    risk = SEARCH_TEXT.risk_for(ctx(tmp_path), {"pattern": "x", "path": ".aws"})
+    assert risk.risk is RiskLevel.HIGH
+
+
+def test_search_text_skips_symlinked_file_escaping_workspace(tmp_path: Path) -> None:
+    # A symlinked FILE pointing outside the workspace would crash the per-file
+    # relative_to invariant; the handler must skip it and complete cleanly.
+    outside = tmp_path.parent / "outside_target.txt"
+    outside.write_text("x = 'needle'\n")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("y = 'needle'\n")
+    (workspace / "alias.txt").symlink_to(outside)
+
+    result = SEARCH_TEXT.handler(ctx(workspace, "ask"), {"pattern": "needle"})
+
+    assert result.success
+    assert "app.py:1" in result.content
+    assert "alias.txt" not in result.content

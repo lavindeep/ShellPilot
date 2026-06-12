@@ -22,8 +22,12 @@ def _iter_files(root: Path) -> list[Path]:
     while stack:
         current = stack.pop()
         for entry in sorted(current.iterdir(), key=lambda p: p.name):
+            if entry.is_symlink():
+                # Symlinks (dir or file) can alias paths outside the workspace;
+                # never traverse or read through them (mirrors the dir skip).
+                continue
             if entry.is_dir():
-                if entry.name not in SKIP_DIRS and not entry.is_symlink():
+                if entry.name not in SKIP_DIRS:
                     stack.append(entry)
             elif entry.is_file():
                 files.append(entry)
@@ -40,14 +44,27 @@ def _search_text(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
             success=False, summary=f"{arguments.get('path', '.')} is not a directory", content=""
         )
 
-    allow_sensitive = context.allow_sensitive_reads == "always"
     workspace_root = context.workspace.resolve()
+    # An explicitly-sensitive root reaching this handler is by definition
+    # authorized: in `never` mode the executor BLOCKED the call pre-handler; in
+    # `ask` mode the handler only runs after the user approved; in `always` it is
+    # AUTO. So the whole subtree is searched. The traversal skip below still
+    # guards files DISCOVERED INCIDENTALLY under a non-sensitive root (e.g. a
+    # `.env` found while searching `.`).
+    root_relative = root.relative_to(workspace_root)
+    root_is_sensitive = sensitive_path_reason(root_relative) is not None
+    allow_sensitive = context.allow_sensitive_reads == "always" or root_is_sensitive
     matches: list[str] = []
     scanned = 0
     skipped = 0
     skipped_names: list[str] = []
     for file in _iter_files(root):
-        relative = file.relative_to(workspace_root)
+        try:
+            relative = file.relative_to(workspace_root)
+        except ValueError:
+            # A symlink the traversal did not catch could resolve outside the
+            # workspace; skip rather than crash the handler.
+            continue
         if not allow_sensitive and sensitive_path_reason(relative) is not None:
             skipped += 1
             if file.name not in skipped_names and len(skipped_names) < 3:
