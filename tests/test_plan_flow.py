@@ -473,3 +473,163 @@ def test_nudge_audited(tmp_path: Path) -> None:
     nudge_events = [e for e in events if e["event"] == "plan_nudge"]
     assert len(nudge_events) == 1
     assert nudge_events[0]["summary"] == "step 1"
+
+
+# ---------------------------------------------------------------------------
+# Plan-step completion guard (Fix B): a step whose last side-effecting action
+# failed cannot be marked completed until something succeeds or a blocker is set.
+# ---------------------------------------------------------------------------
+
+
+def _edit_plan_call() -> Message:
+    return tool_call(
+        "propose_plan",
+        goal="Apply the change",
+        steps=["Patch the file", "Run tests"],
+        assumptions=["repo is clean"],
+        verification=["pytest"],
+    )
+
+
+def test_complete_after_rejected_patch_is_refused_end_to_end(tmp_path: Path) -> None:
+    # Headline regression: an approved plan whose patch is rejected (anchor not
+    # found) must NOT advance when the model calls update_plan(completed).
+    target = tmp_path / "module.py"
+    target.write_text("def real_function():\n    return 1\n")
+    fake = FakeLLM(
+        script=[
+            _edit_plan_call(),
+            # Read records the snapshot so the patch reaches anchor matching.
+            tool_call("read_file", path="module.py"),
+            # Anchor that does NOT appear in the file -> "edit rejected".
+            tool_call(
+                "patch_file",
+                path="module.py",
+                operation="replace_exact",
+                old="def nonexistent_anchor():",
+                new="def patched():",
+            ),
+            # The model wrongly marks the step done; the guard refuses.
+            tool_call("update_plan", step=1, status="completed"),
+            # Step 1 is still active, so a plain reply gets nudged (bounded to 2);
+            # absorb both nudges so the turn ends cleanly.
+            answer("I could not apply the edit."),
+            answer("Still could not apply the edit."),
+            answer("Stopping; the edit cannot be applied."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""), approve_actions=True)
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    runtime.run_turn("Apply the change")
+
+    # patch_file was rejected.
+    patch_results = [r for r in ui.tool_results if r[0] == "patch_file"]
+    assert patch_results and patch_results[0][1] is False
+    assert patch_results[0][2] == "edit rejected"
+
+    # The update_plan completion was refused.
+    update_results = [r for r in ui.tool_results if r[0] == "update_plan"]
+    assert update_results and update_results[-1][1] is False
+    assert "not completed" in update_results[-1][2]
+
+    # The recorded tool result carries the corrective failure and guidance.
+    tool_messages = [m for m in fake.calls[-1].messages if m.role == "tool"]
+    assert any("not completed" in m.content for m in tool_messages)
+    assert any("update_plan(blocker=" in m.content for m in tool_messages)
+
+    # Step 1 still active; plan still active; step 2 not advanced.
+    plan = runtime.plan_manager.active
+    assert plan is not None
+    assert plan.status == "active"
+    assert plan.steps[0].status == "active"
+    assert plan.steps[1].status == "pending"
+
+
+def test_rejected_patch_then_write_completes_and_advances(tmp_path: Path) -> None:
+    fake = FakeLLM(
+        script=[
+            _edit_plan_call(),
+            # Patch a file that does not exist yet -> rejected.
+            tool_call(
+                "patch_file",
+                path="new.py",
+                operation="replace_exact",
+                old="anything",
+                new="x",
+            ),
+            # Successful write_file for the same step unblocks completion.
+            tool_call("write_file", path="new.py", content="print('hi')\n", mode="create"),
+            tool_call("update_plan", step=1, status="completed"),
+            tool_call("update_plan", step=2, status="completed"),
+            answer("Done."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""), approve_actions=True)
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    runtime.run_turn("Apply the change")
+
+    plan = runtime.plan_manager.active
+    assert plan is not None
+    assert plan.steps[0].status == "completed"
+    assert plan.steps[1].status == "completed"
+    assert plan.status == "completed"
+
+
+def test_read_only_step_completes_end_to_end(tmp_path: Path) -> None:
+    # False-positive guard: a read_file-only step has no failed side effect and
+    # must complete freely.
+    (tmp_path / "module.py").write_text("hello\n")
+    fake = FakeLLM(
+        script=[
+            tool_call(
+                "propose_plan",
+                goal="Inspect then test",
+                steps=["Read the module", "Run tests"],
+                assumptions=["repo is clean"],
+                verification=["pytest"],
+            ),
+            tool_call("read_file", path="module.py"),
+            tool_call("update_plan", step=1, status="completed"),
+            # Step 2 is now active, so a plain reply is nudged (bounded to 2).
+            answer("Inspected."),
+            answer("Inspected; nothing more to do here."),
+            answer("Done inspecting."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    runtime.run_turn("Inspect the module")
+
+    plan = runtime.plan_manager.active
+    assert plan is not None
+    assert plan.steps[0].status == "completed"
+    assert plan.steps[1].status == "active"
+
+
+def test_failing_run_command_on_active_step_blocks_completion(tmp_path: Path) -> None:
+    # A nonzero-exit run_command is success=False and must block completion.
+    fake = FakeLLM(
+        script=[
+            _edit_plan_call(),
+            tool_call("run_command", argv=["false"]),
+            tool_call("update_plan", step=1, status="completed"),
+            # Step 1 still active after the refusal -> plain reply nudged (x2).
+            answer("The command failed."),
+            answer("The command still failed."),
+            answer("Stopping; the command keeps failing."),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""), approve_actions=True)
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    runtime.run_turn("Apply the change")
+
+    update_results = [r for r in ui.tool_results if r[0] == "update_plan"]
+    assert update_results and update_results[-1][1] is False
+    plan = runtime.plan_manager.active
+    assert plan is not None
+    assert plan.steps[0].status == "active"
+    assert plan.steps[1].status == "pending"

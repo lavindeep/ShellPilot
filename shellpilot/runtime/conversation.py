@@ -15,6 +15,7 @@ from shellpilot.memory.store import MemoryStores
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.sessions import SessionStore
 from shellpilot.persistence.snapshots import SnapshotStore
+from shellpilot.policy.risk import SideEffect
 from shellpilot.prompts.execution import EXPLAINER_PROMPT
 from shellpilot.prompts.planning import PLANNING_GUIDANCE
 from shellpilot.prompts.system import build_system_prompt
@@ -437,6 +438,18 @@ class ConversationRuntime:
             for call in reply.tool_calls:
                 self._ui.show_tool_call(call.name, call.arguments)
                 outcome = executor.execute(call)
+                # Feed side-effecting tool outcomes to the plan completion guard.
+                # Key off the SPEC's side_effect (not the result's): a failed or
+                # denied result carries SideEffect.NONE, which would hide exactly
+                # the failures the guard exists to catch. Plan tools are
+                # SideEffect.NONE, so they never pollute the counters.
+                spec = self._registry.get(call.name)
+                if (
+                    spec is not None
+                    and spec.side_effect is not SideEffect.NONE
+                    and outcome.result is not None
+                ):
+                    self.plan_manager.note_side_effect(outcome.result.success)
                 if outcome.malformed:
                     consecutive_malformed += 1
                     if consecutive_malformed >= MAX_CONSECUTIVE_MALFORMED:

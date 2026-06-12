@@ -375,3 +375,214 @@ def test_cancel_with_pending_revision_clears_state(tmp_path: Path) -> None:
     # A new task directory was created (total went up by 1)
     new_count = sum(1 for _ in (tmp_path / ".shellpilot" / "tasks").iterdir() if _.is_dir())
     assert new_count == original_task_dir_count + 1
+
+
+# ---------------------------------------------------------------------------
+# Plan-step completion guard (Fix B): refuse completing a step whose last
+# side-effecting action failed and nothing has succeeded since.
+# ---------------------------------------------------------------------------
+
+
+def test_complete_after_failed_side_effect_is_refused(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Edit code", "Run tests"]})
+    assert manager.active is not None
+
+    manager.note_side_effect(False)
+    result = update.handler(ctx, {"step": 1, "status": "completed"})
+
+    assert result.success is False
+    assert "not completed" in result.summary
+    assert "edit rejected" in result.content
+    assert "update_plan(blocker=" in result.content
+    # Step 1 stays active; plan stays active; step 2 not advanced.
+    assert manager.active.steps[0].status == "active"
+    assert manager.active.status == "active"
+    assert manager.active.steps[1].status == "pending"
+
+
+def test_failure_then_success_completes_and_advances(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Edit code", "Run tests"]})
+    assert manager.active is not None
+
+    manager.note_side_effect(False)
+    manager.note_side_effect(True)
+    result = update.handler(ctx, {"step": 1, "status": "completed"})
+
+    assert result.success is True
+    assert manager.active.steps[0].status == "completed"
+    assert manager.active.steps[1].status == "active"
+
+
+def test_pure_analysis_step_completes_freely(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Read code", "Run tests"]})
+    assert manager.active is not None
+
+    # No note_side_effect calls at all: a read-only step completes freely.
+    result = update.handler(ctx, {"step": 1, "status": "completed"})
+
+    assert result.success is True
+    assert manager.active.steps[0].status == "completed"
+    assert manager.active.steps[1].status == "active"
+
+
+def test_retry_after_block_then_success_completes(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Edit code", "Run tests"]})
+    assert manager.active is not None
+
+    manager.note_side_effect(False)
+    refused = update.handler(ctx, {"step": 1, "status": "completed"})
+    assert refused.success is False
+    assert manager.active.steps[0].status == "active"
+
+    # The model retries the edit and it succeeds, then completes.
+    manager.note_side_effect(True)
+    done = update.handler(ctx, {"step": 1, "status": "completed"})
+    assert done.success is True
+    assert manager.active.steps[0].status == "completed"
+    assert manager.active.steps[1].status == "active"
+
+
+def test_counters_reset_on_step_advance(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Edit code", "Adjust config"]})
+    assert manager.active is not None
+
+    # Step 1: fail then succeed then complete.
+    manager.note_side_effect(False)
+    manager.note_side_effect(True)
+    update.handler(ctx, {"step": 1, "status": "completed"})
+    assert manager.active.steps[1].status == "active"
+
+    # Step 2: no attempts at all -> step-1 failure must not leak in.
+    result = update.handler(ctx, {"step": 2, "status": "completed"})
+    assert result.success is True
+    assert manager.active.steps[1].status == "completed"
+    assert manager.active.status == "completed"
+
+
+def test_denial_counts_as_failure_and_blocks(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Edit code", "Run tests"]})
+    assert manager.active is not None
+
+    # A denied approval is success=False -> note_side_effect(False).
+    manager.note_side_effect(False)
+    result = update.handler(ctx, {"step": 1, "status": "completed"})
+
+    assert result.success is False
+    assert manager.active.steps[0].status == "active"
+
+
+def test_blocker_path_still_works_after_a_failure(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Edit code", "Run tests"]})
+    assert manager.active is not None
+
+    manager.note_side_effect(False)
+    result = update.handler(ctx, {"blocker": "anchor not found; edit rejected after approval"})
+
+    assert result.success is True
+    assert manager.active.status == "blocked"
+    assert "roadblock" in result.content.lower()
+    assert any("anchor not found" in b for b in manager.active.blockers)
+
+
+def test_invalid_status_message_mentions_blocker_argument(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Edit code", "Run tests"]})
+
+    result = update.handler(ctx, {"step": 1, "status": "blocker"})
+
+    assert result.success is False
+    assert "blocker argument" in result.content
+    assert "update_plan(blocker=" in result.content
+
+
+def test_completing_non_active_step_is_not_guarded(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    ctx = _ctx(tmp_path)
+    propose.handler(ctx, {"goal": "Build", "steps": ["Edit code", "Run tests"]})
+    assert manager.active is not None
+
+    # Step 1 is the active step; a failure is on the active step. Completing a
+    # *different* (non-active) step 2 must not be guarded by step 1's failure.
+    manager.note_side_effect(False)
+    result = update.handler(ctx, {"step": 2, "status": "completed"})
+
+    assert result.success is True
+    assert manager.active.steps[1].status == "completed"

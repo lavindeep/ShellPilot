@@ -134,6 +134,14 @@ class PlanManager:
         self._profile = profile
         self.active: TaskPlan | None = None
         self.pending_revision: str | None = None
+        # Transient completion-guard state (runtime-only; never persisted to
+        # PLAN.md/TaskPlan, mirroring _last_failure_signature). Tracks the
+        # side-effecting tool outcomes seen against the currently active step so
+        # that a step whose last side-effecting action failed cannot be marked
+        # completed until something succeeds (or a blocker is recorded).
+        self._step_se_failures: int = 0
+        self._step_se_successes: int = 0
+        self._guard_active_index: int | None = None
 
     def set_workspace(self, workspace: Path) -> None:
         """New tasks use the new boundary; an active plan keeps its artifact path."""
@@ -230,6 +238,52 @@ class PlanManager:
                 self.active.status = "completed"
         self._write(self.active)
         return ""
+
+    def _live_active_index(self) -> int | None:
+        """1-based index of the currently active step, or None if none/no plan."""
+        if self.active is None:
+            return None
+        return next(
+            (i for i, step in enumerate(self.active.steps, start=1) if step.status == "active"),
+            None,
+        )
+
+    def note_side_effect(self, success: bool) -> None:
+        """Record one side-effecting tool outcome against the active step.
+
+        When the active step changes (advanced/replanned) the per-step counters
+        reset so a prior step's failure never leaks into the next step's guard.
+        """
+        active_index = self._live_active_index()
+        if active_index is None:
+            self._step_se_failures = 0
+            self._step_se_successes = 0
+            self._guard_active_index = None
+            return
+        if active_index != self._guard_active_index:
+            self._step_se_failures = 0
+            self._step_se_successes = 0
+            self._guard_active_index = active_index
+        if success:
+            self._step_se_successes += 1
+        else:
+            self._step_se_failures += 1
+
+    def completion_blocked(self, index: int) -> bool:
+        """True when completing ``index`` must be refused by the guard.
+
+        Only the active step is ever guarded, and only when its last
+        side-effecting action failed and nothing has succeeded since.
+        """
+        active_index = self._live_active_index()
+        if active_index is None or active_index != self._guard_active_index:
+            # Reconcile a stale guard index the same way note_side_effect does.
+            self._step_se_failures = 0
+            self._step_se_successes = 0
+            self._guard_active_index = active_index
+        if active_index is None or index != active_index:
+            return False
+        return self._step_se_failures > 0 and self._step_se_successes == 0
 
     def record_blocker(self, text: str) -> None:
         assert self.active is not None
@@ -353,7 +407,22 @@ def make_plan_tools(
                 return ToolResult(
                     success=False,
                     summary=f"invalid status {status!r}",
-                    content=f"status must be one of {', '.join(STEP_STATUSES)}",
+                    content=(
+                        f"status must be one of {', '.join(STEP_STATUSES)}. To record a "
+                        "blocker, use the blocker argument: "
+                        'update_plan(blocker="<evidence>"), not a status value.'
+                    ),
+                )
+            if status == "completed" and manager.completion_blocked(int(step)):
+                return ToolResult(
+                    success=False,
+                    summary=f"step {step} not completed: last action failed",
+                    content=(
+                        f"Step {step}'s last side-effecting action failed (e.g. edit rejected) "
+                        "and nothing has succeeded since. Apply the change successfully before "
+                        "marking this step completed, or record a blocker with "
+                        'update_plan(blocker="<evidence>").'
+                    ),
                 )
             error = manager.update_step(int(step), str(status), str(arguments.get("note", "")))
             if error:

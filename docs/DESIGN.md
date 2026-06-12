@@ -716,6 +716,13 @@ Recommended workflow:
 9. Each `update_plan` call for a non-final step instructs the model to continue with the
    next step in the same turn. The final completion result instructs the model to summarize
    the outcome instead.
+
+Completing a step is deterministically guarded: if the step's last side-effecting action
+failed or was denied and nothing has succeeded since, `update_plan(completed)` returns a
+corrective failure telling the model to apply the change successfully or record a blocker
+with `update_plan(blocker="<evidence>")`. Pure-analysis steps and failure-then-successful-alternative
+paths complete freely.
+
 10. Runtime updates the plan file after each meaningful step.
 11. Runtime writes a final outcome summary into the plan file when the task finishes.
 
