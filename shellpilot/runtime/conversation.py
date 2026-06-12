@@ -35,6 +35,13 @@ MAX_CONSECUTIVE_MALFORMED = 2
 TOOL_DIGEST_HEAD = 200
 TOOL_DIGEST_TAIL = 200
 MAX_PLAN_NUDGES = 2
+MAX_EMPTY_NUDGES = 2
+
+EMPTY_CONTINUE_NUDGE = (
+    "Your last reply was empty — no text and no tool call. You have already run a "
+    "tool this turn, so do not stop here. Either call the next tool to continue, or "
+    "write your answer in plain text now. Do not reply with an empty message."
+)
 
 PLAN_CONTINUE_NUDGE = (
     "The approved plan is not finished (next step {index}: {title}). Do not narrate "
@@ -393,6 +400,7 @@ class ConversationRuntime:
         tools = executor.available_definitions()
         tool_turns = 0
         nudges_used = 0
+        empty_nudges_used = 0
         consecutive_malformed = 0
 
         while True:
@@ -421,6 +429,31 @@ class ConversationRuntime:
                         self._audit.write("plan_nudge", summary=f"step {index}")
                     self._record(tool_result(PLAN_CONTINUE_NUDGE.format(index=index, title=title)))
                     continue
+                # An empty reply after at least one tool result is a reasoning-only
+                # or stalled turn (the silent 55 s incident): nudge it to keep going
+                # instead of accepting nothing as the answer. Bounded; plan nudge
+                # above keeps priority.
+                if not reply.content.strip() and tool_turns > 0:
+                    thinking_hint = (
+                        f", thinking-only reply, {len(reply.thinking)} chars"
+                        if reply.thinking
+                        else ""
+                    )
+                    if empty_nudges_used < MAX_EMPTY_NUDGES:
+                        empty_nudges_used += 1
+                        if self._audit is not None:
+                            self._audit.write(
+                                "empty_response_nudge",
+                                summary=f"attempt {empty_nudges_used}{thinking_hint}",
+                            )
+                        self._record(tool_result(EMPTY_CONTINUE_NUDGE))
+                        continue
+                    self._ui.show_status("(empty response)")
+                    if self._audit is not None:
+                        self._audit.write(
+                            "empty_response",
+                            summary=f"nudge budget exhausted{thinking_hint}",
+                        )
                 return reply
 
             tool_turns += 1

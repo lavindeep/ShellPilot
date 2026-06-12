@@ -42,6 +42,10 @@ class Message:
     content: str
     tool_calls: tuple[ToolCall, ...] = ()
     images: tuple[ImageRef, ...] = ()
+    # Streamed reasoning text from a think-capable model, captured for audit
+    # observability only. Never echoed back to the API (see ollama._encode_message)
+    # and never rendered; kept default-empty so existing constructions stand.
+    thinking: str = ""
 
 
 @dataclass(frozen=True)

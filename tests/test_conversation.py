@@ -332,3 +332,152 @@ def test_update_plan_after_clear_reports_no_active_plan(tmp_path: Path) -> None:
 
     assert not result.success
     assert "no active plan" in result.summary.lower()
+
+
+# ---------------------------------------------------------------------------
+# Empty-response nudge: a reasoning-only / empty reply after a tool result is
+# nudged to keep going instead of silently ending the turn.
+# ---------------------------------------------------------------------------
+
+
+def _seed_file(tmp_path: Path) -> Path:
+    target = tmp_path / "seed.txt"
+    target.write_text("hello world\n", encoding="utf-8")
+    return target
+
+
+def test_empty_reply_after_tool_call_is_nudged(tmp_path: Path) -> None:
+    """An empty reply after a tool result is nudged; the next answer is returned."""
+    _seed_file(tmp_path)
+    fake = FakeLLM(
+        script=[
+            tool_call("read_file", path="seed.txt"),
+            answer(""),  # reasoning-only / empty turn
+            answer("The file says hello world."),
+        ]
+    )
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("read seed.txt")
+
+    assert reply == "The file says hello world."
+    assert len(fake.calls) == 3
+    # A nudge tool_result was recorded between the empty reply and the answer.
+    from shellpilot.runtime.conversation import EMPTY_CONTINUE_NUDGE
+
+    tool_msgs = [m.content for m in runtime._history if m.role == "tool"]
+    assert any(EMPTY_CONTINUE_NUDGE == c for c in tool_msgs)
+
+
+def test_whitespace_only_reply_is_nudged(tmp_path: Path) -> None:
+    """A whitespace-only middle reply is treated as empty and nudged."""
+    _seed_file(tmp_path)
+    fake = FakeLLM(
+        script=[
+            tool_call("read_file", path="seed.txt"),
+            answer("   \n\t "),
+            answer("Done."),
+        ]
+    )
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("read seed.txt")
+
+    assert reply == "Done."
+    assert len(fake.calls) == 3
+
+
+def test_empty_reply_budget_exhaustion_stops(tmp_path: Path) -> None:
+    """After MAX_EMPTY_NUDGES the loop stops; status mentions the empty response."""
+    from shellpilot.runtime.conversation import MAX_EMPTY_NUDGES
+
+    _seed_file(tmp_path)
+    fake = FakeLLM(
+        script=[
+            tool_call("read_file", path="seed.txt"),
+            *[answer("") for _ in range(MAX_EMPTY_NUDGES + 1)],
+        ]
+    )
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("read seed.txt")
+
+    assert reply == ""
+    # 1 tool call + (MAX_EMPTY_NUDGES + 1) empty replies = nudges then exhaustion.
+    assert len(fake.calls) == 1 + MAX_EMPTY_NUDGES + 1
+    assert any("(empty response)" in status for status in ui.statuses)
+
+
+def test_empty_first_reply_is_not_nudged(tmp_path: Path) -> None:
+    """An empty FIRST reply (no tool ran yet) ends the turn without nudging."""
+    fake = FakeLLM(script=[answer("")])
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("hello")
+
+    assert reply == ""
+    assert len(fake.calls) == 1
+    assert not any("(empty response)" in status for status in ui.statuses)
+
+
+def test_empty_reply_writes_audit_events(tmp_path: Path) -> None:
+    """The nudge and the exhaustion both emit audit events."""
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-empty",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    _seed_file(tmp_path)
+    from shellpilot.runtime.conversation import MAX_EMPTY_NUDGES
+
+    fake = FakeLLM(
+        script=[
+            tool_call("read_file", path="seed.txt"),
+            *[answer("") for _ in range(MAX_EMPTY_NUDGES + 1)],
+        ]
+    )
+    ui = FakeUI()
+    runtime = _make_runtime_with_audit(fake, ui, tmp_path, audit)
+
+    runtime.run_turn("read seed.txt")
+
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    nudge_events = [e for e in events if e["event"] == "empty_response_nudge"]
+    final_events = [e for e in events if e["event"] == "empty_response"]
+    assert len(nudge_events) == MAX_EMPTY_NUDGES
+    assert len(final_events) == 1
+
+
+def test_plan_nudge_takes_priority_over_empty_nudge(tmp_path: Path) -> None:
+    """With an active approved plan, an empty reply fires the plan nudge first."""
+    fake = FakeLLM(
+        script=[
+            tool_call(
+                "propose_plan",
+                goal="Do something",
+                steps=["Step one", "Step two"],
+                assumptions=[],
+                verification=[],
+            ),
+            answer(""),  # empty: plan still active, so plan nudge must win
+            answer("Still working."),  # second no-tool reply, also plan-nudged
+            answer("Stopping for now."),  # third reply ends the turn (MAX_PLAN_NUDGES=2)
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    runtime.run_turn("Do the thing")
+
+    from shellpilot.runtime.conversation import EMPTY_CONTINUE_NUDGE, PLAN_CONTINUE_NUDGE
+
+    tool_msgs = [m.content for m in runtime._history if m.role == "tool"]
+    plan_prefix = PLAN_CONTINUE_NUDGE.split("{")[0]
+    # The plan nudge fired for the empty reply; the empty-response nudge did not.
+    assert any(c.startswith(plan_prefix) for c in tool_msgs)
+    assert EMPTY_CONTINUE_NUDGE not in tool_msgs

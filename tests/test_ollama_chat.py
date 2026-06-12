@@ -37,6 +37,29 @@ def test_chat_streams_content_and_sets_num_ctx() -> None:
     assert payload["messages"] == [{"role": "user", "content": "hi"}]
 
 
+def test_chat_captures_thinking_without_content() -> None:
+    """A reasoning-only stream returns thinking on the reply, empty content, no tokens."""
+    tokens: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stream_body(
+                {"message": {"role": "assistant", "thinking": "Let me ", "content": ""}},
+                {
+                    "message": {"role": "assistant", "thinking": "reason.", "content": ""},
+                    "done": True,
+                },
+            ),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    reply = client.chat("gemma4:e4b", [user("hi")], num_ctx=4096, on_token=tokens.append)
+    assert reply.content == ""
+    assert reply.thinking == "Let me reason."
+    assert tokens == []
+
+
 def test_chat_collects_tool_calls() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

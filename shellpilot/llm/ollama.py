@@ -179,6 +179,7 @@ class OllamaClient:
         self, payload: dict[str, Any], on_token: Callable[[str], None] | None
     ) -> Message:
         content_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         try:
             with self._client.stream("POST", "/api/chat", json=payload) as response:
@@ -200,6 +201,12 @@ class OllamaClient:
                         content_parts.append(token)
                         if on_token is not None:
                             on_token(token)
+                    # Reasoning text streams in a separate field; capture it so a
+                    # reasoning-only turn is observable instead of silently empty
+                    # (design section 24.6). It is never streamed to the UI.
+                    thinking = message.get("thinking") or ""
+                    if thinking:
+                        thinking_parts.append(thinking)
                     for raw_call in message.get("tool_calls") or []:
                         parsed = _decode_tool_call(raw_call)
                         if parsed is not None:
@@ -207,7 +214,10 @@ class OllamaClient:
         except httpx.TransportError as exc:
             raise OllamaUnreachableError(f"Ollama API unreachable: {exc}") from exc
         return Message(
-            role="assistant", content="".join(content_parts), tool_calls=tuple(tool_calls)
+            role="assistant",
+            content="".join(content_parts),
+            tool_calls=tuple(tool_calls),
+            thinking="".join(thinking_parts),
         )
 
 

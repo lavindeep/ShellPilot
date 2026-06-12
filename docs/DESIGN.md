@@ -457,8 +457,11 @@ Design rules that follow:
 | Same failure twice | Stop and enter the roadblock protocol (section 11.6). |
 | Tool-call loop | Enforce turn/tool budgets (section 24.6) and replan or stop. |
 | Approved plan stalls on narration | Inject a bounded continuation nudge (below) and keep the turn going. |
+| Empty reply after a tool result | Nudge the model to continue or answer in plain text; bounded to two attempts, then print an honest `(empty response)` line and end the turn. |
 
 Small models often reply to an approved plan with prose — "I will now execute Step 1." — and no tool call, which would otherwise end the turn and force the user to type "continue" once per step. When a no-tool-call reply arrives while the active plan still has a pending or in-progress step, the tool loop injects a tool-role nudge naming that step and instructing the model to call the tool for it now, in the same turn, then loops again instead of returning. The nudge is bounded to **two per turn**: a model that genuinely needs the user (an honest question, an unrecoverable blocker) keeps the third no-tool-call reply, which ends the turn normally. The nudge never fires for a merely *proposed* plan awaiting approval, nor once the per-turn tool budget has emptied the tool set (in that state the model has already been told to answer in plain text). This is the deterministic runtime backstop behind the prompt and tool-result hardening that nudges the model toward single-turn plan execution.
+
+A reasoning-capable model can also end a turn with a genuinely *empty* reply — no text, no tool call — after it has already run a tool, typically because it reasoned at length (the streamed `thinking` field, section 24.6) and then emitted nothing. Without a guard the loop accepts that empty reply as the answer and the turn vanishes silently behind the stats line. So, after the plan nudge has had its chance, an empty (or whitespace-only) reply that follows at least one executed tool result is nudged once with a tool-role message telling the model to call the next tool or write its answer in plain text. This empty-reply nudge is bounded to **two per turn**; on exhaustion the runtime prints an honest `(empty response)` line and returns the empty answer rather than looping forever. It deliberately does **not** fire on an empty *first* reply (no tool has run yet — that is a legitimate, if terse, end of turn). When the captured `thinking` is non-empty the audit events record its length, so a "thinking-only" turn is diagnosable after the fact.
 
 The roadblock protocol (section 11.6) and the model edge cases (section 24.6) are instances of this principle, not exceptional paths. Phase 0.5 (section 27.2) measures the actual failure rates of the target model before the edit strategy is locked in.
 
@@ -1901,6 +1904,7 @@ Most rows here concern the v2 memory system. The prompt-injection and secret row
 | Model emits malformed tool call | Reject tool call, show compact error, and allow one retry. |
 | Model loops tool calls | Enforce turn/tool budgets and replan or stop. |
 | Reasoning mode unavailable | Per-model fallback: add the model to `_no_think`; retry once without `think`; other models keep sending `think`. `_reasoning` (the config-level flag) is never mutated. |
+| Reasoning-only turn (think text, empty content) | The streamed `thinking` field is now accumulated and captured on the reply message (it is never echoed back to the API and never rendered), so a turn that reasons and then emits nothing is observable in the audit log rather than silently empty; the runtime nudges such a reply once the model has already run a tool (section 10.4). |
 
 ### 24.7 Privacy And Log Edge Cases
 
