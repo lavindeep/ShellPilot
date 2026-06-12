@@ -284,3 +284,32 @@ def test_tool_call_non_string_nested_argument_roundtrip(tmp_path: Path) -> None:
     )
     loaded = SessionStore.load(store.path)
     assert loaded.messages[0].tool_calls[0].arguments == args
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: corrupt-line guard in SessionStore.load
+# ---------------------------------------------------------------------------
+
+
+def test_load_skips_truncated_final_line(tmp_path: Path) -> None:
+    """A truncated (corrupt) final line is silently skipped; valid messages load."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="hello"))
+    store.record_message(Message(role="assistant", content="world"))
+    # Append a truncated JSON line (simulates crash mid-write)
+    with store.path.open("a", encoding="utf-8") as fh:
+        fh.write('{"type": "message", "role": "user", "content": "trun')
+    loaded = SessionStore.load(store.path)
+    assert [m.content for m in loaded.messages] == ["hello", "world"]
+
+
+def test_load_skips_corrupt_middle_line(tmp_path: Path) -> None:
+    """A corrupt line in the middle is skipped; later valid lines still load."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="before"))
+    # Inject a corrupt line manually between the two valid records.
+    with store.path.open("a", encoding="utf-8") as fh:
+        fh.write("not-valid-json\n")
+    store.record_message(Message(role="assistant", content="after"))
+    loaded = SessionStore.load(store.path)
+    assert [m.content for m in loaded.messages] == ["before", "after"]

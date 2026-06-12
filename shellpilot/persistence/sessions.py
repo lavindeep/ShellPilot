@@ -114,7 +114,10 @@ class SessionStore:
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             kind = record.get("type")
             if kind == "meta":
                 model = record.get("model", model)
