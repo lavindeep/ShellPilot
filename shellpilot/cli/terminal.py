@@ -53,6 +53,7 @@ from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import TurnStats
 from shellpilot.runtime.planner import TaskPlan
+from shellpilot.skills.loader import discover_skills
 
 
 def should_discard_interrupt(
@@ -273,12 +274,20 @@ def run_interactive(
 
     _preload(chosen)
 
+    detected = client.model_context_length(chosen)
+    ctx = detected or 8192
     if settings.instructions.load_agents_md:
-        detected = client.model_context_length(chosen)
-        cap = min(1500, (detected or 8192) // 10)
+        cap = min(1500, ctx // 10)
         behavior = load_behavior_instructions(paths.config_dir, workspace, max_tokens=cap)
     else:
         behavior = BehaviorInstructions(global_text=None, project_text=None)
+
+    skills_cap = min(800, ctx // 12)
+    discovered_skills = discover_skills(
+        user_skills_dir=paths.config_dir / "skills",
+        enabled=settings.skills.enabled,
+        max_tokens=skills_cap,
+    )
 
     audit = AuditLogger(
         path=paths.state_dir / "audit.jsonl",
@@ -342,6 +351,7 @@ def run_interactive(
         audit=audit,
         session=session,
         memory=memory,
+        skills=discovered_skills,
     )
     if restored is not None:
         runtime.restore_history(restored.messages)

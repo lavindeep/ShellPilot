@@ -26,6 +26,7 @@ from shellpilot.runtime.context import ContextAssembler, ContextSnapshot
 from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.executor import ExecutionOutcome, ToolExecutor
 from shellpilot.runtime.planner import PlanManager, compact_plan_state, make_plan_tools
+from shellpilot.skills.model import Skill
 from shellpilot.tools.images import make_view_image_tool
 from shellpilot.tools.registry import ToolRegistry, default_registry
 
@@ -101,6 +102,7 @@ class ConversationRuntime:
         audit: AuditLogger | None = None,
         session: SessionStore | None = None,
         memory: MemoryStores | None = None,
+        skills: Sequence[Skill] | None = None,
     ) -> None:
         self._audit = audit
         self._session = session
@@ -112,6 +114,7 @@ class ConversationRuntime:
         self._ui = ui
         self._model = model or settings.model.default
         self._registry = registry or default_registry()
+        self._skills: tuple[Skill, ...] = tuple(skills) if skills is not None else ()
         self._history: list[Message] = []
         self._staged_tool_images: list[ImageRef] = []
         self._last_user_text = ""
@@ -169,6 +172,10 @@ class ConversationRuntime:
     @property
     def memory(self) -> MemoryStores | None:
         return self._memory
+
+    @property
+    def skills(self) -> tuple[Skill, ...]:
+        return self._skills
 
     def _record(self, message: Message) -> None:
         """Append to history and the session transcript together."""

@@ -66,6 +66,7 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
     ("/attach <path>", "Stage an image to send with your next message (vision models only)."),
     ("/attach", "List currently staged images."),
+    ("/skills", "List discovered skills with root, enabled, and active status."),
 ]
 
 
@@ -168,6 +169,8 @@ class SlashDispatcher:
             self._prefs(args)
         elif command == "/attach":
             self._attach(args)
+        elif command == "/skills":
+            self._skills()
         else:
             self._console.print(f"[red]Unknown command: {command}[/red] — type /help for commands.")
         return SlashAction.CONTINUE
@@ -694,6 +697,52 @@ class SlashDispatcher:
                 spec.side_effect.value,
                 "[green]yes[/green]" if enabled else "[red]no[/red]",
             )
+        self._console.print(table)
+
+    def _skills(self) -> None:
+        from shellpilot.skills.loader import is_enabled
+        from shellpilot.skills.model import SkillTrigger
+
+        skills = self._runtime.skills
+        if not skills:
+            self._console.print("[dim]No skills discovered.[/dim]")
+            return
+
+        enabled = self._runtime.settings.skills.enabled
+        plan = self._runtime.plan_manager.active
+        plan_active = plan is not None and plan.status in ("active", "blocked")
+
+        table = Table(title="Skills")
+        table.add_column("Skill")
+        table.add_column("Root")
+        table.add_column("Status")
+        table.add_column("Active")
+
+        for skill in skills:
+            if not skill.valid:
+                status_cell = f"[red]invalid: {skill.error}[/red]"
+                active_cell = "[dim]no[/dim]"
+            elif skill.root == "builtin" and skill.name == "planning":
+                status_cell = "builtin"
+                if skill.error:
+                    status_cell += f" [dim]({skill.error})[/dim]"
+                active_cell = "[green]yes[/green]" if plan_active else "[dim]no[/dim]"
+            elif is_enabled(skill, enabled):
+                status_cell = "enabled"
+                if skill.error:
+                    status_cell += f" [dim]({skill.error})[/dim]"
+                if skill.trigger is SkillTrigger.ALWAYS:
+                    active_cell = "[green]yes[/green]"
+                else:
+                    active_cell = "[green]yes[/green]" if plan_active else "[dim]no[/dim]"
+            else:
+                status_cell = "[dim]disabled[/dim]"
+                if skill.error:
+                    status_cell += f" [dim]({skill.error})[/dim]"
+                active_cell = "[dim]no[/dim]"
+
+            table.add_row(skill.name, skill.root, status_cell, active_cell)
+
         self._console.print(table)
 
     def _context(self) -> None:

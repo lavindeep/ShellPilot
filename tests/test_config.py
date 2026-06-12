@@ -722,3 +722,81 @@ def test_inverted_ratio_pair_via_override_boots_with_warning(tmp_path: Path) -> 
     assert any("compact_at_ratio" in w for w in loaded.warnings)
     # compact must be below hard after self-heal
     assert loaded.settings.context.compact_at_ratio < loaded.settings.context.hard_limit_ratio
+
+
+# ---------------------------------------------------------------------------
+# [skills] config section: skills.enabled list (config-file only)
+# ---------------------------------------------------------------------------
+
+
+def test_skills_enabled_default_empty_tuple(tmp_path: Path) -> None:
+    """skills.enabled defaults to an empty tuple sourced from defaults."""
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert loaded.settings.skills.enabled == ()
+    assert loaded.sources["skills.enabled"] == "default"
+
+
+def test_skills_enabled_toml_list_parses_to_tuple(tmp_path: Path) -> None:
+    """A TOML array of skill names is parsed to a tuple of strings."""
+    user = write_toml(tmp_path / "user.toml", '[skills]\nenabled = ["my-skill", "other"]\n')
+    loaded = load_config(
+        user_config_file=user,
+        project_config_file=tmp_path / "missing.toml",
+        env={},
+    )
+    assert loaded.settings.skills.enabled == ("my-skill", "other")
+    assert loaded.sources["skills.enabled"] == "user"
+
+
+def test_skills_enabled_strips_whitespace_and_dedupes(tmp_path: Path) -> None:
+    """Entries are stripped of whitespace, empty strings dropped, and dupes removed."""
+    user = write_toml(
+        tmp_path / "user.toml",
+        '[skills]\nenabled = ["  alpha  ", "beta", "", "alpha", "  "]\n',
+    )
+    loaded = load_config(
+        user_config_file=user,
+        project_config_file=tmp_path / "missing.toml",
+        env={},
+    )
+    assert loaded.settings.skills.enabled == ("alpha", "beta")
+
+
+def test_skills_enabled_non_list_rejected(tmp_path: Path) -> None:
+    """A non-list value for skills.enabled raises ConfigError naming the key."""
+    user = write_toml(tmp_path / "user.toml", '[skills]\nenabled = "my-skill"\n')
+    with pytest.raises(ConfigError, match="skills.enabled"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_skills_enabled_non_string_element_rejected(tmp_path: Path) -> None:
+    """A list with a non-string element raises ConfigError naming the key."""
+    user = write_toml(tmp_path / "user.toml", "[skills]\nenabled = [1, 2]\n")
+    with pytest.raises(ConfigError, match="skills.enabled"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_skills_enabled_override_skipped_with_warning(tmp_path: Path) -> None:
+    """skills.enabled cannot be set via overrides; entry is skipped with a warning."""
+    loaded = _cfg(tmp_path, {"skills.enabled": ["x"]})
+    assert loaded.warnings
+    assert any("skills.enabled" in w for w in loaded.warnings)
+    assert loaded.settings.skills.enabled == ()
+
+
+def test_validate_override_skills_enabled_raises(tmp_path: Path) -> None:
+    """skills.enabled raises ConfigError (config-file only)."""
+    with pytest.raises(ConfigError, match="skills.enabled"):
+        validate_override("skills.enabled", ["x"])

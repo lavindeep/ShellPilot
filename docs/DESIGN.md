@@ -1590,6 +1590,14 @@ spinner = true    # aviation status spinner while the model works
 # There is deliberately no SHELLPILOT_TOOLS_WEB env var — enabling network
 # egress must be an explicit config-file act, not an ambient env var.
 web = false
+
+[skills]
+# List of user skill folder names (and non-planning builtin skills) that are
+# active in the session.  Config-file only: no env-var mapping, no /config set,
+# no overrides.json — enabling a skill is an explicit config-file act.
+# The builtin "planning" skill is always considered enabled (harness machinery);
+# it does not need to appear here.
+# enabled = ["my-skill"]
 ```
 
 | Key | Type | Default | Notes |
@@ -1823,6 +1831,7 @@ Planned commands:
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
 | `/attach <path>` | Stage an image file to send with the next user message (vision-capable models only). Path is validated eagerly; bytes are re-read at send time. *(v0.5.0)* |
 | `/attach` | List currently staged images, or report "No attachments staged." *(v0.5.0)* |
+| `/skills` | List all discovered skills with root (builtin/user), enabled/disabled/invalid status, and whether the trigger predicate is active now. *(v0.6.0)* |
 
 All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped and appear in the table above.
 
@@ -1832,7 +1841,7 @@ Deferred to v3 candidates:
 
 | Command | Purpose |
 |---|---|
-| `/capabilities` | List installed capability packs. |
+| `/capabilities` | List installed capability packs (reserved for the heavier packs that include tools/handlers/permissions — distinct from `/skills`). |
 | `/capabilities enable <name>` | Enable a deferred capability pack. |
 | `/undo` | Revert selected harness-managed changes when a safe undo record exists. |
 
@@ -1955,11 +1964,72 @@ Recommendation for v1:
 
 ## 23. Capability Packs
 
-The current Skill Builder should be deferred and redesigned.
+### 23.1 Skills v1 — Instruction-Only Slice (v0.6.0)
 
-Instead of "skills" as ad hoc prompt JSON, define capability packs later.
+The first shipped slice of capability packs is **instruction-only skills**: folders containing a hand-parsed `SKILL.md` instruction file. No scripts, no model-facing tools, no permissions model.
 
-A capability pack can include:
+**SKILL.md format**
+
+```
+---
+name: planning
+description: Execution discipline for an approved multi-step plan.
+---
+<body — injected verbatim into the system prompt when the skill is active>
+```
+
+The frontmatter is hand-parsed (no YAML library). Rules:
+- File must start with a `---` line.
+- Lines until the closing `---` are `key: value` pairs.
+- Only `name:` and `description:` are recognized — any other key → invalid skill.
+- A malformed pair line (no `:`) → invalid skill.
+- Missing opening or closing `---` → invalid skill.
+- **The folder name is the authoritative skill name.** If frontmatter `name:` is present and mismatches, the skill still loads as valid with an advisory in `error` (e.g. `frontmatter name 'x' ignored — folder name is authoritative`).
+- Body = everything after the closing `---`, stripped, bounded by `truncate_to_tokens` (per-skill cap: `min(800, ctx // 12)` where `ctx` is the detected model context).
+- Empty body is valid.
+- Invalid skills are listed in `/skills` but never injected.
+
+**Discovery roots**
+
+Two roots only — project/workspace roots are deliberately excluded (prompt-injection vector, §24.5):
+
+- **Builtin root**: `shellpilot/skills/builtin/` inside the installed package, resolved via `importlib.resources.files("shellpilot.skills.builtin")`. Currently contains zero skill folders (the planning skill's `SKILL.md` arrives in the next slice). The root exists so the resolution path is exercised.
+- **User root**: `<config_dir>/skills/` (e.g. `~/.config/shellpilot/skills/`). Absent directory → no user skills, no error.
+
+**Reserved builtin names**
+
+Builtin names are harness machinery. A user skill folder whose name matches any builtin skill name (including the upcoming `planning`) becomes `valid=False, error="reserved builtin name"` and is never injected. This rule survives even if the builtin skill itself is invalid.
+
+**Enablement**
+
+`[skills] enabled = ["my-skill"]` in `config.toml` lists the names of user skills (and non-planning builtins) that are active. Config-file only: no env-var, no `/config set`, no overrides.
+
+The builtin `planning` skill is always considered enabled (harness machinery); it must not appear in the list and does not need to. Disabling it via the list would have no effect.
+
+**Discovery order and data contract**
+
+`discover_skills(...)` returns ALL found skills (valid + invalid) in deterministic order: builtin alphabetical, then user alphabetical. The list is inert data — enablement is checked by the CLI (`is_enabled(skill, enabled)`). Injection into the system prompt is the next slice.
+
+**Trigger**
+
+Each skill carries a `SkillTrigger`:
+- `ALWAYS` — injected every turn when enabled (all user skills; builtin skills other than `planning`).
+- `PLAN_ACTIVE` — injected only while a plan is active or blocked (the `planning` skill).
+
+**Injection** (next slice): the system-prompt assembly will inject skill bodies after the planning guidance block, governed by the trigger predicate and enablement. This task wires discovery and surfaces the data; the `_context_snapshot()` path is not touched here.
+
+**`/skills` command**
+
+Lists all discovered skills in a table with columns: Skill, Root, Status, Active.
+- Status: `invalid: <error>` for invalid skills; `builtin` for planning-style always-enabled builtins; `enabled` or `disabled` for others. Advisory notes (name mismatch) appear dimly after the status.
+- Active: trigger predicate evaluated now — `PLAN_ACTIVE` → plan is active/blocked; `ALWAYS` → skill is enabled.
+- Empty discovery → "No skills discovered."
+
+`/capabilities` remains reserved for the heavier future capability packs (tools, handlers, permissions).
+
+### 23.2 Heavier Capability Packs (v3 candidate)
+
+The original heavier design remains the future direction. A capability pack can include:
 
 - Prompt guidance.
 - Tool definitions.
@@ -1978,7 +2048,7 @@ Example future packs:
 - `node_project`
 - `git_workflow`
 
-V1 can include only built-in tools. Capability loading can be designed but not fully implemented.
+V1 ships only built-in tools. Capability loading for heavier packs is designed but not implemented (v3 candidate, 2026-06-11).
 
 ## 24. Operational Edge Cases
 
@@ -2099,9 +2169,10 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 | `trusted-local` profile | Deferred from v1, and deferred again at the 2026-06-11 v2 scoping. Revisit for v3. |
 | Session resume | Shipped in v0.3.0 (settled 2026-06-11): append-only JSONL transcripts at `.shellpilot/sessions/<session-id>.jsonl`, written incrementally with secrets redacted; compaction trims memory, never the transcript. `shellpilot --resume [id]` restores the latest (or named) session's history; snapshots are never restored, so read-before-write forces fresh reads. `/export` renders the transcript to markdown. Tool-call arguments are redacted recursively (matching the audit log's `_redact_value` logic, now unified in `redact_structure` in `shellpilot/memory/redaction.py`) before they reach the JSONL transcript; `/export` inherits redaction by re-reading the transcript from disk. Fixed in v0.5.2. `session_markdown` re-applies redaction at export time so transcripts written before v0.5.2 (which may contain raw secrets on disk) cannot leak through `/export`; on-disk history is deliberately left untouched. Fixed in v0.5.2 review wave. |
 | Agent raw shell | Do not expose `raw_shell` as an agent tool in v1. Keep Manual Shell for direct user-controlled `shell=True`. |
-| Capability packs | Design later after core tools are stable. v3 candidate (2026-06-11). |
-| Packet capture diagnostics | Revisit as a capability pack. |
-| Skill Builder | Redesign later as capability or memory tooling. |
+| Capability packs (instruction-only Skills v1) | Shipped in v0.6.0 (section 23.1): SKILL.md discovery, `[skills]` config, `/skills` command. Injection + builtin planning skill land in the next task. |
+| Capability packs (heavier: tools/handlers/permissions) | Design later after core tools are stable. v3 candidate (2026-06-11). |
+| Packet capture diagnostics | Revisit as a heavier capability pack. |
+| Skill Builder | Superseded by Skills v1 (section 23.1) and the v3 heavier packs design. |
 | Plugin marketplace | Out of scope. |
 | Advanced audit signing | Defer until threat model requires it. |
 | Undo system | Defer until edits and snapshots are stable. v3 candidate (2026-06-11). |

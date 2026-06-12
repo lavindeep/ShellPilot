@@ -25,6 +25,7 @@ from shellpilot.config.model import (
     PrivacySettings,
     RuntimeSettings,
     Settings,
+    SkillSettings,
     ToolSettings,
     UiSettings,
     WorkspaceSettings,
@@ -44,6 +45,7 @@ SECTIONS: dict[str, type] = {
     "privacy": PrivacySettings,
     "ui": UiSettings,
     "tools": ToolSettings,
+    "skills": SkillSettings,
 }
 
 ENV_MAP: dict[str, str] = {
@@ -139,6 +141,20 @@ def _coerce(key: str, value: Any) -> Any:
         if not isinstance(value, dict):
             raise ConfigError(f"{key}: expected a table, got {value!r}")
         return dict(value)
+
+    if key == "skills.enabled":
+        # TOML array of skill names. Config-file only by design — no env-var,
+        # no overrides, no /config set (see SkillSettings in model.py).
+        if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
+            raise ConfigError(f"{key}: expected a list of strings, got {value!r}")
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in value:
+            stripped = item.strip()
+            if stripped and stripped not in seen:
+                seen.add(stripped)
+                result.append(stripped)
+        return tuple(result)
 
     coerced: Any
     if _is_optional_int(annotation):
@@ -289,6 +305,12 @@ def load_config(
                 "via overrides — entry ignored"
             )
             continue
+        if key == "skills.enabled":
+            warnings.append(
+                "overrides: skills.enabled is config-file only and cannot be set "
+                "via overrides — entry ignored"
+            )
+            continue
         try:
             values[key] = _coerce(key, raw)
             sources[key] = "set"
@@ -352,6 +374,8 @@ def validate_override(key: str, value: Any) -> Any:
         raise ConfigError(f"unknown config key: {key!r}")
     if key == "model.options":
         raise ConfigError("model.options is config-file only and cannot be set via /config set")
+    if key == "skills.enabled":
+        raise ConfigError("skills.enabled is config-file only and cannot be set via /config set")
     # Coerce strings exactly as env-var parsing does.
     if isinstance(value, str):
         annotation = _SCHEMA[key]

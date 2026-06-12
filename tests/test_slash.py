@@ -777,3 +777,80 @@ def test_config_warnings_printed_on_reload(tmp_path: Path) -> None:
     harness.dispatcher.handle("/config reload")
     out = harness.output()
     assert "invalid JSON" in out or "ignored" in out
+
+
+# ---------------------------------------------------------------------------
+# /skills
+# ---------------------------------------------------------------------------
+
+
+def _make_skill(
+    name: str,
+    root: str = "user",
+    valid: bool = True,
+    error: str = "",
+) -> "object":
+    from shellpilot.skills.model import Skill, SkillTrigger
+
+    return Skill(
+        name=name,
+        description="A skill.",
+        body="Do the work.",
+        root=root,
+        trigger=SkillTrigger.ALWAYS,
+        est_tokens=5,
+        valid=valid,
+        error=error,
+    )
+
+
+def test_skills_no_skills_shows_friendly_message(tmp_path: Path) -> None:
+    """/skills with no discovered skills shows a friendly empty message."""
+    harness = Harness(tmp_path)
+    # skills is empty by default (no skills= passed to ConversationRuntime)
+    harness.dispatcher.handle("/skills")
+    out = harness.output()
+    assert "No skills discovered" in out
+
+
+def test_skills_renders_name_root_and_status(tmp_path: Path) -> None:
+    """/skills shows skill name, root, and enabled/disabled status."""
+    from shellpilot.skills.model import Skill, SkillTrigger
+
+    skill = Skill(
+        name="my-skill",
+        description="A useful skill.",
+        body="Instructions.",
+        root="user",
+        trigger=SkillTrigger.ALWAYS,
+        est_tokens=5,
+        valid=True,
+    )
+    harness = Harness(tmp_path)
+    harness.runtime._skills = (skill,)  # type: ignore[attr-defined]
+    harness.dispatcher.handle("/skills")
+    out = harness.output()
+    assert "my-skill" in out
+    assert "user" in out
+
+
+def test_skills_invalid_skill_shows_invalid_status(tmp_path: Path) -> None:
+    """/skills marks invalid skills with their error reason."""
+    from shellpilot.skills.model import Skill, SkillTrigger
+
+    skill = Skill(
+        name="broken",
+        description="",
+        body="",
+        root="user",
+        trigger=SkillTrigger.ALWAYS,
+        est_tokens=0,
+        valid=False,
+        error="reserved builtin name",
+    )
+    harness = Harness(tmp_path)
+    harness.runtime._skills = (skill,)  # type: ignore[attr-defined]
+    harness.dispatcher.handle("/skills")
+    out = harness.output()
+    assert "broken" in out
+    assert "invalid" in out

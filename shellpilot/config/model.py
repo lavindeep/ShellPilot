@@ -92,6 +92,14 @@ class ToolSettings:
 
 
 @dataclass(frozen=True)
+class SkillSettings:
+    # Names of user skills (and non-planning builtins) that are enabled.
+    # Loaded from a TOML array only — no env-var mapping, no overrides, no
+    # /config set. Config-file only by design (same rationale as tools.web).
+    enabled: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Settings:
     model: ModelSettings = field(default_factory=ModelSettings)
     runtime: RuntimeSettings = field(default_factory=RuntimeSettings)
@@ -101,3 +109,4 @@ class Settings:
     privacy: PrivacySettings = field(default_factory=PrivacySettings)
     ui: UiSettings = field(default_factory=UiSettings)
     tools: ToolSettings = field(default_factory=ToolSettings)
+    skills: SkillSettings = field(default_factory=SkillSettings)
