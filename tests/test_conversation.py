@@ -368,6 +368,8 @@ def test_empty_reply_after_tool_call_is_nudged(tmp_path: Path) -> None:
 
     tool_msgs = [m.content for m in runtime._history if m.role == "tool"]
     assert any(EMPTY_CONTINUE_NUDGE == c for c in tool_msgs)
+    # Specifically the "already run a tool" wording, not the first-reply variant.
+    assert any("already run a tool" in c for c in tool_msgs)
 
 
 def test_whitespace_only_reply_is_nudged(tmp_path: Path) -> None:
@@ -411,17 +413,37 @@ def test_empty_reply_budget_exhaustion_stops(tmp_path: Path) -> None:
     assert any("(empty response)" in status for status in ui.statuses)
 
 
-def test_empty_first_reply_is_not_nudged(tmp_path: Path) -> None:
-    """An empty FIRST reply (no tool ran yet) ends the turn without nudging."""
-    fake = FakeLLM(script=[answer("")])
+def test_empty_first_reply_is_nudged(tmp_path: Path) -> None:
+    """An empty FIRST reply (no tool ran yet) is nudged with EMPTY_FIRST_NUDGE."""
+    from shellpilot.runtime.conversation import EMPTY_FIRST_NUDGE
+
+    fake = FakeLLM(script=[answer(""), answer("Here is my answer.")])
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("hello")
+
+    assert reply == "Here is my answer."
+    assert len(fake.calls) == 2
+    # A nudge tool_result using EMPTY_FIRST_NUDGE was recorded between the replies.
+    tool_msgs = [m.content for m in runtime._history if m.role == "tool"]
+    assert any(EMPTY_FIRST_NUDGE == c for c in tool_msgs)
+    assert not any("(empty response)" in status for status in ui.statuses)
+
+
+def test_empty_first_reply_budget_exhaustion(tmp_path: Path) -> None:
+    """After MAX_EMPTY_NUDGES from the very first reply, show (empty response)."""
+    from shellpilot.runtime.conversation import MAX_EMPTY_NUDGES
+
+    fake = FakeLLM(script=[answer("") for _ in range(MAX_EMPTY_NUDGES + 1)])
     ui = FakeUI()
     runtime = make_runtime(fake, ui, tmp_path)
 
     reply = runtime.run_turn("hello")
 
     assert reply == ""
-    assert len(fake.calls) == 1
-    assert not any("(empty response)" in status for status in ui.statuses)
+    assert len(fake.calls) == MAX_EMPTY_NUDGES + 1
+    assert any("(empty response)" in status for status in ui.statuses)
 
 
 def test_empty_reply_writes_audit_events(tmp_path: Path) -> None:

@@ -43,6 +43,12 @@ EMPTY_CONTINUE_NUDGE = (
     "write your answer in plain text now. Do not reply with an empty message."
 )
 
+EMPTY_FIRST_NUDGE = (
+    "Your last reply was empty — no text and no tool call. Answer the user's "
+    "request now: reply in plain text, or call a tool if you need more "
+    "information. Do not reply with an empty message."
+)
+
 PLAN_CONTINUE_NUDGE = (
     "The approved plan is not finished (next step {index}: {title}). Do not narrate "
     "what you will do — call the tool for that step now, in this same turn, and "
@@ -430,16 +436,18 @@ class ConversationRuntime:
                         self._audit.write("plan_nudge", summary=f"step {index}")
                     self._record(tool_result(PLAN_CONTINUE_NUDGE.format(index=index, title=title)))
                     continue
-                # An empty reply after at least one tool result is a reasoning-only
-                # or stalled turn (the silent 55 s incident): nudge it to keep going
-                # instead of accepting nothing as the answer. Bounded; plan nudge
-                # above keeps priority.
-                if not reply.content.strip() and tool_turns > 0:
+                # Any empty reply — including a thinking-only first reply (observed
+                # live: 4.2k thinking tokens, zero content, zero tool calls, nothing
+                # rendered) — is nudged to keep going.  Post-tool stalls and silent
+                # first replies are equally unacceptable.  Plan nudge above keeps
+                # priority.
+                if not reply.content.strip():
                     thinking_hint = (
                         f", thinking-only reply, {len(reply.thinking)} chars"
                         if reply.thinking
                         else ""
                     )
+                    nudge_msg = EMPTY_CONTINUE_NUDGE if tool_turns > 0 else EMPTY_FIRST_NUDGE
                     if empty_nudges_used < MAX_EMPTY_NUDGES:
                         empty_nudges_used += 1
                         if self._audit is not None:
@@ -447,7 +455,7 @@ class ConversationRuntime:
                                 "empty_response_nudge",
                                 summary=f"attempt {empty_nudges_used}{thinking_hint}",
                             )
-                        self._record(tool_result(EMPTY_CONTINUE_NUDGE))
+                        self._record(tool_result(nudge_msg))
                         continue
                     self._ui.show_status("(empty response)")
                     if self._audit is not None:
