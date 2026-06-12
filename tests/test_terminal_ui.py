@@ -18,12 +18,15 @@ GLYPHS = UNICODE_GLYPHS
 
 
 def make_console() -> Console:
+    # no_color=False explicitly overrides the NO_COLOR env var so badge colour
+    # assertions are reliable regardless of the test environment.
     return Console(
         record=True,
         width=100,
         file=io.StringIO(),
         theme=SHELLPILOT_THEME,
         force_terminal=True,
+        no_color=False,
     )
 
 
