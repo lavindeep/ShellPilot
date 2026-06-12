@@ -131,6 +131,9 @@ Layered, highest wins: CLI flags → `SHELLPILOT_*` env vars → `<repo>/.shellp
 default = "gemma4:e4b"
 keep_alive = "5m"        # how long Ollama keeps the model warm between prompts
 
+[model.options]          # verbatim Ollama options; ShellPilot doesn't validate keys
+# repeat_penalty = 1.3   # e.g. to curb repetition; num_ctx is reserved to the budget
+
 [runtime]
 security_profile = "balanced"
 

@@ -1395,6 +1395,16 @@ reasoning = true
 base_url = "http://localhost:11434"
 keep_alive = "5m"   # how long Ollama keeps the model loaded between requests
 
+# Verbatim Ollama request `options`, passed through untouched. ShellPilot does
+# NOT validate the individual keys — Ollama validates and errors at request
+# time. num_ctx is reserved to the context budget and overrides any value set
+# here. The supported lever for diagnosing model-side decoding issues.
+# [model.options]
+# repeat_penalty = 1.3
+# repeat_last_n = 256
+# temperature = 0.2
+# seed = 7
+
 [runtime]
 security_profile = "balanced"
 max_plan_steps = 10
@@ -1444,6 +1454,12 @@ spinner = true    # aviation status spinner while the model works
 # egress must be an explicit config-file act, not an ambient env var.
 web = false
 ```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `model.options` | table | empty | Passed verbatim as the Ollama request `options`. Keys are **not** validated by ShellPilot — Ollama validates and errors at request time. `num_ctx` is reserved to the context budget (section 10.5) and overrides any value set here. Config-file only: no env-var mapping (same rationale as `tools.web` — a sampling change must be an explicit config act). |
+
+`[model.options]` is the supported lever for diagnosing model-side decoding issues. When the v0.5.0 repeated-generation incident was investigated the harness was ruled out (n=1) and model-side sampling was the remaining suspect; `repeat_penalty`, `repeat_last_n`, `temperature`, and `seed` are exactly the knobs that table exposes, passed straight through to Ollama without ShellPilot interpreting them. The whole table is replaced wholesale by the higher-precedence layer (project over user), never merged key by key.
 
 ### 17.4 Environment Variables and CLI Overrides
 

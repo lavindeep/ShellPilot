@@ -97,6 +97,15 @@ def _coerce(key: str, value: Any) -> Any:
     if annotation is None:
         raise ConfigError(f"unknown config key: {key}")
 
+    if key == "model.options":
+        # Verbatim Ollama options table. Individual keys are NOT validated by
+        # ShellPilot; Ollama validates and errors at request time. Config-file
+        # only by design (no env-var mapping, no ALLOWED_VALUES) — sampling
+        # changes must be an explicit config act, same rationale as tools.web.
+        if not isinstance(value, dict):
+            raise ConfigError(f"{key}: expected a table, got {value!r}")
+        return dict(value)
+
     coerced: Any
     if _is_optional_int(annotation):
         if value == "auto" or value is None:

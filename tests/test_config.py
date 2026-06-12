@@ -214,3 +214,62 @@ def test_tools_web_rejects_non_boolean(tmp_path: Path) -> None:
             project_config_file=tmp_path / "missing.toml",
             env={},
         )
+
+
+# ---------------------------------------------------------------------------
+# model.options: verbatim Ollama options passthrough (config-file only)
+# ---------------------------------------------------------------------------
+
+
+def test_model_options_default_empty(tmp_path: Path) -> None:
+    """model.options defaults to an empty table sourced from defaults."""
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert loaded.settings.model.options == {}
+    assert loaded.sources["model.options"] == "default"
+
+
+def test_model_options_toml_round_trip(tmp_path: Path) -> None:
+    """A [model.options] table is parsed verbatim and records the user source."""
+    user = write_toml(
+        tmp_path / "user.toml",
+        "[model.options]\nrepeat_penalty = 1.3\nrepeat_last_n = 256\nseed = 7\n",
+    )
+    loaded = load_config(
+        user_config_file=user,
+        project_config_file=tmp_path / "missing.toml",
+        env={},
+    )
+    assert loaded.settings.model.options == {
+        "repeat_penalty": 1.3,
+        "repeat_last_n": 256,
+        "seed": 7,
+    }
+    assert loaded.sources["model.options"] == "user"
+
+
+def test_model_options_project_replaces_user(tmp_path: Path) -> None:
+    """The project layer replaces the user layer's options table wholesale."""
+    user = write_toml(tmp_path / "user.toml", "[model.options]\nrepeat_penalty = 1.3\n")
+    project = write_toml(tmp_path / "proj.toml", "[model.options]\ntemperature = 0.2\n")
+    loaded = load_config(
+        user_config_file=user,
+        project_config_file=project,
+        env={},
+    )
+    assert loaded.settings.model.options == {"temperature": 0.2}
+    assert loaded.sources["model.options"] == "project"
+
+
+def test_model_options_rejects_scalar(tmp_path: Path) -> None:
+    """A scalar model.options is a config error naming the dotted key."""
+    user = write_toml(tmp_path / "user.toml", '[model]\noptions = "hot"\n')
+    with pytest.raises(ConfigError, match="model.options"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )

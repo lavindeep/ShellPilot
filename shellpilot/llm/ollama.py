@@ -151,14 +151,19 @@ class OllamaClient:
         *,
         tools: Sequence[ToolDefinition] = (),
         num_ctx: int,
+        options: dict[str, Any] | None = None,
         on_token: Callable[[str], None] | None = None,
     ) -> Message:
-        """Stream one chat completion; num_ctx is set explicitly on every request."""
+        """Stream one chat completion; num_ctx is set explicitly on every request.
+
+        Configured `options` pass through verbatim, but num_ctx ALWAYS wins:
+        the context budget owns it (design section 10.5).
+        """
         payload: dict[str, Any] = {
             "model": model,
             "messages": [_encode_message(message) for message in messages],
             "stream": True,
-            "options": {"num_ctx": num_ctx},
+            "options": {**(options or {}), "num_ctx": num_ctx},
         }
         if tools:
             payload["tools"] = [_encode_tool(tool) for tool in tools]

@@ -481,3 +481,16 @@ def test_plan_nudge_takes_priority_over_empty_nudge(tmp_path: Path) -> None:
     # The plan nudge fired for the empty reply; the empty-response nudge did not.
     assert any(c.startswith(plan_prefix) for c in tool_msgs)
     assert EMPTY_CONTINUE_NUDGE not in tool_msgs
+
+
+def test_runtime_forwards_model_options_to_chat(tmp_path: Path) -> None:
+    """The runtime passes settings.model.options through to the chat call."""
+    from shellpilot.config.model import ModelSettings
+
+    settings = Settings(model=ModelSettings(options={"repeat_penalty": 1.3}))
+    fake = FakeLLM(script=[answer("hi")])
+    runtime = make_runtime(fake, FakeUI(), tmp_path, settings)
+
+    runtime.run_turn("hello")
+
+    assert fake.calls[0].options == {"repeat_penalty": 1.3}

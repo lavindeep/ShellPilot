@@ -415,6 +415,7 @@ class ConversationRuntime:
                     messages,
                     tools=tools,
                     num_ctx=self.budget.model_context_tokens,
+                    options=self._settings.model.options,
                     on_token=self._ui.stream_token,
                 )
             finally:

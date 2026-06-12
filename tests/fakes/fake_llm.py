@@ -34,6 +34,7 @@ class RecordedCall:
     messages: tuple[Message, ...]
     tools: tuple[ToolDefinition, ...]
     num_ctx: int
+    options: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -57,6 +58,7 @@ class FakeLLM:
         *,
         tools: Sequence[ToolDefinition] = (),
         num_ctx: int,
+        options: dict[str, Any] | None = None,
         on_token: TokenCallback | None = None,
     ) -> Message:
         self.calls.append(
@@ -65,6 +67,7 @@ class FakeLLM:
                 messages=tuple(messages),
                 tools=tuple(tools),
                 num_ctx=num_ctx,
+                options=dict(options or {}),
             )
         )
         if not self.script:

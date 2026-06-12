@@ -60,6 +60,61 @@ def test_chat_captures_thinking_without_content() -> None:
     assert tokens == []
 
 
+def test_chat_merges_options_with_num_ctx() -> None:
+    """Configured options pass through verbatim, alongside num_ctx."""
+    seen_payloads: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            content=stream_body({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    client.chat(
+        "gemma4:e4b",
+        [user("hi")],
+        num_ctx=4096,
+        options={"repeat_penalty": 1.3, "seed": 7},
+    )
+    assert seen_payloads[0]["options"] == {"repeat_penalty": 1.3, "seed": 7, "num_ctx": 4096}
+
+
+def test_chat_options_default_is_only_num_ctx() -> None:
+    """With no options (or empty) the payload options is exactly {num_ctx: N}."""
+    seen_payloads: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            content=stream_body({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    client.chat("gemma4:e4b", [user("hi")], num_ctx=2048)
+    client.chat("gemma4:e4b", [user("hi")], num_ctx=2048, options={})
+    assert seen_payloads[0]["options"] == {"num_ctx": 2048}
+    assert seen_payloads[1]["options"] == {"num_ctx": 2048}
+
+
+def test_chat_num_ctx_overrides_options_num_ctx() -> None:
+    """A num_ctx inside options is overridden by the call's num_ctx (budget owns it)."""
+    seen_payloads: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            content=stream_body({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    client.chat("gemma4:e4b", [user("hi")], num_ctx=4096, options={"num_ctx": 999})
+    assert seen_payloads[0]["options"]["num_ctx"] == 4096
+
+
 def test_chat_collects_tool_calls() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

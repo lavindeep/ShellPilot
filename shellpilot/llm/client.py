@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 from shellpilot.llm.messages import Message, ToolDefinition
 from shellpilot.llm.ollama import LocalModel
@@ -21,6 +21,7 @@ class LLMClient(Protocol):
         *,
         tools: Sequence[ToolDefinition] = (),
         num_ctx: int,
+        options: dict[str, Any] | None = None,
         on_token: TokenCallback | None = None,
     ) -> Message: ...
 

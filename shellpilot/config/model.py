@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Any, Final
 
 VALID_PROFILES = ("supervised", "balanced")  # trusted-local arrives in v2
 
@@ -24,6 +24,11 @@ class ModelSettings:
     reasoning: bool = True
     base_url: str = "http://localhost:11434"
     keep_alive: str = "5m"
+    # Verbatim Ollama request `options`, passed through untouched (e.g.
+    # repeat_penalty, repeat_last_n, temperature, seed). ShellPilot does NOT
+    # validate individual keys — Ollama validates and errors at request time.
+    # num_ctx is reserved to the context budget and overrides any value here.
+    options: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
