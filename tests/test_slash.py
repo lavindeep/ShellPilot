@@ -400,6 +400,24 @@ def test_attach_bare_lists_staged(tmp_path: Path) -> None:
     assert "img.png" in out2
 
 
+# ---------------------------------------------------------------------------
+# Fix 2: /cwd propagation — runtime returns updated workspace
+# ---------------------------------------------------------------------------
+
+
+def test_cwd_set_reflected_in_runtime_status(tmp_path: Path) -> None:
+    """After /cwd set the runtime.status().workspace is the new path.
+
+    This verifies the seam that terminal.py's MANUAL_SHELL branch now reads
+    from (runtime.status().workspace) instead of a stale local variable.
+    """
+    new_workspace = tmp_path / "live"
+    new_workspace.mkdir()
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle(f"/cwd set {new_workspace}")
+    assert harness.runtime.status().workspace == new_workspace.resolve()
+
+
 def test_attach_rejects_bad_file(tmp_path: Path) -> None:
     """/attach on a non-image file prints an error and does NOT stage."""
     from shellpilot.cli.attachments import AttachmentQueue

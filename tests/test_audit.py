@@ -58,3 +58,47 @@ def test_tail_returns_recent_events(tmp_path: Path) -> None:
 
 def test_tail_on_missing_file(tmp_path: Path) -> None:
     assert make_logger(tmp_path).tail() == []
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: audit events after /cwd carry the new workspace path
+# ---------------------------------------------------------------------------
+
+
+def test_audit_events_carry_updated_workspace_after_set_workspace(tmp_path: Path) -> None:
+    """After ConversationRuntime.set_workspace the audit logger's workspace field is
+    updated so subsequent events carry the new path, not the original one."""
+    from shellpilot.config.loader import load_config
+    from shellpilot.memory.agents_md import BehaviorInstructions
+    from shellpilot.runtime.conversation import ConversationRuntime
+    from tests.fakes.fake_llm import FakeLLM
+    from tests.fakes.fake_ui import FakeUI
+
+    logger = make_logger(tmp_path)
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=loaded.settings,
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        audit=logger,
+    )
+
+    new_ws = tmp_path / "new_ws"
+    new_ws.mkdir()
+    runtime.set_workspace(new_ws)
+    # Write a subsequent event after the workspace change.
+    logger.write("user_turn", chars=5)
+
+    events = logger.tail(20)
+    # The config_change event itself must carry the new workspace.
+    change_event = next(e for e in events if e.get("event") == "config_change")
+    assert change_event["workspace"] == str(new_ws)
+    # The subsequent user_turn event must also carry the new workspace.
+    turn_event = next(e for e in events if e.get("event") == "user_turn")
+    assert turn_event["workspace"] == str(new_ws)

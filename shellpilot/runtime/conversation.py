@@ -192,6 +192,11 @@ class ConversationRuntime:
         self._workspace = workspace
         self.plan_manager.set_workspace(workspace)
         if self._audit is not None:
+            # Update the logger's workspace field BEFORE writing the event so
+            # the change record itself (and all subsequent events) carry the new
+            # path.  This is the single gateway for workspace changes, so the
+            # update cannot be bypassed.
+            self._audit.workspace = workspace
             self._audit.write("config_change", setting="workspace", value=str(workspace))
 
     def update_settings(self, settings: Settings) -> None:

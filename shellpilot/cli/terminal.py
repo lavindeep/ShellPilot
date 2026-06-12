@@ -368,7 +368,10 @@ def run_interactive(
             if action is SlashAction.EXIT:
                 break
             if action is SlashAction.MANUAL_SHELL:
-                manual_shell_loop(console, workspace, audit)
+                # Fetch the live workspace from the runtime so that a prior
+                # /cwd set is honoured, rather than using the stale local
+                # captured at startup.
+                manual_shell_loop(console, runtime.status().workspace, audit)
             continue
         try:
             staged_paths = attachments.take()
