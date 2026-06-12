@@ -103,6 +103,15 @@ def run_command_process(
     emit_line: Callable[[str], None] | None = None,
 ) -> CommandOutcome:
     """Run argv with shell=False, streaming output, bounding capture, killing on timeout."""
+    # NOTE (Investigation C, v0.5.1): the MallocStackLogging fork-window line cannot
+    # be removed by switching to CPython's posix_spawn fast path. subprocess._execute_child
+    # (Lib/subprocess.py) refuses the spawn branch unless cwd is None, start_new_session
+    # is False, process_group == -1, AND close_fds is False (no POSIX_SPAWN_CLOSEFROM on
+    # the macOS framework build). We require start_new_session=True for whole-process-group
+    # SIGKILL on timeout (os.killpg below) and for Ctrl-C isolation: the only spawn-eligible
+    # combo leaves children in ShellPilot's foreground process group, where a user Ctrl-C
+    # reaches them (verified). We keep fork+setsid and accept the cosmetic chatter, which is
+    # already minimized by scrub_own_environment().
     process = subprocess.Popen(  # noqa: S603 - shell=False argv execution is the design
         request.argv,
         cwd=request.cwd,
