@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from shellpilot.policy.command_policy import classify_command
+from shellpilot.policy.command_policy import classify_command, sensitive_path_reason
 from shellpilot.policy.risk import RiskLevel
 
 WS = Path("/tmp/fake-workspace")
@@ -78,3 +78,46 @@ def test_reasons_are_present_for_risky_commands() -> None:
 def test_empty_argv_is_blocked() -> None:
     result = classify_command([], workspace=WS)
     assert result.risk == RiskLevel.BLOCKED
+
+
+# -- sensitive_path_reason (component-exact, not substring) --------------------
+
+SENSITIVE_PATHS: list[str] = [
+    ".env",
+    ".env.local",
+    ".env.production",
+    "sub/.env.local",
+    "id_rsa",
+    "id_ed25519",
+    "credentials",
+    ".netrc",
+    "config/credentials",
+    "deep/nested/secrets",
+    ".ssh/id_rsa",
+    "home/.ssh/known_hosts",
+    "project/.aws/config",
+    "vault/.gnupg/pubring.kbx",
+]
+
+NON_SENSITIVE_PATHS: list[str] = [
+    "environment.py",
+    "secrets_test.py",
+    "my-credentials-doc.md",
+    "envrc",
+    "src/app.py",
+    "README.md",
+    "ssh_config.py",
+    "credentials.md.bak",
+]
+
+
+@pytest.mark.parametrize("raw", SENSITIVE_PATHS)
+def test_sensitive_path_reason_matches(raw: str) -> None:
+    reason = sensitive_path_reason(Path(raw))
+    assert reason is not None
+    assert "sensitive path" in reason
+
+
+@pytest.mark.parametrize("raw", NON_SENSITIVE_PATHS)
+def test_sensitive_path_reason_ignores_lookalikes(raw: str) -> None:
+    assert sensitive_path_reason(Path(raw)) is None

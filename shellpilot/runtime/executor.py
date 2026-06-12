@@ -16,7 +16,7 @@ from shellpilot.llm.messages import ToolCall, ToolDefinition
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.approvals import ApprovalRequest, Decision, decide
-from shellpilot.policy.risk import RiskLevel
+from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.budget import estimate_tokens, truncate_to_tokens
 from shellpilot.tools.base import (
     ToolContext,
@@ -58,6 +58,7 @@ class ToolExecutor:
         snapshots: SnapshotStore | None = None,
         explain_purpose: PurposeExplainer | None = None,
         audit: AuditLogger | None = None,
+        allow_sensitive_reads: str = "ask",
     ) -> None:
         self._snapshots = snapshots
         self._explain_purpose = explain_purpose
@@ -70,6 +71,7 @@ class ToolExecutor:
         self._max_capture_chars = max_capture_chars
         self._ask_approval = ask_approval
         self._emit_output = emit_output
+        self._allow_sensitive_reads = allow_sensitive_reads
         self._spent_tokens = 0
 
     def available_definitions(self) -> list[ToolDefinition]:
@@ -98,6 +100,7 @@ class ToolExecutor:
             max_capture_chars=self._max_capture_chars,
             emit_output=self._emit_output,
             snapshots=self._snapshots,
+            allow_sensitive_reads=self._allow_sensitive_reads,
         )
 
         if spec.precheck is not None:
@@ -114,7 +117,12 @@ class ToolExecutor:
         # Deterministic policy before execution (sections 14.1-14.3). The model
         # never downgrades this classification (section 14.4).
         classification = spec.risk_for(context, call.arguments)
-        decision = decide(self._profile, spec.side_effect, classification.risk)
+        decision = decide(
+            self._profile,
+            spec.side_effect,
+            classification.risk,
+            self._allow_sensitive_reads,
+        )
         display = self._display_for(call)
         if decision is Decision.BLOCK:
             reason = "; ".join(classification.reasons) or "blocked by policy"
@@ -135,9 +143,16 @@ class ToolExecutor:
                 except Exception as exc:  # noqa: BLE001 - preview must never block approval
                     diff = f"(preview failed: {exc})"
             purpose = ""
-            if classification.risk is RiskLevel.HIGH and self._explain_purpose is not None:
+            if (
+                classification.risk is RiskLevel.HIGH
+                and spec.side_effect is not SideEffect.NONE
+                and self._explain_purpose is not None
+            ):
                 # Model-written purpose explanation for dangerous commands
                 # (section 13.4); it can never downgrade the deterministic risk.
+                # Skipped for NONE-side-effect tools: a HIGH-risk sensitive read
+                # gets the standard prompt with the classifier reason, never a
+                # model purpose round-trip (design section 15).
                 purpose = self._explain_purpose(display, classification.reasons)
             request = ApprovalRequest(
                 kind="command" if call.name == "run_command" else "tool",

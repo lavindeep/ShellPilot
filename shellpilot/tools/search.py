@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
+from shellpilot.policy.command_policy import sensitive_path_reason
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.budget import truncate_to_tokens
 from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec, resolve_in_workspace
-from shellpilot.tools.filesystem import ALL_PROFILES, is_binary
+from shellpilot.tools.filesystem import ALL_PROFILES, _classify_path_arg, is_binary
 
 MAX_MATCHES = 100
 SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".shellpilot", ".mypy_cache"}
@@ -39,9 +40,19 @@ def _search_text(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
             success=False, summary=f"{arguments.get('path', '.')} is not a directory", content=""
         )
 
+    allow_sensitive = context.allow_sensitive_reads == "always"
+    workspace_root = context.workspace.resolve()
     matches: list[str] = []
     scanned = 0
+    skipped = 0
+    skipped_names: list[str] = []
     for file in _iter_files(root):
+        relative = file.relative_to(workspace_root)
+        if not allow_sensitive and sensitive_path_reason(relative) is not None:
+            skipped += 1
+            if file.name not in skipped_names and len(skipped_names) < 3:
+                skipped_names.append(file.name)
+            continue
         try:
             if is_binary(file):
                 continue
@@ -49,7 +60,6 @@ def _search_text(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
         except OSError:
             continue
         scanned += 1
-        relative = file.relative_to(context.workspace.resolve())
         for lineno, line in enumerate(text.splitlines(), start=1):
             if pattern in line:
                 matches.append(f"{relative}:{lineno}: {line.strip()[:200]}")
@@ -59,6 +69,12 @@ def _search_text(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
             break
 
     body, truncated = truncate_to_tokens("\n".join(matches), context.max_result_tokens)
+    if skipped:
+        note = (
+            f"skipped {skipped} sensitive file(s) ({', '.join(skipped_names)}) — "
+            'read explicitly with read_file or set privacy.allow_sensitive_reads = "always"'
+        )
+        body = f"{body}\n{note}" if body else note
     return ToolResult(
         success=True,
         summary=f"{len(matches)} matches for {pattern!r} in {scanned} files",
@@ -84,4 +100,5 @@ SEARCH_TEXT = ToolSpec(
     default_risk=RiskLevel.LOW,
     allowed_profiles=ALL_PROFILES,
     handler=_search_text,
+    classifier=_classify_path_arg,
 )

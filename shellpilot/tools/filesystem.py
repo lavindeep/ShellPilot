@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
+from shellpilot.policy.command_policy import CommandRisk, sensitive_path_reason
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.budget import truncate_to_tokens
 from shellpilot.tools.base import (
@@ -25,6 +26,25 @@ ALL_PROFILES = frozenset({"supervised", "balanced"})
 def is_binary(path: Path) -> bool:
     with path.open("rb") as handle:
         return b"\0" in handle.read(_BINARY_SNIFF_BYTES)
+
+
+def _classify_path_arg(context: ToolContext, arguments: dict[str, Any]) -> CommandRisk:
+    """HIGH when the path *argument* names a credential/secret; LOW otherwise.
+
+    Only components inside the workspace are inspected, so an ancestor directory
+    that happens to be named like a secret never inflates the risk. Tolerant of
+    resolution failures (e.g. workspace-boundary errors): those are handled by
+    the tool itself, so classification falls back to the default LOW.
+    """
+    try:
+        resolved = resolve_in_workspace(context.workspace, str(arguments.get("path", ".")))
+        relative = resolved.relative_to(context.workspace.resolve())
+    except Exception:  # noqa: BLE001 - resolution errors fall back to the default risk
+        return CommandRisk(RiskLevel.LOW, ())
+    reason = sensitive_path_reason(relative)
+    if reason is not None:
+        return CommandRisk(RiskLevel.HIGH, (reason,))
+    return CommandRisk(RiskLevel.LOW, ())
 
 
 def _read_file(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
@@ -97,6 +117,7 @@ READ_FILE = ToolSpec(
     default_risk=RiskLevel.LOW,
     allowed_profiles=ALL_PROFILES,
     handler=_read_file,
+    classifier=_classify_path_arg,
 )
 
 LIST_DIR = ToolSpec(

@@ -402,6 +402,7 @@ class ConversationRuntime:
             snapshots=self.snapshots,
             explain_purpose=self._explain_purpose,
             audit=self._audit,
+            allow_sensitive_reads=self._settings.privacy.allow_sensitive_reads,
         )
         tools = executor.available_definitions()
         tool_turns = 0

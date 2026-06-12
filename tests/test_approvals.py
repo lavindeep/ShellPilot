@@ -37,3 +37,32 @@ def test_decision_matrix(
     profile: str, side_effect: SideEffect, risk: RiskLevel, expected: Decision
 ) -> None:
     assert decide(profile, side_effect, risk) is expected
+
+
+# A NONE-side-effect HIGH-risk tool is a sensitive-path read (design section 15);
+# the allow_sensitive_reads privacy gate decides it, in every profile.
+SENSITIVE_READ_MATRIX: list[tuple[str, str, Decision]] = [
+    ("balanced", "ask", Decision.ASK),
+    ("balanced", "never", Decision.BLOCK),
+    ("balanced", "always", Decision.AUTO),
+    ("supervised", "ask", Decision.ASK),
+    ("supervised", "never", Decision.BLOCK),
+    ("supervised", "always", Decision.AUTO),
+]
+
+
+@pytest.mark.parametrize(("profile", "setting", "expected"), SENSITIVE_READ_MATRIX)
+def test_sensitive_read_gate(profile: str, setting: str, expected: Decision) -> None:
+    decision = decide(profile, SideEffect.NONE, RiskLevel.HIGH, setting)
+    assert decision is expected
+
+
+def test_sensitive_read_gate_defaults_to_ask() -> None:
+    # Default argument keeps existing call sites valid and ask-by-default.
+    assert decide("balanced", SideEffect.NONE, RiskLevel.HIGH) is Decision.ASK
+
+
+def test_plain_none_read_still_auto_in_every_mode() -> None:
+    # A non-sensitive read (LOW risk) is unaffected by the privacy gate.
+    for setting in ("ask", "never", "always"):
+        assert decide("balanced", SideEffect.NONE, RiskLevel.LOW, setting) is Decision.AUTO

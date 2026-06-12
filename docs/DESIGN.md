@@ -453,6 +453,7 @@ Design rules that follow:
 |---|---|
 | Malformed tool call | Return a compact schema reminder and allow exactly one retry. |
 | Precheck failure (unrunnable command, missing executable, empty argv, packed shell line) | Tool returns a normal failed result pre-approval; the model may correct the arguments and retry. |
+| Sensitive-path read (`read_file`/`search_text` whose path component names a secret) | Classifier raises risk to HIGH; `privacy.allow_sensitive_reads` gates it — `"ask"` prompts (standard `[y/n]`, reason shown), `"never"` blocks, `"always"` auto-runs. `search_text` skips matching files during traversal and notes the count (section 15). |
 | Edit anchor not found or ambiguous | Re-read the target region and allow one corrected retry. |
 | Same failure twice | Stop and enter the roadblock protocol (section 11.6). |
 | Tool-call loop | Enforce turn/tool budgets (section 24.6) and replan or stop. |
@@ -1212,11 +1213,13 @@ Sensitive data patterns:
 - Private keys.
 - Tokens and API keys.
 
-The assistant may inspect these only when:
+Reads of these are gated deterministically, never by model judgement. The `read_file` and `search_text` tools carry a classifier that resolves the path argument and matches its **components** against the secret markers above (exact match, plus the `.env.*` extension form); a match raises the tool's risk from LOW to HIGH while its side effect stays `none`. A HIGH-risk, no-side-effect tool can only be a sensitive read, so the approval policy consults the `privacy.allow_sensitive_reads` setting (section 17):
 
-- The user explicitly asks.
-- The active profile allows it.
-- The UI shows the sensitive read.
+- `"ask"` (default) — the read is surfaced for approval with the classifier reason shown (e.g. `reads a sensitive path (.env)`). It uses the standard `[y/n]` prompt, not the typed-`run` command gate, and never triggers a model-written purpose explanation.
+- `"never"` — the read is blocked before execution, with no prompt.
+- `"always"` — the read runs automatically.
+
+`search_text` applies the same gate to directory traversal: files whose path components name a secret are skipped (their contents are never read) unless `allow_sensitive_reads = "always"`, and the tool result appends a deterministic note naming up to three skipped files and pointing at `read_file` or the `"always"` setting. An explicit sensitive path passed as the search root is gated by the classifier exactly like `read_file`. Listing directory names (`list_dir`) is not a content read and is never gated.
 
 ## 16. Memory System (v2)
 

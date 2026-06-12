@@ -131,7 +131,10 @@ class TerminalUI:
         self._console.print(approval_info(request, plain_badge=self._plain_badges()))
         self._console.print(approval_cwd(request))
         try:
-            if request.risk is RiskLevel.HIGH:
+            # The typed-"run" gate guards HIGH-risk *commands* only. A HIGH-risk
+            # tool is a sensitive-path read (design section 15): it gets the
+            # standard y/n prompt, with the classifier reason already shown above.
+            if request.risk is RiskLevel.HIGH and request.kind == "command":
                 answer = self._console.input(
                     '  Type [sp.risk.high]"run"[/sp.risk.high] to execute, '
                     "or press Enter to cancel: "

@@ -121,6 +121,27 @@ def _touches_secret_path(argv: list[str]) -> str | None:
     return None
 
 
+def sensitive_path_reason(path: Path) -> str | None:
+    """Reason when any path *component* names a credential/secret, else None.
+
+    Component-exact matching (not the substring rule of `_touches_secret_path`):
+    a component matches a marker when it equals the marker exactly, or — for the
+    dotfile markers (those starting with ``.``) — when it starts with
+    ``marker + "."``. That dot rule covers ``.env.local`` / ``.env.production``
+    while leaving plain-name markers exact, so ``environment.py``,
+    ``secrets_test.py`` and ``credentials.md.bak`` do not match. Shares
+    SECRET_MARKERS as the single source of truth.
+    """
+    for component in path.parts:
+        lowered = component.lower()
+        for marker in SECRET_MARKERS:
+            if lowered == marker:
+                return f"reads a sensitive path ({component})"
+            if marker.startswith(".") and lowered.startswith(marker + "."):
+                return f"reads a sensitive path ({component})"
+    return None
+
+
 def _writes_outside_workspace(argv: list[str], workspace: Path) -> str | None:
     """For write-ish commands, flag absolute path arguments outside the workspace."""
     root = workspace.resolve()

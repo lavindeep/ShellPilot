@@ -30,6 +30,10 @@ class ToolContext:
     max_capture_chars: int = 200_000
     emit_output: Callable[[str], None] | None = None
     snapshots: SnapshotStore | None = None
+    # Privacy gate for sensitive-path contents (design section 15): one of
+    # "ask" | "never" | "always". Controls whether search_text traversal reads
+    # files whose path components name a credential/secret.
+    allow_sensitive_reads: str = "ask"
 
 
 @dataclass(frozen=True)
