@@ -49,7 +49,8 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/diff", "Show diffs from this session's agent edits."),
     ("/profile", "Show the active security profile."),
     ("/profile use <name>", "Switch profile: supervised or balanced."),
-    ("/logs", "Show recent local audit events."),
+    ("/logs", "Show recent audit events for this session."),
+    ("/logs all", "Show recent audit events across all sessions."),
     ("/export <path>", "Export this session's transcript to markdown."),
     ("/memory show", "Show stored preferences and project facts with ids."),
     ("/memory add <text>", "Add a global behavior preference after confirmation."),
@@ -151,7 +152,7 @@ class SlashDispatcher:
         elif command == "/profile":
             self._profile(args)
         elif command == "/logs":
-            self._logs()
+            self._logs(args)
         elif command == "/export":
             self._export(args)
         elif command == "/memory":
@@ -356,14 +357,17 @@ class SlashDispatcher:
             return
         self._console.print("Usage: /profile | /profile use <supervised|balanced>")
 
-    def _logs(self) -> None:
+    def _logs(self, args: list[str] | None = None) -> None:
         audit = self._runtime.audit
         if audit is None:
             self._console.print("[dim]Audit logging is not active in this session.[/dim]")
             return
-        events = audit.tail(15)
+        show_all = args is not None and args and args[0] == "all"
+        session_filter = None if show_all else audit.session_id
+        events = audit.tail(15, session_id=session_filter)
         if not events:
-            self._console.print("[dim]No audit events yet.[/dim]")
+            label = "global audit" if show_all else "this session"
+            self._console.print(f"[dim]No audit events for {label} yet.[/dim]")
             return
         for event in events:
             line = f"{event.get('timestamp', '?')} {event.get('event', '?')}"

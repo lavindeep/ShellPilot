@@ -61,6 +61,40 @@ def test_tail_on_missing_file(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fix 3: /logs session filtering
+# ---------------------------------------------------------------------------
+
+
+def test_tail_session_filter_returns_only_matching_events(tmp_path: Path) -> None:
+    """tail(session_id=...) returns only events for that session."""
+    logger_a = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="session-aaa",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    logger_b = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="session-bbb",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    logger_a.write("user_turn", chars=1)
+    logger_b.write("user_turn", chars=2)
+    logger_a.write("session_end")
+
+    events_a = logger_a.tail(20, session_id="session-aaa")
+    events_b = logger_a.tail(20, session_id="session-bbb")
+    events_all = logger_a.tail(20)
+
+    assert all(e["session_id"] == "session-aaa" for e in events_a)
+    assert len(events_a) == 2
+    assert all(e["session_id"] == "session-bbb" for e in events_b)
+    assert len(events_b) == 1
+    assert len(events_all) == 3
+
+
+# ---------------------------------------------------------------------------
 # Fix 2: audit events after /cwd carry the new workspace path
 # ---------------------------------------------------------------------------
 

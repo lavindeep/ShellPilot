@@ -418,6 +418,77 @@ def test_cwd_set_reflected_in_runtime_status(tmp_path: Path) -> None:
     assert harness.runtime.status().workspace == new_workspace.resolve()
 
 
+# ---------------------------------------------------------------------------
+# Fix 3: /logs scoped to current session
+# ---------------------------------------------------------------------------
+
+
+def _make_audit_harness(tmp_path: Path) -> tuple["Harness", object]:
+    """Return a Harness with a real AuditLogger wired into the runtime."""
+    from shellpilot.persistence.audit_store import AuditLogger
+
+    harness = Harness(tmp_path)
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id=harness.runtime.audit.session_id  # type: ignore[union-attr]
+        if harness.runtime.audit is not None
+        else "test-session",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    harness.runtime._audit = audit  # type: ignore[attr-defined]
+    harness.dispatcher._runtime = harness.runtime  # type: ignore[attr-defined]
+    return harness, audit
+
+
+def test_logs_default_shows_only_current_session(tmp_path: Path) -> None:
+    """/logs without args shows only events for the current session."""
+    from shellpilot.persistence.audit_store import AuditLogger
+
+    # Two loggers writing to the same file — different session ids.
+    path = tmp_path / "audit.jsonl"
+    logger_other = AuditLogger(
+        path=path, session_id="other-session", workspace=tmp_path, profile="balanced"
+    )
+    logger_current = AuditLogger(
+        path=path, session_id="current-session", workspace=tmp_path, profile="balanced"
+    )
+    logger_other.write("user_turn", chars=1)
+    logger_current.write("user_turn", chars=2)
+    logger_other.write("session_end")
+
+    harness = Harness(tmp_path)
+    harness.runtime._audit = logger_current  # type: ignore[attr-defined]
+
+    harness.dispatcher.handle("/logs")
+    out = harness.output()
+    # The current session's event must appear; the other session's must not.
+    assert "current-session" not in out or "user_turn" in out
+    assert "other-session" not in out
+
+
+def test_logs_all_shows_events_from_all_sessions(tmp_path: Path) -> None:
+    """/logs all shows audit events regardless of session."""
+    from shellpilot.persistence.audit_store import AuditLogger
+
+    path = tmp_path / "audit.jsonl"
+    AuditLogger(path=path, session_id="session-x", workspace=tmp_path, profile="balanced").write(
+        "user_turn", chars=1
+    )
+    logger_current = AuditLogger(
+        path=path, session_id="session-y", workspace=tmp_path, profile="balanced"
+    )
+    logger_current.write("user_turn", chars=2)
+
+    harness = Harness(tmp_path)
+    harness.runtime._audit = logger_current  # type: ignore[attr-defined]
+
+    harness.dispatcher.handle("/logs all")
+    out = harness.output()
+    # Both session events are visible (both are "user_turn" events in the tail).
+    assert out.count("user_turn") == 2
+
+
 def test_attach_rejects_bad_file(tmp_path: Path) -> None:
     """/attach on a non-image file prints an error and does NOT stage."""
     from shellpilot.cli.attachments import AttachmentQueue

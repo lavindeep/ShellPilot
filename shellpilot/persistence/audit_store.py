@@ -43,14 +43,25 @@ class AuditLogger:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def tail(self, count: int = 20) -> list[dict[str, Any]]:
+    def tail(self, count: int = 20, *, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Return the most recent audit events.
+
+        When *session_id* is given, only events whose ``session_id`` field
+        matches are returned.  To avoid starving the current session in a busy
+        global log, the scan window is widened to ``max(count * 10, 200)``
+        lines before filtering so that a session with few events is still
+        reachable near the tail.
+        """
         if not self.path.is_file():
             return []
+        scan = max(count * 10, 200) if session_id is not None else count
         lines = self.path.read_text(encoding="utf-8").splitlines()
         events: list[dict[str, Any]] = []
-        for line in lines[-count:]:
+        for line in lines[-scan:]:
             try:
                 events.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-        return events
+        if session_id is not None:
+            events = [e for e in events if e.get("session_id") == session_id]
+        return events[-count:]
