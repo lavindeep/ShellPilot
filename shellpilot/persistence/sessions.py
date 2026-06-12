@@ -160,19 +160,21 @@ def session_markdown(session: LoadedSession) -> str:
     ]
     for message in session.messages:
         if message.role == "user":
-            lines += ["## You", "", message.content, ""]
+            lines += ["## You", "", redact_secrets(message.content), ""]
             for ref in message.images:
                 lines.append(f"- image: {ref.path} (sha256 {ref.sha256[:8]}…)")
             if message.images:
                 lines.append("")
         elif message.role == "assistant":
-            if message.content.strip():
-                lines += ["## ShellPilot", "", message.content, ""]
+            safe_content = redact_secrets(message.content)
+            if safe_content.strip():
+                lines += ["## ShellPilot", "", safe_content, ""]
             for call in message.tool_calls:
-                arguments = json.dumps(call.arguments, ensure_ascii=False, sort_keys=True)
+                safe_args = redact_structure(call.arguments)
+                arguments = json.dumps(safe_args, ensure_ascii=False, sort_keys=True)
                 lines += [f"- tool call: `{call.name}({arguments})`", ""]
         elif message.role == "tool":
-            content = message.content
+            content = redact_secrets(message.content)
             if len(content) > TOOL_EXPORT_LIMIT:
                 omitted = len(content) - TOOL_EXPORT_LIMIT
                 content = content[:TOOL_EXPORT_LIMIT] + f"\n[... {omitted} chars omitted ...]"

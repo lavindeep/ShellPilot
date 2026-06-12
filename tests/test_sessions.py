@@ -357,3 +357,74 @@ def test_load_skips_non_object_json_lines(tmp_path: Path) -> None:
     store.record_message(Message(role="assistant", content="also real"))
     loaded = SessionStore.load(store.path)
     assert [m.content for m in loaded.messages] == ["real", "also real"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: redact at export time so pre-0.5.2 transcripts cannot leak via /export
+# ---------------------------------------------------------------------------
+
+# api_key=... matches the key=value pattern in redaction.py (_PATTERNS[-3])
+_RAW_SECRET_CONTENT = "api_key=sk-supersecret123456"
+_RAW_SECRET_ARG_VALUE = "api_key=sk-topsecret987654"
+
+
+def _write_old_style_transcript(path: Path) -> None:
+    """Write raw JSONL bypassing record_message — simulates a pre-0.5.2 transcript on disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps(
+            {"type": "meta", "session_id": path.stem, "model": "gemma4:e4b", "profile": "balanced"}
+        ),
+        json.dumps(
+            {
+                "type": "message",
+                "role": "user",
+                "content": _RAW_SECRET_CONTENT,
+                "tool_calls": [],
+            }
+        ),
+        json.dumps(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"name": "run_cmd", "arguments": {"cmd": _RAW_SECRET_ARG_VALUE}}],
+            }
+        ),
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_export_redacts_pre_v052_content_and_tool_args(tmp_path: Path) -> None:
+    """session_markdown re-applies redaction so old transcripts with raw secrets are safe."""
+    path = tmp_path / "sessions" / "old-session.jsonl"
+    _write_old_style_transcript(path)
+
+    text = session_markdown(SessionStore.load(path))
+
+    # raw secrets must not appear in the export output
+    assert "sk-supersecret123456" not in text
+    assert "sk-topsecret987654" not in text
+    # redaction marker must appear for both
+    assert text.count("[REDACTED]") >= 2
+
+
+def test_export_already_redacted_transcript_is_idempotent(tmp_path: Path) -> None:
+    """Export of an already-redacted (v0.5.2+) transcript is unchanged."""
+    store = make_store(tmp_path)
+    store.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    store.record_message(Message(role="user", content="hello world"))
+    store.record_message(
+        Message(
+            role="assistant",
+            content="Sure.",
+            tool_calls=(ToolCall(name="read_file", arguments={"path": "x.py"}),),
+        )
+    )
+    text = session_markdown(SessionStore.load(store.path))
+    # normal content survives unchanged
+    assert "hello world" in text
+    assert "read_file" in text
+    assert "x.py" in text
+    # no spurious [REDACTED] markers introduced
+    assert "[REDACTED]" not in text
