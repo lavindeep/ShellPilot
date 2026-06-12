@@ -121,6 +121,7 @@ class ConversationRuntime:
             ui.ask_plan_approval,
             lambda: self._last_user_text,
             on_step_change=ui.show_plan_progress,
+            max_plan_steps=settings.runtime.max_plan_steps,
         ):
             self._registry.register(spec)
         self._registry.register(

@@ -466,6 +466,16 @@ A reasoning-capable model can also end a turn with a genuinely *empty* reply —
 
 The roadblock protocol (section 11.6) and the model edge cases (section 24.6) are instances of this principle, not exceptional paths. Phase 0.5 (section 27.2) measures the actual failure rates of the target model before the edit strategy is locked in.
 
+**Deterministic contract validation (v0.5.2).** `validate_args` enforces three additional constraints before any handler runs, routing failures through the same malformed-call path (schema reminder + one retry) as unknown arguments or wrong types:
+
+- **Enum membership** — when a parameter schema declares `"enum": [...]`, any value not in that list is rejected with a message naming the parameter and listing the allowed values. Affected tools: `patch_file.operation` (one of `replace_exact`, `insert_before`, `insert_after`, `delete_exact`), `write_file.mode` (one of `create`, `overwrite`, `append`), `update_plan.status` (one of `pending`, `active`, `completed`, `skipped`). The enum values are single-sourced from the existing constants (`OPERATIONS`, `WRITE_MODES`, `STEP_STATUSES`) — not duplicated.
+- **Array item types** — when a parameter declares `"items": {"type": "..."}` on an array, every element is checked against the JSON-schema type mapping; a non-conforming element is rejected with the element index and actual type. Affected tool: `propose_plan.steps` (items must be strings).
+- **Integer bounds** — when a parameter declares `"minimum"` or `"maximum"`, out-of-range integers are rejected with the bound named. Affected tool: `run_command.timeout_seconds` (minimum 1). The existing handler-level floor clamp (`max(1, ...)`) coexists as defense in depth; the schema minimum rejects 0 and negative values before the handler is reached.
+
+Handler-level checks for the same conditions (e.g. the `if mode not in WRITE_MODES` guard in `_write_file`, the `if status not in STEP_STATUSES` guard in `_update`) remain in place as defense in depth; in normal flow they are unreachable for those parameters.
+
+**`max_plan_steps` enforcement (v0.5.2).** `RuntimeSettings.max_plan_steps` (default 10) is now enforced at proposal time. A `propose_plan` call whose `steps` list exceeds the limit returns a corrective failure (`plan has N steps; max is M — consolidate related steps and propose again`) via the normal `ToolResult(success=False, ...)` path — not the malformed-call path — because the step count is a policy decision, not a schema error. The setting is threaded from `Settings.runtime.max_plan_steps` through `ConversationRuntime` to `make_plan_tools(max_plan_steps=...)` at construction time.
+
 ### 10.5 Context And Output Budgeting
 
 The current code uses broad character limits like `MAX_INPUT_LENGTH` and `MAX_OUTPUT_CHARS`. The rebuild should move to model-aware token budgets.

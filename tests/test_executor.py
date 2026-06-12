@@ -240,3 +240,312 @@ def test_no_precheck_proceeds_normally(tmp_path: Path) -> None:
 
     assert outcome.result is not None
     assert outcome.result.success
+
+
+# ---------------------------------------------------------------------------
+# Deterministic contract validation tests (v0.5.2 — enum, array items, bounds)
+# These all route through the EXISTING malformed-call path: validate_args
+# returns an error string → executor wraps it in model_text with schema
+# reminder → outcome.malformed is True → ConversationRuntime increments
+# consecutive_malformed and sends a schema-reminder message.
+# ---------------------------------------------------------------------------
+
+
+def _make_spec_with_schema(
+    name: str,
+    parameters: dict[str, Any],
+    required: tuple[str, ...] = (),
+) -> ToolSpec:
+    """Build a ToolSpec with a custom parameter schema for validation tests."""
+    return ToolSpec(
+        definition=ToolDefinition(
+            name=name,
+            description="test tool",
+            parameters=parameters,
+            required=required,
+        ),
+        side_effect=SideEffect.NONE,
+        default_risk=RiskLevel.LOW,
+        allowed_profiles=frozenset({"supervised", "balanced"}),
+        handler=lambda ctx, args: ToolResult(success=True, summary="ok", content=""),
+    )
+
+
+def _make_executor_direct(spec: ToolSpec, tmp_path: Path) -> ToolExecutor:
+    """ToolExecutor for direct execute() calls (no approval needed)."""
+    registry = ToolRegistry()
+    registry.register(spec)
+    return ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+    )
+
+
+# --- patch_file.operation enum ---
+
+
+def test_patch_file_bad_operation_is_malformed(tmp_path: Path) -> None:
+    """patch_file with operation='insert' is rejected via the malformed path."""
+    from shellpilot.tools.patch import OPERATIONS, PATCH_FILE
+
+    registry = ToolRegistry()
+    registry.register(PATCH_FILE)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+    )
+    call = ToolCall(
+        name="patch_file",
+        arguments={"path": "f.txt", "operation": "insert", "old": "x"},
+    )
+    outcome = executor.execute(call)
+
+    assert outcome.malformed
+    assert outcome.result is None
+    # Error message must name the parameter and list the allowed operations.
+    assert "operation" in outcome.model_text
+    for op in OPERATIONS:
+        assert op in outcome.model_text, f"expected '{op}' in error message"
+    # Schema reminder fires (malformed path).
+    assert "patch_file(" in outcome.model_text
+
+
+def test_patch_file_valid_operation_passes(tmp_path: Path) -> None:
+    """Regression: patch_file with a valid operation is not rejected at validation."""
+    from shellpilot.tools.base import validate_args
+    from shellpilot.tools.patch import PATCH_FILE
+
+    error = validate_args(PATCH_FILE, {"path": "f.txt", "operation": "replace_exact", "old": "x"})
+    assert error is None
+
+
+# --- write_file.mode enum ---
+
+
+def test_write_file_bad_mode_is_malformed(tmp_path: Path) -> None:
+    """write_file with mode='replace' is rejected via the malformed path."""
+    from shellpilot.tools.patch import WRITE_FILE, WRITE_MODES
+
+    registry = ToolRegistry()
+    registry.register(WRITE_FILE)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+    )
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "f.txt", "content": "hello", "mode": "replace"},
+    )
+    outcome = executor.execute(call)
+
+    assert outcome.malformed
+    assert outcome.result is None
+    assert "mode" in outcome.model_text
+    for mode in WRITE_MODES:
+        assert mode in outcome.model_text, f"expected '{mode}' in error message"
+    assert "write_file(" in outcome.model_text
+
+
+def test_write_file_valid_mode_passes(tmp_path: Path) -> None:
+    """Regression: write_file with a valid mode is not rejected at validation."""
+    from shellpilot.tools.base import validate_args
+    from shellpilot.tools.patch import WRITE_FILE
+
+    error = validate_args(WRITE_FILE, {"path": "f.txt", "content": "x", "mode": "create"})
+    assert error is None
+
+
+# --- update_plan.status enum ---
+
+
+def test_update_plan_bad_status_is_malformed(tmp_path: Path) -> None:
+    """update_plan with status='finished' is rejected via the malformed path."""
+    from shellpilot.runtime.planner import STEP_STATUSES, PlanManager, make_plan_tools
+
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=lambda plan, path: ("n", ""),
+        get_user_intent=lambda: "intent",
+    )
+    update = next(t for t in tools if t.definition.name == "update_plan")
+
+    registry = ToolRegistry()
+    registry.register(update)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+    )
+    call = ToolCall(
+        name="update_plan",
+        arguments={"step": 1, "status": "finished"},
+    )
+    outcome = executor.execute(call)
+
+    assert outcome.malformed
+    assert outcome.result is None
+    assert "status" in outcome.model_text
+    for status in STEP_STATUSES:
+        assert status in outcome.model_text, f"expected '{status}' in error message"
+    assert "update_plan(" in outcome.model_text
+
+
+def test_update_plan_valid_status_passes(tmp_path: Path) -> None:
+    """Regression: update_plan with a valid status is not rejected at validation."""
+    from shellpilot.runtime.planner import PlanManager, make_plan_tools
+    from shellpilot.tools.base import validate_args
+
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=lambda plan, path: ("n", ""),
+        get_user_intent=lambda: "intent",
+    )
+    update = next(t for t in tools if t.definition.name == "update_plan")
+    error = validate_args(update, {"step": 1, "status": "completed"})
+    assert error is None
+
+
+# --- run_command.timeout_seconds minimum ---
+
+
+def test_run_command_timeout_zero_is_malformed(tmp_path: Path) -> None:
+    """run_command with timeout_seconds=0 is rejected via the malformed path."""
+    from shellpilot.tools.command import RUN_COMMAND
+
+    registry = ToolRegistry()
+    registry.register(RUN_COMMAND)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+    )
+    call = ToolCall(
+        name="run_command",
+        arguments={"argv": ["echo", "hi"], "timeout_seconds": 0},
+    )
+    outcome = executor.execute(call)
+
+    assert outcome.malformed
+    assert outcome.result is None
+    assert "timeout_seconds" in outcome.model_text
+    assert "1" in outcome.model_text  # minimum named
+    assert "run_command(" in outcome.model_text
+
+
+def test_run_command_timeout_positive_passes_validation(tmp_path: Path) -> None:
+    """Regression: run_command with timeout_seconds=30 is not rejected at validation."""
+    from shellpilot.tools.base import validate_args
+    from shellpilot.tools.command import RUN_COMMAND
+
+    error = validate_args(RUN_COMMAND, {"argv": ["echo", "hi"], "timeout_seconds": 30})
+    assert error is None
+
+
+# --- propose_plan.steps array item types ---
+
+
+def test_propose_plan_non_string_step_is_malformed(tmp_path: Path) -> None:
+    """propose_plan with steps=["ok", 42] is rejected via the malformed path."""
+    from shellpilot.runtime.planner import PlanManager, make_plan_tools
+
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=lambda plan, path: ("n", ""),
+        get_user_intent=lambda: "intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+
+    registry = ToolRegistry()
+    registry.register(propose)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+    )
+    call = ToolCall(
+        name="propose_plan",
+        arguments={"goal": "do thing", "steps": ["ok", 42]},
+    )
+    outcome = executor.execute(call)
+
+    assert outcome.malformed
+    assert outcome.result is None
+    assert "steps" in outcome.model_text
+    assert "string" in outcome.model_text
+    assert "propose_plan(" in outcome.model_text
+
+
+def test_propose_plan_valid_steps_passes_validation(tmp_path: Path) -> None:
+    """Regression: propose_plan with valid string steps is not rejected at validation."""
+    from shellpilot.runtime.planner import PlanManager, make_plan_tools
+    from shellpilot.tools.base import validate_args
+
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=lambda plan, path: ("n", ""),
+        get_user_intent=lambda: "intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    error = validate_args(propose, {"goal": "do thing", "steps": ["step 1", "step 2"]})
+    assert error is None
+
+
+# --- malformed counter / schema-reminder integration (validate_args → runtime) ---
+
+
+def test_enum_violation_increments_malformed_counter_and_sends_schema_reminder(
+    tmp_path: Path,
+) -> None:
+    """An enum-validation failure uses the same malformed-call path as an unknown
+    argument: the ConversationRuntime receives a schema-reminder message and the
+    consecutive_malformed counter fires (two consecutive → no tools offered)."""
+    from shellpilot.tools.patch import PATCH_FILE, WRITE_FILE
+    from shellpilot.tools.registry import ToolRegistry as TR
+
+    reg = TR()
+    reg.register(PATCH_FILE)
+    reg.register(WRITE_FILE)
+
+    # Two consecutive malformed calls → tools stripped on the final call.
+    fake = FakeLLM(
+        script=[
+            tool_call("patch_file", path="f.txt", operation="bad_op", old="x"),
+            tool_call("write_file", path="f.txt", content="hi", mode="bad_mode"),
+            answer("Stopped."),
+        ]
+    )
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+    # Inject the spec registrations into the runtime's registry.
+    for spec in [PATCH_FILE, WRITE_FILE]:
+        try:
+            runtime.registry.register(spec)
+        except Exception:
+            pass  # already registered
+
+    reply = runtime.run_turn("do something")
+    assert reply == "Stopped."
+    # After two consecutive malformed calls, the final model call must have no tools.
+    assert fake.calls[-1].tools == ()
+    # Schema reminder must have been sent.
+    tool_messages = [m for m in fake.calls[-1].messages if m.role == "tool"]
+    assert any("patch_file(" in m.content or "write_file(" in m.content for m in tool_messages)

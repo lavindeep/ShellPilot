@@ -332,6 +332,7 @@ RUN_COMMAND = ToolSpec(
             },
             "timeout_seconds": {
                 "type": "integer",
+                "minimum": 1,
                 "description": (
                     "Optional timeout in seconds. Clamped to the configured "
                     "maximum (default 600); floor 1. The model may request a "

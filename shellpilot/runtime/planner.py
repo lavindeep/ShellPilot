@@ -315,6 +315,7 @@ def make_plan_tools(
     ask_plan_approval: PlanApprovalAsker,
     get_user_intent: UserIntentGetter,
     on_step_change: PlanProgressShower | None = None,
+    max_plan_steps: int = 10,
 ) -> list[ToolSpec]:
     """Plan tools close over the manager and the UI approval flow."""
 
@@ -324,6 +325,17 @@ def make_plan_tools(
         if not goal or not steps:
             return ToolResult(
                 success=False, summary="plan needs a goal and at least one step", content=""
+            )
+
+        if len(steps) > max_plan_steps:
+            n = len(steps)
+            return ToolResult(
+                success=False,
+                summary=f"plan has {n} steps; max is {max_plan_steps}",
+                content=(
+                    f"plan has {n} steps; max is {max_plan_steps} — consolidate related "
+                    "steps and propose again"
+                ),
             )
 
         pending_feedback = manager.pending_revision
@@ -506,6 +518,7 @@ def make_plan_tools(
                 "step": {"type": "integer", "description": "1-based step number."},
                 "status": {
                     "type": "string",
+                    "enum": list(STEP_STATUSES),
                     "description": "New step status: pending, active, completed, or skipped.",
                 },
                 "note": {"type": "string", "description": "Short progress note."},

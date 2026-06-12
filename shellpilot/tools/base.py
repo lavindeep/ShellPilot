@@ -94,7 +94,12 @@ _JSON_TYPES: dict[str, type | tuple[type, ...]] = {
 
 
 def validate_args(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
-    """Returns a compact, model-readable error, or None when arguments are valid."""
+    """Returns a compact, model-readable error, or None when arguments are valid.
+
+    Checks (in order): required presence, unknown args, top-level types (with
+    bool-vs-int special case), enum membership, array item types, and integer
+    bounds (minimum / maximum).
+    """
     definition = spec.definition
     for name in definition.required:
         if name not in arguments:
@@ -110,6 +115,31 @@ def validate_args(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
             return f"argument '{name}' must be of type {schema.get('type')}"
         if expected is int and isinstance(value, bool):
             return f"argument '{name}' must be an integer"
+        # Enum membership check.
+        allowed = schema.get("enum")
+        if allowed is not None and value not in allowed:
+            return f"argument '{name}' must be one of: {', '.join(str(v) for v in allowed)}"
+        # Array item-type check.
+        if expected is list and isinstance(value, list):
+            items_schema = schema.get("items")
+            if items_schema is not None:
+                item_type_name = str(items_schema.get("type", "string"))
+                item_type = _JSON_TYPES.get(item_type_name)
+                if item_type is not None:
+                    for index, item in enumerate(value):
+                        if not isinstance(item, item_type):
+                            return (
+                                f"argument '{name}' item {index} must be of type "
+                                f"{item_type_name} (got {type(item).__name__})"
+                            )
+        # Integer bounds checks.
+        if expected is int and isinstance(value, int) and not isinstance(value, bool):
+            minimum = schema.get("minimum")
+            if minimum is not None and value < minimum:
+                return f"argument '{name}' must be >= {minimum} (got {value})"
+            maximum = schema.get("maximum")
+            if maximum is not None and value > maximum:
+                return f"argument '{name}' must be <= {maximum} (got {value})"
     return None
 
 

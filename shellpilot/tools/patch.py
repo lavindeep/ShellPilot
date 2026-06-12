@@ -241,6 +241,7 @@ PATCH_FILE = ToolSpec(
             "path": {"type": "string", "description": "File to edit."},
             "operation": {
                 "type": "string",
+                "enum": list(OPERATIONS),
                 "description": "replace_exact | insert_before | insert_after | delete_exact",
             },
             "old": {"type": "string", "description": "Exact existing text (the anchor)."},
@@ -267,7 +268,11 @@ WRITE_FILE = ToolSpec(
         parameters={
             "path": {"type": "string", "description": "File to write."},
             "content": {"type": "string", "description": "Text content."},
-            "mode": {"type": "string", "description": "create | overwrite | append"},
+            "mode": {
+                "type": "string",
+                "enum": list(WRITE_MODES),
+                "description": "create | overwrite | append",
+            },
         },
         required=("path", "content"),
     ),

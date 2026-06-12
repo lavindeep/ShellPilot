@@ -586,3 +586,86 @@ def test_completing_non_active_step_is_not_guarded(tmp_path: Path) -> None:
 
     assert result.success is True
     assert manager.active.steps[1].status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# max_plan_steps enforcement (v0.5.2, design section 11)
+# A proposal that exceeds the limit returns a CORRECTIVE FAILURE (normal failed
+# ToolResult, not the malformed path) with the "consolidate" message.
+# ---------------------------------------------------------------------------
+
+
+def test_propose_plan_exceeding_max_steps_returns_corrective_failure(tmp_path: Path) -> None:
+    """11 steps when max_plan_steps=10 returns a failed ToolResult with the
+    'consolidate' message — it is NOT a malformed call."""
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+        max_plan_steps=10,
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+
+    steps_11 = [f"Step {i}" for i in range(1, 12)]
+    result = propose.handler(ctx, {"goal": "Big task", "steps": steps_11})
+
+    assert result.success is False
+    assert "11" in result.summary
+    assert "10" in result.summary
+    assert "consolidate" in result.content
+    # No plan was created.
+    assert manager.active is None
+
+
+def test_propose_plan_at_max_steps_is_accepted(tmp_path: Path) -> None:
+    """Exactly max_plan_steps steps is accepted (boundary is inclusive)."""
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+        max_plan_steps=10,
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+
+    steps_10 = [f"Step {i}" for i in range(1, 11)]
+    result = propose.handler(ctx, {"goal": "Big task", "steps": steps_10})
+
+    assert result.success is True
+    assert manager.active is not None
+    assert len(manager.active.steps) == 10
+
+
+def test_propose_plan_custom_max_steps_honored(tmp_path: Path) -> None:
+    """A custom max_plan_steps=3 rejects 4-step plans and accepts 3-step plans."""
+    ctx = _ctx(tmp_path)
+
+    # 4 steps with max=3 → rejected.
+    manager = PlanManager(tmp_path, "balanced")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+        max_plan_steps=3,
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    result = propose.handler(ctx, {"goal": "task", "steps": ["A", "B", "C", "D"]})
+    assert result.success is False
+    assert "3" in result.summary
+    assert "consolidate" in result.content
+
+    # 3 steps with max=3 → accepted.
+    manager2 = PlanManager(tmp_path, "balanced")
+    tools2 = make_plan_tools(
+        manager2,
+        ask_plan_approval=_approval_asker("y"),
+        get_user_intent=lambda: "test intent",
+        max_plan_steps=3,
+    )
+    propose2 = next(t for t in tools2 if t.definition.name == "propose_plan")
+    result2 = propose2.handler(ctx, {"goal": "task", "steps": ["A", "B", "C"]})
+    assert result2.success is True
+    assert manager2.active is not None
