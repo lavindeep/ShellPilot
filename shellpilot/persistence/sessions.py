@@ -118,6 +118,8 @@ class SessionStore:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(record, dict):
+                continue
             kind = record.get("type")
             if kind == "meta":
                 model = record.get("model", model)
@@ -125,13 +127,24 @@ class SessionStore:
             elif kind == "clear":
                 messages.clear()
             elif kind == "message":
+                role = record.get("role")
+                if not role:
+                    continue
                 calls = tuple(
-                    ToolCall(name=call["name"], arguments=call["arguments"])
+                    ToolCall(
+                        name=call.get("name", ""),
+                        arguments=call.get("arguments", {}),
+                    )
                     for call in record.get("tool_calls", [])
+                    if isinstance(call, dict)
                 )
                 # images field is ignored on load — visual context is not restored.
                 messages.append(
-                    Message(role=record["role"], content=record["content"], tool_calls=calls)
+                    Message(
+                        role=role,
+                        content=record.get("content", ""),
+                        tool_calls=calls,
+                    )
                 )
         return LoadedSession(session_id=path.stem, model=model, profile=profile, messages=messages)
 

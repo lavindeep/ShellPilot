@@ -313,3 +313,47 @@ def test_load_skips_corrupt_middle_line(tmp_path: Path) -> None:
     store.record_message(Message(role="assistant", content="after"))
     loaded = SessionStore.load(store.path)
     assert [m.content for m in loaded.messages] == ["before", "after"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: structurally-malformed transcript records are tolerated on resume
+# ---------------------------------------------------------------------------
+
+
+def test_load_skips_message_missing_role(tmp_path: Path) -> None:
+    """A valid-JSON message record without a role is skipped; surrounding records load."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="first"))
+    # Inject a structurally-malformed record — valid JSON but no 'role' key.
+    with store.path.open("a", encoding="utf-8") as fh:
+        fh.write('{"type": "message"}\n')
+    store.record_message(Message(role="assistant", content="second"))
+    loaded = SessionStore.load(store.path)
+    assert [m.content for m in loaded.messages] == ["first", "second"]
+
+
+def test_load_tolerates_tool_call_missing_arguments(tmp_path: Path) -> None:
+    """A tool_call entry missing 'arguments' is loaded with an empty-dict default."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="setup"))
+    # Write a message with a tool_call that has no 'arguments' key.
+    with store.path.open("a", encoding="utf-8") as fh:
+        raw = '{"type": "message", "role": "assistant", "content": "",'
+        raw += ' "tool_calls": [{"name": "x"}]}\n'
+        fh.write(raw)
+    loaded = SessionStore.load(store.path)
+    assert len(loaded.messages) == 2
+    assert loaded.messages[1].tool_calls[0].name == "x"
+    assert loaded.messages[1].tool_calls[0].arguments == {}
+
+
+def test_load_skips_non_object_json_lines(tmp_path: Path) -> None:
+    """Lines that are valid JSON but not dicts (e.g. 42 or 'hello') are skipped."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="real"))
+    with store.path.open("a", encoding="utf-8") as fh:
+        fh.write("42\n")
+        fh.write('"hello"\n')
+    store.record_message(Message(role="assistant", content="also real"))
+    loaded = SessionStore.load(store.path)
+    assert [m.content for m in loaded.messages] == ["real", "also real"]
