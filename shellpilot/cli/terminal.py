@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -51,6 +52,15 @@ from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import TurnStats
 from shellpilot.runtime.planner import TaskPlan
+
+
+def should_discard_interrupt(
+    turn_just_ran: bool, elapsed_seconds: float, window_seconds: float = 0.1
+) -> bool:
+    """A KeyboardInterrupt during prompt input is a stale leftover from the
+    just-finished turn only when it arrives almost immediately after the
+    prompt starts reading; a later interrupt is the user's own."""
+    return turn_just_ran and elapsed_seconds < window_seconds
 
 
 class TerminalUI:
@@ -362,14 +372,16 @@ def run_interactive(
             workspace=status.workspace, model=status.model, profile=status.profile
         )
         console.print()
+        read_started = time.monotonic()
         try:
             line = reader.read(context)
             _turn_just_ran = False
         except EOFError:
             break
         except KeyboardInterrupt:
-            if _turn_just_ran:
-                # Stale interrupt from a completed turn — discard it silently.
+            elapsed = time.monotonic() - read_started
+            if should_discard_interrupt(_turn_just_ran, elapsed):
+                # Stale buffered SIGINT from a just-completed turn — discard silently.
                 _turn_just_ran = False
             else:
                 console.print("[sp.dim](Ctrl-C — use /exit to quit)[/sp.dim]")

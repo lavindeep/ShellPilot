@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from shellpilot.cli.terminal import TerminalUI
+from shellpilot.cli.terminal import TerminalUI, should_discard_interrupt
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
@@ -249,3 +249,40 @@ def test_show_plan_progress_stops_spinner() -> None:
 
     ui.show_plan_progress(plan())
     assert spy.stops >= 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: should_discard_interrupt timing window
+# ---------------------------------------------------------------------------
+
+
+def test_discard_stale_interrupt_within_window() -> None:
+    """A Ctrl-C arriving 0.01 s after a turn just ran should be discarded."""
+    assert should_discard_interrupt(turn_just_ran=True, elapsed_seconds=0.01) is True
+
+
+def test_do_not_discard_genuine_late_interrupt() -> None:
+    """A Ctrl-C arriving 0.5 s after a turn should NOT be discarded."""
+    assert should_discard_interrupt(turn_just_ran=True, elapsed_seconds=0.5) is False
+
+
+def test_do_not_discard_interrupt_at_idle_prompt() -> None:
+    """A Ctrl-C at the prompt with no recent turn should NOT be discarded."""
+    assert should_discard_interrupt(turn_just_ran=False, elapsed_seconds=0.01) is False
+
+
+def test_discard_at_exact_boundary_is_false() -> None:
+    """The boundary (elapsed == window) is exclusive: do NOT discard at exactly window_seconds."""
+    assert should_discard_interrupt(turn_just_ran=True, elapsed_seconds=0.1) is False
+
+
+def test_custom_window_seconds() -> None:
+    """The window_seconds parameter is respected."""
+    assert (
+        should_discard_interrupt(turn_just_ran=True, elapsed_seconds=0.04, window_seconds=0.05)
+        is True
+    )
+    assert (
+        should_discard_interrupt(turn_just_ran=True, elapsed_seconds=0.06, window_seconds=0.05)
+        is False
+    )
