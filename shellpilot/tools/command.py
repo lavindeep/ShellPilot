@@ -276,7 +276,8 @@ def _precheck_run_command(context: ToolContext, arguments: dict[str, Any]) -> st
 
 def _run_command(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
     argv = [str(token) for token in arguments["argv"]]
-    timeout = int(arguments.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
+    ceiling = context.command_timeout_seconds
+    timeout = max(1, min(int(arguments.get("timeout_seconds", ceiling)), ceiling))
     classification = classify_command(argv, workspace=context.workspace)
 
     try:
@@ -331,7 +332,11 @@ RUN_COMMAND = ToolSpec(
             },
             "timeout_seconds": {
                 "type": "integer",
-                "description": "Optional timeout; default 600.",
+                "description": (
+                    "Optional timeout in seconds. Clamped to the configured "
+                    "maximum (default 600); floor 1. The model may request a "
+                    "shorter value but never exceed the ceiling."
+                ),
             },
         },
         required=("argv",),

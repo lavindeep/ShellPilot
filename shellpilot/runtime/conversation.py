@@ -397,6 +397,7 @@ class ConversationRuntime:
             max_result_tokens=self.budget.max_tool_prompt_tokens,
             max_total_tokens=self.budget.max_total_tool_prompt_tokens,
             max_capture_chars=self.budget.max_command_capture_chars,
+            command_timeout_seconds=self._settings.runtime.command_timeout_seconds,
             ask_approval=self._ui.ask_approval,
             emit_output=self._ui.show_command_output,
             snapshots=self.snapshots,

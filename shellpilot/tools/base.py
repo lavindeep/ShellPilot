@@ -34,6 +34,9 @@ class ToolContext:
     # "ask" | "never" | "always". Controls whether search_text traversal reads
     # files whose path components name a credential/secret.
     allow_sensitive_reads: str = "ask"
+    # Hard ceiling for run_command timeout; model may request shorter but never
+    # longer (design section 13.1).
+    command_timeout_seconds: int = 600
 
 
 @dataclass(frozen=True)

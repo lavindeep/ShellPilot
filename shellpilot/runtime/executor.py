@@ -53,6 +53,7 @@ class ToolExecutor:
         max_result_tokens: int,
         max_total_tokens: int,
         max_capture_chars: int = 200_000,
+        command_timeout_seconds: int = 600,
         ask_approval: ApprovalAsker | None = None,
         emit_output: Callable[[str], None] | None = None,
         snapshots: SnapshotStore | None = None,
@@ -69,6 +70,7 @@ class ToolExecutor:
         self._max_result_tokens = max_result_tokens
         self._max_total_tokens = max_total_tokens
         self._max_capture_chars = max_capture_chars
+        self._command_timeout_seconds = command_timeout_seconds
         self._ask_approval = ask_approval
         self._emit_output = emit_output
         self._allow_sensitive_reads = allow_sensitive_reads
@@ -98,6 +100,7 @@ class ToolExecutor:
             workspace=self._workspace,
             max_result_tokens=self._max_result_tokens,
             max_capture_chars=self._max_capture_chars,
+            command_timeout_seconds=self._command_timeout_seconds,
             emit_output=self._emit_output,
             snapshots=self._snapshots,
             allow_sensitive_reads=self._allow_sensitive_reads,

@@ -472,3 +472,120 @@ def test_subprocess_env_override_not_forced_in_popen(tmp_path: Path) -> None:
     )
     assert outcome.exit_code == 0
     assert outcome.output.strip() == "this"
+
+
+# ---------------------------------------------------------------------------
+# Timeout clamping: model-supplied timeout_seconds is bounded by the ceiling
+# from ToolContext.command_timeout_seconds (design section 13.1)
+# ---------------------------------------------------------------------------
+
+
+def _make_executor_with_timeout(tmp_path: Path, ceiling: int) -> ToolExecutor:
+    """Build an executor with RUN_COMMAND and a specific command_timeout_seconds."""
+    registry = ToolRegistry()
+    registry.register(RUN_COMMAND)
+    return ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+        command_timeout_seconds=ceiling,
+        ask_approval=lambda req: True,
+    )
+
+
+def test_timeout_clamped_to_ceiling_when_model_exceeds_it(tmp_path: Path) -> None:
+    """Model asks 600 but ceiling is 5 — request must use 5."""
+    captured: list[Any] = []
+    with patch(
+        "shellpilot.tools.command.run_command_process",
+        side_effect=lambda req, **kw: captured.append(req) or _fake_outcome(),
+    ):
+        context = ToolContext(
+            workspace=tmp_path,
+            max_result_tokens=2000,
+            max_capture_chars=10_000,
+            command_timeout_seconds=5,
+        )
+        RUN_COMMAND.handler(context, {"argv": ["echo", "hi"], "timeout_seconds": 600})
+    assert len(captured) == 1
+    assert captured[0].timeout_seconds == 5
+
+
+def test_timeout_shorter_than_ceiling_is_respected(tmp_path: Path) -> None:
+    """Model asks 2 under a ceiling of 600 — request must use 2."""
+    captured: list[Any] = []
+    with patch(
+        "shellpilot.tools.command.run_command_process",
+        side_effect=lambda req, **kw: captured.append(req) or _fake_outcome(),
+    ):
+        context = ToolContext(
+            workspace=tmp_path,
+            max_result_tokens=2000,
+            max_capture_chars=10_000,
+            command_timeout_seconds=600,
+        )
+        RUN_COMMAND.handler(context, {"argv": ["echo", "hi"], "timeout_seconds": 2})
+    assert len(captured) == 1
+    assert captured[0].timeout_seconds == 2
+
+
+def test_timeout_zero_is_floored_to_one(tmp_path: Path) -> None:
+    """Model asks 0 — floor clamps to 1."""
+    captured: list[Any] = []
+    with patch(
+        "shellpilot.tools.command.run_command_process",
+        side_effect=lambda req, **kw: captured.append(req) or _fake_outcome(),
+    ):
+        context = ToolContext(
+            workspace=tmp_path,
+            max_result_tokens=2000,
+            max_capture_chars=10_000,
+            command_timeout_seconds=600,
+        )
+        RUN_COMMAND.handler(context, {"argv": ["echo", "hi"], "timeout_seconds": 0})
+    assert len(captured) == 1
+    assert captured[0].timeout_seconds == 1
+
+
+def test_timeout_defaults_to_ceiling_when_omitted(tmp_path: Path) -> None:
+    """No timeout_seconds argument — default is the ceiling value."""
+    captured: list[Any] = []
+    with patch(
+        "shellpilot.tools.command.run_command_process",
+        side_effect=lambda req, **kw: captured.append(req) or _fake_outcome(),
+    ):
+        context = ToolContext(
+            workspace=tmp_path,
+            max_result_tokens=2000,
+            max_capture_chars=10_000,
+            command_timeout_seconds=300,
+        )
+        RUN_COMMAND.handler(context, {"argv": ["echo", "hi"]})
+    assert len(captured) == 1
+    assert captured[0].timeout_seconds == 300
+
+
+def test_timeout_default_flow_unchanged_at_600(tmp_path: Path) -> None:
+    """Default ToolContext (ceiling=600) with no model argument uses 600."""
+    captured: list[Any] = []
+    with patch(
+        "shellpilot.tools.command.run_command_process",
+        side_effect=lambda req, **kw: captured.append(req) or _fake_outcome(),
+    ):
+        context = ToolContext(
+            workspace=tmp_path,
+            max_result_tokens=2000,
+            max_capture_chars=10_000,
+        )
+        RUN_COMMAND.handler(context, {"argv": ["echo", "hi"]})
+    assert len(captured) == 1
+    assert captured[0].timeout_seconds == 600
+
+
+def _fake_outcome() -> Any:
+    """Minimal CommandOutcome substitute for monkeypatching run_command_process."""
+    from shellpilot.tools.command import CommandOutcome
+
+    return CommandOutcome(exit_code=0, output="", timed_out=False, truncated=False)
