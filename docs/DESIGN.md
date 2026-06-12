@@ -2379,8 +2379,8 @@ Search quality is a known watch item: DDG HTML results vary by region, UA, and p
 **Pre-request (before any network call):**
 - Scheme must be `http` or `https`; all other schemes are rejected.
 - Hostname must be non-empty.
-- Blocked by name: `localhost`, `0.0.0.0`.
-- IP literals (including IPv6) are rejected if `is_loopback`, `is_private`, `is_link_local`, or `is_reserved`.
+- Blocked by name: `localhost`, any `*.localhost` subdomain, `0.0.0.0`.
+- IP literals (including IPv6) are rejected if `is_loopback`, `is_private`, `is_link_local`, or `is_reserved`.  Legacy short-dotted numeric forms (e.g. `127.1`) that `ipaddress` cannot parse are retried via `socket.inet_aton` and subjected to the same checks.
 
 **Per-hop redirect re-check:** redirects are followed manually (up to `MAX_REDIRECTS = 10` hops). Every redirect destination passes through the same guard before the next connection is made, so a public URL that 302s to a private IP is blocked at the second hop.
 

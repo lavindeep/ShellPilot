@@ -24,6 +24,8 @@ network-level egress filter or a dedicated DNS-pinning proxy.
 from __future__ import annotations
 
 import ipaddress
+import re
+import socket
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
@@ -34,6 +36,10 @@ from shellpilot.web.extract import extract_text
 
 # Content-type tokens that we accept (case-insensitive match).
 _ACCEPTED_CONTENT_TYPES = ("text/html", "text/plain", "xml")
+
+# Matches hosts that look numeric (digits, hex digits, dots) — used to detect
+# legacy short-dotted IPv4 forms such as "127.1" before attempting inet_aton.
+_NUMERIC_HOST_RE = re.compile(r"^[0-9a-fA-F.x]+$")
 
 # Maximum number of redirect hops before giving up.
 MAX_REDIRECTS = 10
@@ -69,8 +75,8 @@ def _check_url(url: str) -> None:
     if not hostname:
         raise WebFetchError("URL has an empty hostname.")
 
-    # Block by name first
-    if hostname in ("localhost", "0.0.0.0"):
+    # Block by name first (exact names and *.localhost subdomains)
+    if hostname == "localhost" or hostname.endswith(".localhost") or hostname == "0.0.0.0":
         raise WebFetchError(f"Fetching {hostname!r} is not allowed (blocked hostname).")
 
     # Try to parse as an IP literal (strip IPv6 brackets if present)
@@ -80,8 +86,21 @@ def _check_url(url: str) -> None:
     try:
         addr = ipaddress.ip_address(ip_str)
     except ValueError:
-        # Not an IP literal — a DNS name; DNS resolution is NOT checked here.
-        return
+        # Not a standard IP literal.  If the host looks purely numeric it may
+        # be a legacy short-dotted form (e.g. "127.1") that ipaddress rejects
+        # but some resolver stacks expand to a full IPv4 address.  Try
+        # inet_aton as a fallback parser; on success, validate the resulting
+        # address through the same checks used for standard IP literals.
+        if _NUMERIC_HOST_RE.fullmatch(ip_str):
+            try:
+                packed = socket.inet_aton(ip_str)
+                addr = ipaddress.IPv4Address(int.from_bytes(packed, "big"))
+            except OSError:
+                # Not parseable by inet_aton either — treat as DNS name.
+                return
+        else:
+            # DNS name; DNS resolution is NOT checked here.
+            return
 
     if addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_reserved:
         raise WebFetchError(

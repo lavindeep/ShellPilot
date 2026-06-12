@@ -190,6 +190,83 @@ def test_rejects_localhost_and_private_hosts() -> None:
     assert calls == [], f"Transport was called for blocked URLs: {[r.url for r in calls]}"
 
 
+def test_rejects_localhost_subdomains() -> None:
+    """*.localhost subdomains must be blocked pre-request."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, html="<p>leak</p>")
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler))
+
+    blocked_urls = [
+        "http://foo.localhost/",
+        "http://a.b.localhost:8080/path",
+    ]
+    for url in blocked_urls:
+        with pytest.raises(WebFetchError):
+            fetcher.fetch(url)
+
+    assert calls == [], f"Transport called for *.localhost URLs: {[r.url for r in calls]}"
+
+
+def test_rejects_legacy_short_dotted_loopback() -> None:
+    """Legacy short-dotted numeric forms that expand to loopback must be blocked."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, html="<p>leak</p>")
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler))
+
+    blocked_urls = [
+        "http://127.1/",
+        "http://127.0.1/",
+    ]
+    for url in blocked_urls:
+        with pytest.raises(WebFetchError):
+            fetcher.fetch(url)
+
+    assert calls == [], f"Transport called for legacy-numeric URLs: {[r.url for r in calls]}"
+
+
+def test_rejects_numeric_alternate_encodings() -> None:
+    """Decimal-int and hex-encoded loopback IPs must remain blocked (regression)."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, html="<p>leak</p>")
+
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler))
+
+    blocked_urls = [
+        "http://2130706433/",  # 127.0.0.1 as decimal int
+        "http://0x7f000001/",  # 127.0.0.1 as hex
+        "http://[::1]/",  # IPv6 loopback
+        "http://localhost/",  # name
+        "http://10.0.0.5/",  # RFC-1918 private
+        "http://192.168.1.1/",  # RFC-1918 private
+    ]
+    for url in blocked_urls:
+        with pytest.raises(WebFetchError):
+            fetcher.fetch(url)
+
+    assert calls == [], f"Transport was called for blocked URLs: {[r.url for r in calls]}"
+
+
+def test_allows_normal_public_hosts() -> None:
+    """Public hostnames must pass the URL guard (no network involved)."""
+    from shellpilot.web.fetch import _check_url
+
+    # These must not raise
+    _check_url("https://example.com/")
+    _check_url("https://pypi.org/simple/")
+    _check_url("http://example.org/page")
+
+
 def test_caps_download_size_and_flags_truncation() -> None:
     # Build a body larger than max_bytes
     body = b"A" * 3000
