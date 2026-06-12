@@ -1423,9 +1423,9 @@ keep_alive = "5m"   # how long Ollama keeps the model loaded between requests
 
 [runtime]
 security_profile = "balanced"
-max_plan_steps = 10
-max_tool_turns = 40
-command_timeout_seconds = 600
+max_plan_steps = 10          # must be >= 1
+max_tool_turns = 40          # must be >= 1
+command_timeout_seconds = 600  # must be >= 1
 auto_compact = true  # selective token-budget compaction (v0.3.0, section 20.2)
 
 [context]

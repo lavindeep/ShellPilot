@@ -62,6 +62,12 @@ ALLOWED_VALUES: dict[str, tuple[str, ...]] = {
     "ui.glyphs": ("auto", "unicode", "ascii"),
 }
 
+MIN_VALUES: dict[str, int] = {
+    "runtime.command_timeout_seconds": 1,
+    "runtime.max_tool_turns": 1,
+    "runtime.max_plan_steps": 1,
+}
+
 TRUE_WORDS = ("1", "true", "yes", "on")
 FALSE_WORDS = ("0", "false", "no", "off", "")
 
@@ -122,6 +128,9 @@ def _coerce(key: str, value: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConfigError(f"{key}: expected an integer, got {value!r}")
         coerced = value
+        minimum = MIN_VALUES.get(key)
+        if minimum is not None and coerced < minimum:
+            raise ConfigError(f"{key}: {value!r} must be >= {minimum}")
     elif annotation is float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"{key}: expected a number, got {value!r}")

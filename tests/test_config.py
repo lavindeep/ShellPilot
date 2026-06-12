@@ -273,3 +273,83 @@ def test_model_options_rejects_scalar(tmp_path: Path) -> None:
             project_config_file=tmp_path / "missing.toml",
             env={},
         )
+
+
+# ---------------------------------------------------------------------------
+# MIN_VALUES: non-positive runtime limits rejected at load time (v0.5.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "key,toml_section,field",
+    [
+        ("runtime.command_timeout_seconds", "runtime", "command_timeout_seconds"),
+        ("runtime.max_tool_turns", "runtime", "max_tool_turns"),
+        ("runtime.max_plan_steps", "runtime", "max_plan_steps"),
+    ],
+)
+def test_zero_rejected_for_runtime_int_keys(
+    tmp_path: Path, key: str, toml_section: str, field: str
+) -> None:
+    """0 must be rejected for each min-bounded runtime key."""
+    user = write_toml(tmp_path / "user.toml", f"[{toml_section}]\n{field} = 0\n")
+    with pytest.raises(ConfigError, match=key):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+@pytest.mark.parametrize(
+    "key,toml_section,field",
+    [
+        ("runtime.command_timeout_seconds", "runtime", "command_timeout_seconds"),
+        ("runtime.max_tool_turns", "runtime", "max_tool_turns"),
+        ("runtime.max_plan_steps", "runtime", "max_plan_steps"),
+    ],
+)
+def test_negative_rejected_for_runtime_int_keys(
+    tmp_path: Path, key: str, toml_section: str, field: str
+) -> None:
+    """-5 must be rejected for each min-bounded runtime key."""
+    user = write_toml(tmp_path / "user.toml", f"[{toml_section}]\n{field} = -5\n")
+    with pytest.raises(ConfigError, match=key):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+@pytest.mark.parametrize(
+    "key,toml_section,field",
+    [
+        ("runtime.command_timeout_seconds", "runtime", "command_timeout_seconds"),
+        ("runtime.max_tool_turns", "runtime", "max_tool_turns"),
+        ("runtime.max_plan_steps", "runtime", "max_plan_steps"),
+    ],
+)
+def test_one_accepted_for_runtime_int_keys(
+    tmp_path: Path, key: str, toml_section: str, field: str
+) -> None:
+    """1 must be accepted as the minimum valid value."""
+    user = write_toml(tmp_path / "user.toml", f"[{toml_section}]\n{field} = 1\n")
+    loaded = load_config(
+        user_config_file=user,
+        project_config_file=tmp_path / "missing.toml",
+        env={},
+    )
+    section_name, attr = key.split(".", 1)
+    assert getattr(getattr(loaded.settings, section_name), attr) == 1
+
+
+def test_unrelated_int_key_unaffected_by_min_values(tmp_path: Path) -> None:
+    """An unrelated int key (context.model_context_tokens) is not subject to MIN_VALUES."""
+    user = write_toml(tmp_path / "user.toml", "[context]\nmodel_context_tokens = 4096\n")
+    loaded = load_config(
+        user_config_file=user,
+        project_config_file=tmp_path / "missing.toml",
+        env={},
+    )
+    assert loaded.settings.context.model_context_tokens == 4096
