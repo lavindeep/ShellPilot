@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from shellpilot.memory.redaction import redact_secrets
+from shellpilot.memory.redaction import redact_structure
 
 AUDIT_VERSION = 1
 
@@ -16,13 +16,7 @@ AUDIT_VERSION = 1
 def _redact_value(value: Any, enabled: bool) -> Any:
     if not enabled:
         return value
-    if isinstance(value, str):
-        return redact_secrets(value)
-    if isinstance(value, dict):
-        return {key: _redact_value(item, enabled) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_redact_value(item, enabled) for item in value]
-    return value
+    return redact_structure(value)
 
 
 @dataclass

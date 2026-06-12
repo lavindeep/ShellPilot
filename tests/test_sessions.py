@@ -204,3 +204,83 @@ def test_export_notes_attached_images(tmp_path: Path) -> None:
     assert "image:" in text
     assert ref.path in text
     assert ref.sha256[:8] in text
+
+
+# ---------------------------------------------------------------------------
+# P1 fix: tool-call argument redaction in session transcripts and /export
+# ---------------------------------------------------------------------------
+
+_SECRET_ARG = "api_key=sk-supersecret123456"  # matches the key=value pattern in redaction.py
+
+
+def test_tool_call_arguments_redacted_in_jsonl(tmp_path: Path) -> None:
+    """Assistant tool-call arguments containing secrets are redacted in the JSONL transcript."""
+    store = make_store(tmp_path)
+    store.record_message(
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=(ToolCall(name="write_file", arguments={"content": _SECRET_ARG}),),
+        )
+    )
+    raw = store.path.read_text(encoding="utf-8")
+    assert "sk-supersecret123456" not in raw
+    assert "[REDACTED]" in raw
+
+
+def test_tool_call_arguments_redacted_in_export(tmp_path: Path) -> None:
+    """/export (session_markdown) re-reads the JSONL, so it inherits redaction from disk."""
+    store = make_store(tmp_path)
+    store.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    store.record_message(
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=(ToolCall(name="write_file", arguments={"content": _SECRET_ARG}),),
+        )
+    )
+    text = session_markdown(SessionStore.load(store.path))
+    assert "sk-supersecret123456" not in text
+    assert "[REDACTED]" in text
+
+
+def test_tool_call_arguments_raw_when_redaction_disabled(tmp_path: Path) -> None:
+    """When redact=False the arguments are persisted verbatim."""
+    store = SessionStore(tmp_path / "sessions", "test-nored", redact=False)
+    store.record_message(
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=(ToolCall(name="write_file", arguments={"content": _SECRET_ARG}),),
+        )
+    )
+    raw = store.path.read_text(encoding="utf-8")
+    assert "sk-supersecret123456" in raw
+
+
+def test_tool_result_content_redaction_unchanged(tmp_path: Path) -> None:
+    """Tool-result (role=tool) content is still redacted as before."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="tool", content=f"output: {_SECRET_ARG}"))
+    raw = store.path.read_text(encoding="utf-8")
+    assert "sk-supersecret123456" not in raw
+    assert "[REDACTED]" in raw
+
+
+def test_tool_call_non_string_nested_argument_roundtrip(tmp_path: Path) -> None:
+    """Non-string nested arguments (list/dict/int) pass through without crashing."""
+    args: dict[str, object] = {
+        "paths": ["/a", "/b"],
+        "flags": {"verbose": True, "depth": 3},
+        "count": 42,
+    }
+    store = make_store(tmp_path)
+    store.record_message(
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=(ToolCall(name="list_dir", arguments=args),),
+        )
+    )
+    loaded = SessionStore.load(store.path)
+    assert loaded.messages[0].tool_calls[0].arguments == args

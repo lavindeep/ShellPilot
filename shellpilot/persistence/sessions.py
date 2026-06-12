@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from shellpilot.llm.messages import Message, ToolCall
-from shellpilot.memory.redaction import redact_secrets
+from shellpilot.memory.redaction import redact_secrets, redact_structure
 from shellpilot.persistence.paths import project_state_dir
 
 TOOL_EXPORT_LIMIT = 2000
@@ -79,7 +79,13 @@ class SessionStore:
             "role": message.role,
             "content": content,
             "tool_calls": [
-                {"name": call.name, "arguments": call.arguments} for call in message.tool_calls
+                {
+                    "name": call.name,
+                    "arguments": (
+                        redact_structure(call.arguments) if self._redact else call.arguments
+                    ),
+                }
+                for call in message.tool_calls
             ],
         }
         if message.images:

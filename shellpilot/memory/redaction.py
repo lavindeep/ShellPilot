@@ -41,3 +41,18 @@ def redact_secrets(text: str) -> str:
     for pattern in _PATTERNS:
         text = pattern.sub(REDACTED, text)
     return text
+
+
+def redact_structure(value: object) -> object:
+    """Recursively redact secrets from arbitrarily nested str/dict/list values.
+
+    Non-string scalars (int, float, bool, None, …) pass through unchanged.
+    Callers decide whether redaction is enabled; this function always redacts.
+    """
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, dict):
+        return {key: redact_structure(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_structure(item) for item in value]
+    return value
