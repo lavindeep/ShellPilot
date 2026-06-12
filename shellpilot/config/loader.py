@@ -70,6 +70,12 @@ MIN_VALUES: dict[str, int] = {
     "runtime.max_plan_steps": 1,
 }
 
+# Exclusive float bounds: 0 < ratio < 1 for context ratios.
+RANGE_VALUES: dict[str, tuple[float, float]] = {
+    "context.compact_at_ratio": (0.0, 1.0),
+    "context.hard_limit_ratio": (0.0, 1.0),
+}
+
 # Keys consumed only at boot (console/theme construction, model client,
 # keep_alive preload, store construction, tool registration).  Everything else
 # takes effect next turn via update_settings.
@@ -157,6 +163,11 @@ def _coerce(key: str, value: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"{key}: expected a number, got {value!r}")
         coerced = float(value)
+        bounds = RANGE_VALUES.get(key)
+        if bounds is not None:
+            low, high = bounds
+            if not (low < coerced < high):
+                raise ConfigError(f"{key}: {value!r} must be > {low} and < {high}")
     elif annotation is str:
         if not isinstance(value, str):
             raise ConfigError(f"{key}: expected a string, got {value!r}")
@@ -240,6 +251,27 @@ def load_config(
             values[key] = _coerce(key, raw)
             sources[key] = layer_name
 
+    # Cross-field check: compact_at_ratio must be < hard_limit_ratio.
+    # Evaluated after user+project layers so that config.toml inversions are
+    # caught fatally before the overrides layer runs.
+    _COMPACT_KEY = "context.compact_at_ratio"
+    _HARD_KEY = "context.hard_limit_ratio"
+    compact_pre: float = values[_COMPACT_KEY]
+    hard_pre: float = values[_HARD_KEY]
+    if compact_pre >= hard_pre:
+        src_compact = sources[_COMPACT_KEY]
+        src_hard = sources[_HARD_KEY]
+        if src_compact in ("user", "project") or src_hard in ("user", "project"):
+            raise ConfigError(
+                f"{_COMPACT_KEY} ({compact_pre!r}) must be less than {_HARD_KEY} ({hard_pre!r})"
+            )
+
+    # Snapshot pre-override values/sources for the ratio keys so we can revert
+    # any override that introduces an inversion.
+    _ratio_keys = (_COMPACT_KEY, _HARD_KEY)
+    _ratio_pre_values = {k: values[k] for k in _ratio_keys}
+    _ratio_pre_sources = {k: sources[k] for k in _ratio_keys}
+
     # Overrides layer: after user+project, before env/CLI.  Self-healing:
     # unknown keys, invalid values, and file-level errors are collected as
     # warnings and never raise.
@@ -262,6 +294,24 @@ def load_config(
             sources[key] = "set"
         except ConfigError as exc:
             warnings.append(f"overrides: {key}={raw!r} — {exc} — entry ignored")
+
+    # Cross-field check post-overrides: if an override introduced an inversion,
+    # self-heal by reverting the offending override key(s).
+    compact_post: float = values[_COMPACT_KEY]
+    hard_post: float = values[_HARD_KEY]
+    if compact_post >= hard_post:
+        reverted: list[str] = []
+        for k in _ratio_keys:
+            if sources[k] == "set":
+                reverted.append(k)
+                values[k] = _ratio_pre_values[k]
+                sources[k] = _ratio_pre_sources[k]
+        if reverted:
+            warnings.append(
+                f"overrides: {' and '.join(reverted)} dropped — would make"
+                f" compact_at_ratio ({compact_post!r}) >= hard_limit_ratio"
+                f" ({hard_post!r}); reverted to pre-override values"
+            )
 
     for env_name, key in ENV_MAP.items():
         if env_name in env:

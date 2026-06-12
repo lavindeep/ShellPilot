@@ -1448,6 +1448,20 @@ Errors in `overrides.json` **never raise** — the program always boots:
 - Individual invalid entries (unknown key, wrong type, out-of-range value) →
   entry skipped with a per-entry warning; remaining valid entries still apply.
 
+**Context ratio range contract**
+
+`context.compact_at_ratio` and `context.hard_limit_ratio` must each be
+strictly between 0 and 1 (exclusive), and `compact_at_ratio` must be strictly
+less than `hard_limit_ratio`.  These constraints are enforced in `_coerce` via
+`RANGE_VALUES` and a post-merge cross-field check in `load_config`:
+
+- Values outside `(0, 1)` or an inverted pair that originates from a
+  hand-edited `config.toml` (source `user` or `project`) → fatal
+  `ConfigError`, consistent with the general config.toml contract.
+- An out-of-range value or inversion introduced by the overrides layer
+  (source `set`) → entry dropped with a per-entry warning; the key reverts
+  to its pre-override value so the program always boots.
+
 Warnings are surfaced to the user by the CLI on start-up (Task 2).
 
 This is the opposite of `config.toml` handling: hand-edited TOML is

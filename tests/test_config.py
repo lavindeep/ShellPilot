@@ -628,3 +628,97 @@ def test_validate_override_min_values_enforced(tmp_path: Path) -> None:
     """ "0" for runtime.max_tool_turns raises ConfigError (MIN_VALUES)."""
     with pytest.raises(ConfigError):
         validate_override("runtime.max_tool_turns", "0")
+
+
+# ---------------------------------------------------------------------------
+# RANGE_VALUES: exclusive float bounds for context ratio keys (v0.6.0)
+# ---------------------------------------------------------------------------
+
+
+def test_compact_at_ratio_zero_rejected_in_toml(tmp_path: Path) -> None:
+    """context.compact_at_ratio = 0.0 in config.toml is a fatal ConfigError."""
+    user = write_toml(tmp_path / "user.toml", "[context]\ncompact_at_ratio = 0.0\n")
+    with pytest.raises(ConfigError, match="context.compact_at_ratio"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_compact_at_ratio_one_rejected_in_toml(tmp_path: Path) -> None:
+    """context.compact_at_ratio = 1.0 in config.toml is a fatal ConfigError."""
+    user = write_toml(tmp_path / "user.toml", "[context]\ncompact_at_ratio = 1.0\n")
+    with pytest.raises(ConfigError, match="context.compact_at_ratio"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_hard_limit_ratio_out_of_range_rejected_in_toml(tmp_path: Path) -> None:
+    """context.hard_limit_ratio = 1.5 in config.toml is a fatal ConfigError."""
+    user = write_toml(tmp_path / "user.toml", "[context]\nhard_limit_ratio = 1.5\n")
+    with pytest.raises(ConfigError, match="context.hard_limit_ratio"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_hard_limit_ratio_negative_rejected_in_toml(tmp_path: Path) -> None:
+    """context.hard_limit_ratio = -0.2 in config.toml is a fatal ConfigError."""
+    user = write_toml(tmp_path / "user.toml", "[context]\nhard_limit_ratio = -0.2\n")
+    with pytest.raises(ConfigError, match="context.hard_limit_ratio"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_compact_at_ratio_valid_value_accepted(tmp_path: Path) -> None:
+    """context.compact_at_ratio = 0.65 is valid and stored as 0.65."""
+    user = write_toml(tmp_path / "user.toml", "[context]\ncompact_at_ratio = 0.65\n")
+    loaded = load_config(
+        user_config_file=user,
+        project_config_file=tmp_path / "missing.toml",
+        env={},
+    )
+    assert abs(loaded.settings.context.compact_at_ratio - 0.65) < 1e-9
+    assert loaded.sources["context.compact_at_ratio"] == "user"
+
+
+def test_inverted_ratio_pair_in_toml_raises_config_error(tmp_path: Path) -> None:
+    """compact_at_ratio >= hard_limit_ratio in config.toml is a fatal ConfigError."""
+    user = write_toml(
+        tmp_path / "user.toml",
+        "[context]\ncompact_at_ratio = 0.95\nhard_limit_ratio = 0.90\n",
+    )
+    with pytest.raises(ConfigError, match="compact_at_ratio"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_out_of_range_ratio_in_override_boots_with_warning(tmp_path: Path) -> None:
+    """An out-of-range ratio in overrides.json boots fine; value reverts to default."""
+    loaded = _cfg(tmp_path, {"context.compact_at_ratio": 2.5})
+    assert loaded.warnings
+    assert any("context.compact_at_ratio" in w for w in loaded.warnings)
+    # Value must revert to default (0.70)
+    assert abs(loaded.settings.context.compact_at_ratio - 0.70) < 1e-9
+
+
+def test_inverted_ratio_pair_via_override_boots_with_warning(tmp_path: Path) -> None:
+    """Overriding compact_at_ratio above hard_limit_ratio self-heals with a warning."""
+    # hard_limit_ratio defaults to 0.90; set compact above it via override
+    loaded = _cfg(tmp_path, {"context.compact_at_ratio": 0.95})
+    assert loaded.warnings
+    assert any("compact_at_ratio" in w for w in loaded.warnings)
+    # compact must be below hard after self-heal
+    assert loaded.settings.context.compact_at_ratio < loaded.settings.context.hard_limit_ratio
