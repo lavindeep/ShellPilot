@@ -21,6 +21,3 @@ htmlcov/
 
 # Local agent settings
 .claude/
-CLAUDE.md
-CONTEXT.md
-REFERENCES.md
