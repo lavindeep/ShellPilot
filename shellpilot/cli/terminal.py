@@ -42,6 +42,7 @@ from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
 from shellpilot.config.model import Settings
 from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
+from shellpilot.memory.redaction import redact_structure
 from shellpilot.memory.store import MemoryFormatError, MemoryStore, MemoryStores, project_id_for
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.paths import AppPaths, project_state_dir
@@ -104,7 +105,13 @@ class TerminalUI:
         self._console.print(f"[sp.error]{escape(text)}[/sp.error]")
 
     def show_tool_call(self, name: str, arguments: dict[str, object]) -> None:
-        summary = ", ".join(f"{key}={value!r}" for key, value in arguments.items())
+        # Redact secrets in the summary line so auto-approved tool calls never
+        # expose credentials in the visible terminal channel.  The approval
+        # panel (ApprovalRequest.display built by executor._display_for) is
+        # intentionally left raw: the user approves exactly what will execute.
+        redacted = redact_structure(arguments)
+        assert isinstance(redacted, dict)
+        summary = ", ".join(f"{key}={value!r}" for key, value in redacted.items())
         if len(summary) > 80:
             summary = summary[:79] + self._glyphs.ellipsis
         self._console.print(render_tool_call(name, summary, self._glyphs))

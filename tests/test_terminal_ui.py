@@ -10,6 +10,7 @@ from rich.console import Console
 
 from shellpilot.cli.terminal import TerminalUI, should_discard_interrupt
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS
+from shellpilot.memory.redaction import REDACTED
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.planner import PlanStep, TaskPlan
@@ -142,6 +143,32 @@ def test_tool_call_and_result_lines() -> None:
     out = console.export_text()
     assert f"{GLYPHS.bullet} patch_file" in out
     assert f"{GLYPHS.check} 1 addition" in out
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: show_tool_call redacts secrets in the summary display line
+# ---------------------------------------------------------------------------
+
+
+def test_show_tool_call_redacts_secret_in_summary() -> None:
+    """show_tool_call must not print raw secrets in the summary line."""
+    console = make_console()
+    ui = make_ui(console, [])
+    # ghp_ token matches the GitHub classic token pattern in redaction.py
+    secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+    ui.show_tool_call("run_command", {"token": secret})
+    out = console.export_text()
+    assert secret not in out
+    assert REDACTED in out
+
+
+def test_show_tool_call_plain_argument_unchanged() -> None:
+    """A non-secret argument must render unchanged."""
+    console = make_console()
+    ui = make_ui(console, [])
+    ui.show_tool_call("read_file", {"path": "/tmp/notes.txt"})
+    out = console.export_text()
+    assert "/tmp/notes.txt" in out
 
 
 # ---------------------------------------------------------------------------
