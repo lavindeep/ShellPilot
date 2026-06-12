@@ -318,3 +318,77 @@ def test_charset_latin1_decoded_correctly() -> None:
 
     page = fetcher.fetch("https://example.com/text")
     assert "café" in page.text
+
+
+# ---------------------------------------------------------------------------
+# Trailing-dot hostname normalisation (v0.5.2)
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_trailing_dot_localhost() -> None:
+    """http://localhost./ must be blocked (trailing dot is a valid FQDN root indicator)."""
+    from shellpilot.web.fetch import _check_url
+
+    with pytest.raises(WebFetchError):
+        _check_url("http://localhost./")
+
+
+def test_rejects_trailing_dot_subdomain_localhost() -> None:
+    """http://foo.localhost./ must be blocked."""
+    from shellpilot.web.fetch import _check_url
+
+    with pytest.raises(WebFetchError):
+        _check_url("http://foo.localhost./")
+
+
+def test_rejects_trailing_dot_loopback_name() -> None:
+    """http://0.0.0.0./ must be blocked."""
+    from shellpilot.web.fetch import _check_url
+
+    with pytest.raises(WebFetchError):
+        _check_url("http://0.0.0.0./")
+
+
+def test_rejects_trailing_dot_loopback_ip() -> None:
+    """http://127.0.0.1./ must be blocked — inet_aton bypass via trailing dot."""
+    from shellpilot.web.fetch import _check_url
+
+    with pytest.raises(WebFetchError):
+        _check_url("http://127.0.0.1./")
+
+
+def test_rejects_multi_trailing_dots() -> None:
+    """http://localhost../ (multiple trailing dots) must be blocked."""
+    from shellpilot.web.fetch import _check_url
+
+    with pytest.raises(WebFetchError):
+        _check_url("http://localhost../")
+
+
+def test_allows_public_domain_with_trailing_dot() -> None:
+    """http://example.com./ (FQDN with trailing dot) must still be allowed."""
+    from shellpilot.web.fetch import _check_url
+
+    # Must not raise — public domain, trailing dot is a valid DNS encoding
+    _check_url("http://example.com./")
+
+
+def test_existing_blocks_unaffected_by_trailing_dot_change() -> None:
+    """Regression: existing blocks (private IPs, legacy forms) remain green."""
+    from shellpilot.web.fetch import _check_url
+
+    blocked = [
+        "http://localhost/",
+        "http://foo.localhost/",
+        "http://127.0.0.1/",
+        "http://0.0.0.0/",
+        "http://127.1/",
+        "http://2130706433/",
+        "http://0x7f000001/",
+        "http://[::1]/",
+        "http://10.0.0.5/",
+        "http://192.168.1.1/",
+    ]
+    for url in blocked:
+        with pytest.raises(WebFetchError):
+            _check_url(url)

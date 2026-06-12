@@ -71,7 +71,7 @@ def _check_url(url: str) -> None:
             f"Unsupported URL scheme {parts.scheme!r}; only http and https are allowed."
         )
 
-    hostname = parts.hostname or ""
+    hostname = (parts.hostname or "").rstrip(".")
     if not hostname:
         raise WebFetchError("URL has an empty hostname.")
 
