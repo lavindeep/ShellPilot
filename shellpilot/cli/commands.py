@@ -88,4 +88,6 @@ def _run_config(workspace: Path, action: str) -> int:
         console.print(f"[red]Config error:[/red] {exc}")
         return 2
     render_config(loaded, console)
+    for warning in loaded.warnings:
+        console.print(f"[dim]{warning}[/dim]")
     return 0
