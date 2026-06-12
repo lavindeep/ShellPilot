@@ -48,9 +48,26 @@ def apply_edit(text: str, operation: str, old: str, new: str) -> tuple[str | Non
     if operation == "replace_exact":
         return text.replace(old, new, 1), ""
     if operation == "insert_before":
-        return text.replace(old, new + old, 1), ""
+        i = text.index(old)
+        point = text.rfind("\n", 0, i) + 1
+        if not new.endswith("\n"):
+            new = new + "\n"
+        return text[:point] + new + text[point:], ""
     if operation == "insert_after":
-        return text.replace(old, old + new, 1), ""
+        end = text.index(old) + len(old)
+        if old.endswith("\n"):
+            point = end
+        else:
+            nl = text.find("\n", end)
+            if nl == -1:
+                point = len(text)
+                if not new.startswith("\n"):
+                    new = "\n" + new
+            else:
+                point = nl + 1
+        if not new.endswith("\n") and point < len(text):
+            new = new + "\n"
+        return text[:point] + new + text[point:], ""
     return text.replace(old, "", 1), ""  # delete_exact
 
 
@@ -214,8 +231,10 @@ PATCH_FILE = ToolSpec(
         description=(
             "Edit a file with an anchored operation. `old` must be copied "
             "byte-for-byte from the file and match exactly once. Operations: "
-            "replace_exact (old->new), insert_before, insert_after "
-            "(new inserted at the old anchor), delete_exact. "
+            "replace_exact (old->new), insert_before / insert_after (new is "
+            "inserted as its own line(s) before/after the LINE containing the "
+            "anchor; a trailing newline is added to new if missing -- for edits "
+            "within a line use replace_exact), delete_exact. "
             "The file must have been read with read_file first."
         ),
         parameters={
@@ -241,7 +260,9 @@ WRITE_FILE = ToolSpec(
         name="write_file",
         description=(
             "Write a file: mode=create for new files, mode=overwrite to replace "
-            "a file you have read (whole-file rewrite), mode=append to add to it."
+            "a file you have read (whole-file rewrite), mode=append to add to it. "
+            "Content is written verbatim as raw text -- use real newlines, not "
+            "escaped \\n sequences."
         ),
         parameters={
             "path": {"type": "string", "description": "File to write."},

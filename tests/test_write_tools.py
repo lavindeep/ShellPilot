@@ -41,6 +41,74 @@ def test_insert_before_and_after() -> None:
     assert text == "line1\nline2\n"
 
 
+def test_insert_after_anchor_without_trailing_newline() -> None:
+    text, error = apply_edit(
+        "def greet(name):\n    return name\n",
+        "insert_after",
+        "def greet(name):",
+        '    """doc"""\n',
+    )
+    assert error == ""
+    assert text == 'def greet(name):\n    """doc"""\n    return name\n'
+
+
+def test_insert_after_anchor_ending_in_newline_does_not_skip_next_line() -> None:
+    text, error = apply_edit("a\nb\nc\n", "insert_after", "a\n", "X\n")
+    assert error == ""
+    assert text == "a\nX\nb\nc\n"
+
+
+def test_insert_after_last_line_no_trailing_newline() -> None:
+    text, error = apply_edit("first\nlast", "insert_after", "last", "appended")
+    assert error == ""
+    assert text == "first\nlast\nappended"
+
+
+def test_insert_after_adds_newline_when_new_lacks_one_midfile() -> None:
+    text, error = apply_edit("a\nb\n", "insert_after", "a\n", "X")
+    assert error == ""
+    assert text == "a\nX\nb\n"
+
+
+def test_insert_after_partial_mid_line_anchor_does_not_split_line() -> None:
+    text, error = apply_edit(
+        "def greet(name):\n    return name\n",
+        "insert_after",
+        "def greet",
+        '    """doc"""\n',
+    )
+    assert error == ""
+    assert text == 'def greet(name):\n    """doc"""\n    return name\n'
+
+
+def test_insert_before_mid_line_start_anchor_lands_above_line() -> None:
+    text, error = apply_edit(
+        "x = 1\ndef greet(name):\n",
+        "insert_before",
+        "def greet",
+        "# comment\n",
+    )
+    assert error == ""
+    assert text == "x = 1\n# comment\ndef greet(name):\n"
+
+
+def test_insert_before_adds_newline_when_new_lacks_one() -> None:
+    text, error = apply_edit("def greet(name):\n", "insert_before", "def greet", "# comment")
+    assert error == ""
+    assert text == "# comment\ndef greet(name):\n"
+
+
+def test_insert_after_multiline_anchor_without_trailing_newline() -> None:
+    text, error = apply_edit(
+        "line1\nline2\nline3\n",
+        "insert_after",
+        "line1\nline2",
+        "inserted\n",
+    )
+    assert error == ""
+    assert text == "line1\nline2\ninserted\nline3\n"
+
+
 def test_delete_exact() -> None:
     text, _ = apply_edit("keep\ndrop\n", "delete_exact", "drop\n", "")
     assert text == "keep\n"

@@ -959,8 +959,8 @@ Recommended edit operations:
 |---|---|
 | `replace_between` | Replace text between two exact anchors. |
 | `replace_exact` | Replace one exact old text block with one new text block. |
-| `insert_before` | Insert text before an exact anchor. |
-| `insert_after` | Insert text after an exact anchor. |
+| `insert_before` | Insert text as new line(s) before the line containing the exact anchor. |
+| `insert_after` | Insert text as new line(s) after the line containing the exact anchor. |
 | `delete_exact` | Delete one exact old text block. |
 | `rewrite_file_from_snapshot` | Last resort for generated files or broad rewrites. Requires prior full read. |
 
@@ -995,7 +995,7 @@ Whole-file rewrites are acceptable when:
 
 Even then, the runtime should treat the model output as a replacement against a known snapshot, not a blind write.
 
-v1 implementation note (2026-06-10): the Phase 0.5 benchmark measured 100% byte-exact span reproduction for `gemma4:e4b`, so the anchored strategy ships as designed. The v1 operation set is `replace_exact`, `insert_before`, `insert_after`, and `delete_exact`; whole-file rewrites go through `write_file` with `mode=overwrite` against a validated snapshot (covering `rewrite_file_from_snapshot`). `replace_between` is deferred: it needs a two-anchor schema, and `replace_exact` covers its use cases at the measured reliability.
+v1 implementation note (2026-06-10): the Phase 0.5 benchmark measured 100% byte-exact span reproduction for `gemma4:e4b`, so the anchored strategy ships as designed. The v1 operation set is `replace_exact`, `insert_before`, `insert_after`, and `delete_exact`; whole-file rewrites go through `write_file` with `mode=overwrite` against a validated snapshot (covering `rewrite_file_from_snapshot`). `replace_between` is deferred: it needs a two-anchor schema, and `replace_exact` covers its use cases at the measured reliability. v0.5.1: `insert_before`/`insert_after` operate on line boundaries -- a live session glued a docstring onto the `def` line when the anchor lacked a trailing newline, so mid-line splices for the insert operations were replaced with whole-line insertion; intra-line edits belong to `replace_exact`.
 
 ## 13. Command Execution Design
 
