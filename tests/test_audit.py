@@ -65,6 +65,52 @@ def test_tail_on_missing_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_tail_session_filter_scans_whole_file(tmp_path: Path) -> None:
+    """tail(session_id=...) must find events even when buried before 200+ later lines.
+
+    The failure mode of the old code: the target session wrote events early,
+    then 250+ events from other sessions pushed them out of the last-200-line
+    scan window, making tail(15, session_id=...) return nothing.
+    """
+    audit_path = tmp_path / "audit.jsonl"
+    # Write 15 events for the target session first (they end up near the top).
+    target_logger = AuditLogger(
+        path=audit_path,
+        session_id="target-session",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    for i in range(15):
+        target_logger.write("user_turn", chars=i)
+
+    # Write 250 events for other sessions — this pushes the target session
+    # entirely out of the old max(15*10, 200) = 200-line scan window.
+    noise_logger = AuditLogger(
+        path=audit_path,
+        session_id="noise-session",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    for i in range(250):
+        noise_logger.write("user_turn", chars=i)
+
+    # The target session's 15 events are at lines 0-14 of a 265-line file;
+    # the old code only scanned the last 200 lines (lines 65-264) and missed them.
+    events = target_logger.tail(15, session_id="target-session")
+    assert len(events) == 15
+    assert all(e["session_id"] == "target-session" for e in events)
+
+
+def test_tail_global_without_session_id_unchanged(tmp_path: Path) -> None:
+    """Global tail (no session_id) continues to return the last N lines regardless."""
+    logger = make_logger(tmp_path)
+    for i in range(50):
+        logger.write("user_turn", chars=i)
+    events = logger.tail(10)
+    assert len(events) == 10
+    assert events[-1]["chars"] == 49
+
+
 def test_tail_session_filter_returns_only_matching_events(tmp_path: Path) -> None:
     """tail(session_id=...) returns only events for that session."""
     logger_a = AuditLogger(

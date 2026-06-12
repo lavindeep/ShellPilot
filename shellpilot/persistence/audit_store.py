@@ -46,22 +46,30 @@ class AuditLogger:
     def tail(self, count: int = 20, *, session_id: str | None = None) -> list[dict[str, Any]]:
         """Return the most recent audit events.
 
-        When *session_id* is given, only events whose ``session_id`` field
-        matches are returned.  To avoid starving the current session in a busy
-        global log, the scan window is widened to ``max(count * 10, 200)``
-        lines before filtering so that a session with few events is still
-        reachable near the tail.
+        When *session_id* is given the entire file is scanned so that session
+        events are never missed because they sit before a long run of events
+        from other sessions.  When *session_id* is None the existing global
+        tail behaviour is preserved (last *count* parseable lines only).
         """
         if not self.path.is_file():
             return []
-        scan = max(count * 10, 200) if session_id is not None else count
         lines = self.path.read_text(encoding="utf-8").splitlines()
-        events: list[dict[str, Any]] = []
-        for line in lines[-scan:]:
+        if session_id is not None:
+            # Scan all lines; a fixed pre-filter window would silently drop
+            # session events that are buried more than window lines deep.
+            events: list[dict[str, Any]] = []
+            for line in lines:
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+            events = [e for e in events if e.get("session_id") == session_id]
+            return events[-count:]
+        # Global tail: keep existing behaviour — last count parseable lines.
+        global_events: list[dict[str, Any]] = []
+        for line in lines[-count:]:
             try:
-                events.append(json.loads(line))
+                global_events.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-        if session_id is not None:
-            events = [e for e in events if e.get("session_id") == session_id]
-        return events[-count:]
+        return global_events
