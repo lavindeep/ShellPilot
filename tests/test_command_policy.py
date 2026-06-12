@@ -70,6 +70,71 @@ def test_write_outside_workspace_is_high() -> None:
     assert any("outside" in reason for reason in result.reasons)
 
 
+# -- relative-path workspace-boundary checks (P1 fix, v0.5.2) ------------------
+
+
+def test_touch_relative_escape_is_high() -> None:
+    result = classify_command(["touch", "../outside.txt"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside" in reason for reason in result.reasons)
+
+
+def test_mv_relative_escape_is_high() -> None:
+    result = classify_command(["mv", "a.txt", "../outside.txt"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside" in reason for reason in result.reasons)
+
+
+def test_rm_relative_escape_is_high() -> None:
+    result = classify_command(["rm", "../outside.txt"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside" in reason for reason in result.reasons)
+
+
+def test_touch_inside_workspace_is_medium() -> None:
+    result = classify_command(["touch", "inside.txt"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+
+
+def test_mv_inside_workspace_is_medium() -> None:
+    result = classify_command(["mv", "a.txt", "b.txt"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+
+
+def test_touch_absolute_secret_still_high() -> None:
+    # regression: absolute escapes must not be broken by the relative-path change
+    result = classify_command(["touch", "/etc/passwd"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside" in reason for reason in result.reasons)
+
+
+def test_rm_recursive_subdir_still_high() -> None:
+    # regression: inside-workspace recursive rm keeps its existing HIGH risk
+    result = classify_command(["rm", "-rf", "subdir"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+
+
+def test_touch_deep_traversal_is_high() -> None:
+    result = classify_command(["touch", "a/../../outside"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside" in reason for reason in result.reasons)
+
+
+def test_flags_not_treated_as_paths() -> None:
+    # flags like -m must not trigger a false-positive boundary check
+    result = classify_command(["touch", "-m", "inside.txt"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+
+
+def test_ls_with_relative_escape_unchanged() -> None:
+    # read-only LOW commands never hit the write-boundary path
+    result = classify_command(["ls", "../"], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+# -- end relative-path boundary tests ------------------------------------------
+
+
 def test_reasons_are_present_for_risky_commands() -> None:
     result = classify_command(["rm", "-rf", "build"], workspace=WS)
     assert result.reasons

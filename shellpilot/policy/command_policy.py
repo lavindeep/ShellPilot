@@ -143,12 +143,25 @@ def sensitive_path_reason(path: Path) -> str | None:
 
 
 def _writes_outside_workspace(argv: list[str], workspace: Path) -> str | None:
-    """For write-ish commands, flag absolute path arguments outside the workspace."""
+    """For write-ish commands, flag path arguments that resolve outside the workspace.
+
+    Both absolute and relative tokens are checked. Bare non-path tokens (e.g.
+    "git", "status", a commit message) resolve to workspace/<token>, which is
+    inside the workspace, so they produce no false positives. A token like ".."
+    or "../foo" resolves outside and is correctly flagged.
+    """
     root = workspace.resolve()
     for token in argv[1:]:
-        if not token.startswith("/"):
+        if token.startswith("-"):
+            # skip flags/options
             continue
-        target = Path(token)
+        try:
+            if token.startswith("/"):
+                target = Path(token).resolve()
+            else:
+                target = (workspace / token).resolve()
+        except OSError:
+            continue
         if root != target and root not in target.parents:
             return f"target {token} is outside the workspace boundary"
     return None
@@ -172,12 +185,15 @@ def _classify_git(argv: list[str]) -> CommandRisk:
     return CommandRisk(RiskLevel.MEDIUM, (f"git {verb or '?'} changes repository state",))
 
 
-def _classify_rm(argv: list[str]) -> CommandRisk:
+def _classify_rm(argv: list[str], workspace: Path) -> CommandRisk:
     flags = "".join(token.lstrip("-") for token in argv[1:] if token.startswith("-"))
     if "r" in flags or "R" in flags:
         return CommandRisk(RiskLevel.HIGH, ("recursive delete",))
     if any("*" in token for token in argv[1:]):
         return CommandRisk(RiskLevel.HIGH, ("glob delete",))
+    outside = _writes_outside_workspace(argv, workspace)
+    if outside:
+        return CommandRisk(RiskLevel.HIGH, ("deletes outside the workspace",))
     return CommandRisk(RiskLevel.MEDIUM, ("deletes a file",))
 
 
@@ -197,7 +213,7 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
             (f"{executable} runs raw shell syntax; use Manual Shell instead",),
         )
     if executable == "rm":
-        return _classify_rm(argv)
+        return _classify_rm(argv, workspace)
     if executable == "git":
         risk = _classify_git(argv)
         if secret:

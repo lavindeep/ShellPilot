@@ -1187,7 +1187,7 @@ File writes should be limited to the workspace unless:
 - The active profile permits it.
 - The path is not sensitive.
 
-The boundary must be clear in the UI.
+The boundary must be clear in the UI. Relative paths are resolved against the workspace before the boundary test, and `rm` targets are boundary-checked in the same way as other write commands (v0.5.2).
 
 ## 15. Privacy
 
