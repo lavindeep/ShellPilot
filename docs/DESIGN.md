@@ -546,7 +546,7 @@ The runtime should expose `/compact status` so the user can see current context 
 
 #### ContextAssembler
 
-The system prompt is assembled from a fixed, ordered set of blocks — base prompt, behavior instructions, memory, planning guidance, and (when a plan is live) a compact plan-state block. A pure `ContextAssembler` (no file or model I/O) captures that assembly as a structured `ContextSnapshot` of `ContextBlock`s, each carrying a block name, source, token estimate, an `injected` flag, and an optional skip reason. The snapshot is the single source of truth: the same structure produces both the live model prompt (joining injected blocks with `\n\n`) and the `/context` breakdown, so the figures shown to the user cannot drift from what the model receives. Block order is load-bearing; behavior, memory, and plan state are injected only when non-empty, while planning guidance is always present.
+The system prompt is assembled from a fixed, ordered set of blocks — base prompt, behavior instructions, memory, the conditional skills group (a `skills index` block plus per-skill bodies, section 23.1), and (when a plan is live) a compact plan-state block. A pure `ContextAssembler` (no file or model I/O) captures that assembly as a structured `ContextSnapshot` of `ContextBlock`s, each carrying a block name, source, token estimate, an `injected` flag, and an optional skip reason. The snapshot is the single source of truth: the same structure produces both the live model prompt (joining injected blocks with `\n\n`) and the `/context` breakdown, so the figures shown to the user cannot drift from what the model receives. Block order is load-bearing; the base prompt is always present, while behavior, memory, skills, and plan state are injected only when their trigger or non-empty condition holds.
 
 ## 11. Planning Model
 
@@ -730,7 +730,9 @@ Recommended workflow:
 8. On approval, the `propose_plan` tool result instructs the model to continue in the same
    turn: it must call the tool for step 1 immediately, then record progress with
    `update_plan`, and keep executing steps without asking the user again. The user
-   approval has already been captured; the model must not re-ask in prose.
+   approval has already been captured; the model must not re-ask in prose. This
+   execution discipline also arrives in the system prompt via the conditional builtin
+   `planning` skill, injected only while a plan is active/blocked (section 23.1).
 9. Each `update_plan` call for a non-final step instructs the model to continue with the
    next step in the same turn. The final completion result instructs the model to summarize
    the outcome instead.
@@ -764,7 +766,7 @@ The runtime should stop and replan when:
 - Test failures reveal a wrong assumption.
 - The user changes direction.
 
-Replanning should preserve completed steps and explain what changed. It should update the existing plan artifact rather than create a disconnected second plan, unless the user explicitly starts a new task.
+Replanning should preserve completed steps and explain what changed. It should update the existing plan artifact rather than create a disconnected second plan, unless the user explicitly starts a new task. The blocker-recording mechanics (`update_plan(blocker=…)`, then propose a revised plan or ask one short question) are carried by the conditional builtin `planning` skill while a plan is active/blocked (section 23.1), not the always-on base prompt.
 
 ### 11.6 Roadblock Protocol
 
@@ -1696,6 +1698,12 @@ Prompt principles:
 - (v2) The model should propose memory updates through a schema.
 - The model should summarize evidence and uncertainty.
 
+**Proposal-vs-execution split (Settled 2026-06-12).** Planning guidance is partitioned by when it applies, so the model only carries the rules relevant to the current turn:
+
+- **Proposal-time rules live in the base prompt** (`shellpilot/prompts/system.py`, `_BASE`): plans go through `propose_plan`; only real multi-step work (3+ distinct steps) gets a plan; fold all related setup into one plan; do not plan trivial single-command/single-edit/inspection tasks. The base prompt keeps a single bridge sentence ("After a plan is approved, keep working in this same turn…") and carries no `update_plan` mechanics. The base prompt is always present.
+- **Execution-time discipline is the builtin `planning` skill** (`shellpilot/skills/builtin/planning/SKILL.md`, trigger `PLAN_ACTIVE`): execute step 1 immediately and record progress with `update_plan(step=…, status="completed")`; on an invalidating failure stop, record `update_plan(blocker="<evidence>")`, then propose a revised plan or ask one short question. This block is injected **only while a plan is active or blocked**.
+- **Rationale.** The 8K-context target model pays for every system-prompt token on every turn, and system blocks are never compacted (section 20.2). The `update_plan` mechanics are dead weight before a plan exists; gating them behind `PLAN_ACTIVE` keeps plan-free turns lean while guaranteeing the discipline is present exactly when it can be acted on. The split is enforced by tests: the base prompt must contain the proposal rules and not `update_plan`; the skill body must contain the execution mechanics. `PROMPT_VERSION` is bumped to 3 to mark the move.
+
 ### 19.1 Unified System Prompt Themes
 
 The main system prompt should communicate:
@@ -1706,7 +1714,7 @@ The main system prompt should communicate:
 - Use tools for bash commands, project search, file operations, memory operations, and verification.
 - Do not call tools for ordinary conversation when plain text is enough.
 - For multi-step work call propose_plan; never write a plan as chat text or ask for approval in prose. (Settled 2026-06-11)
-- After plan approval, keep working in the same turn until done or blocked. (Settled 2026-06-11)
+- After plan approval, keep working in the same turn until done or blocked. (Settled 2026-06-11) The detailed execution mechanics (`update_plan` step/blocker recording) arrive via the conditional builtin `planning` skill, injected only while a plan is active/blocked (section 23.1).
 - Do not hide shell commands.
 - Respect the active security profile.
 - Do not store secrets in memory.
@@ -1993,7 +2001,7 @@ The frontmatter is hand-parsed (no YAML library). Rules:
 
 Two roots only — project/workspace roots are deliberately excluded (prompt-injection vector, §24.5):
 
-- **Builtin root**: `shellpilot/skills/builtin/` inside the installed package, resolved via `importlib.resources.files("shellpilot.skills.builtin")`. Currently contains zero skill folders (the planning skill's `SKILL.md` arrives in the next slice). The root exists so the resolution path is exercised.
+- **Builtin root**: `shellpilot/skills/builtin/` inside the installed package, resolved via `importlib.resources.files("shellpilot.skills.builtin")`. Ships the canonical `planning/SKILL.md` (the execution-discipline skill). The `SKILL.md` is a non-`.py` data file, so the wheel build explicitly includes it (`[tool.hatch.build.targets.wheel]` `artifacts = ["shellpilot/skills/builtin/**/*.md"]`); resolution must work zip-safe from an installed wheel, not just the source tree.
 - **User root**: `<config_dir>/skills/` (e.g. `~/.config/shellpilot/skills/`). Absent directory → no user skills, no error.
 
 **Reserved builtin names**
@@ -2008,7 +2016,7 @@ The builtin `planning` skill is always considered enabled (harness machinery); i
 
 **Discovery order and data contract**
 
-`discover_skills(...)` returns ALL found skills (valid + invalid) in deterministic order: builtin alphabetical, then user alphabetical. The list is inert data — enablement is checked by the CLI (`is_enabled(skill, enabled)`). Injection into the system prompt is the next slice.
+`discover_skills(...)` returns ALL found skills (valid + invalid) in deterministic order: builtin alphabetical, then user alphabetical. The list is inert data — enablement is checked by `is_enabled(skill, enabled)`.
 
 **Trigger**
 
@@ -2016,13 +2024,23 @@ Each skill carries a `SkillTrigger`:
 - `ALWAYS` — injected every turn when enabled (all user skills; builtin skills other than `planning`).
 - `PLAN_ACTIVE` — injected only while a plan is active or blocked (the `planning` skill).
 
-**Injection** (next slice): the system-prompt assembly will inject skill bodies after the planning guidance block, governed by the trigger predicate and enablement. This task wires discovery and surfaces the data; the `_context_snapshot()` path is not touched here.
+**Injection contract**
+
+The `ContextAssembler` (section 10.5) folds discovered skills into the system prompt as conditional blocks. The contract is deterministic:
+
+- **Valid skills only.** Invalid skills are `/skills`-only; they never produce a context block. Each injectable valid skill becomes a block named `skill:{name}`, source = the skill's root (`builtin`/`user`), body text `## Skill: {name}\n{body}`.
+- **Order.** `planning` first (when present), then the rest alphabetical by name. The skills group sits **after memory, before plan state**.
+- **Trigger predicate** (single source of truth, shared by the live prompt and the `/skills` Active column): `PLAN_ACTIVE` → injected only when a plan is active or blocked (the same gate as the plan-state block); `ALWAYS` → injected when `is_enabled(skill, enabled)`. A non-injected valid skill still appears as a block with `injected=False` and a `reason` (`"plan not active"` / `"disabled"`) so `/context` explains itself.
+- **Cumulative budget guard.** Injectable skills are walked in order, summing `est_tokens` against a budget of `ctx // 6` (computed in `conversation.py` from the model context). Once a skill would push the running total over budget, that skill and every later one are marked `injected=False, reason="skipped: skill budget"`. System blocks are never compacted (section 20.2), so this hard cap bounds the worst case.
+- **Skills index block.** A block named `skills index` (source `skills`, text `Loaded skills: {comma-separated injected names}.`) is placed before the first skill block and injected **only when at least one skill body is injected this turn**. With no model-facing skill tools in v1, advertising unloaded skills would give the model nothing actionable, so the index lists exactly what is present.
+
+The builtin `planning` skill is the canonical first builtin: `PLAN_ACTIVE`, always enabled, carrying the execution discipline that the base prompt deliberately omits (section 19).
 
 **`/skills` command**
 
 Lists all discovered skills in a table with columns: Skill, Root, Status, Active.
 - Status: `invalid: <error>` for invalid skills; `builtin` for planning-style always-enabled builtins; `enabled` or `disabled` for others. Advisory notes (name mismatch) appear dimly after the status.
-- Active: trigger predicate evaluated now — `PLAN_ACTIVE` → plan is active/blocked; `ALWAYS` → skill is enabled.
+- Active: real injection for this turn, read from the live context snapshot (trigger predicate plus the cumulative budget guard) — one source of truth with the assembled prompt.
 - Empty discovery → "No skills discovered."
 
 `/capabilities` remains reserved for the heavier future capability packs (tools, handlers, permissions).
@@ -2169,7 +2187,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 | `trusted-local` profile | Deferred from v1, and deferred again at the 2026-06-11 v2 scoping. Revisit for v3. |
 | Session resume | Shipped in v0.3.0 (settled 2026-06-11): append-only JSONL transcripts at `.shellpilot/sessions/<session-id>.jsonl`, written incrementally with secrets redacted; compaction trims memory, never the transcript. `shellpilot --resume [id]` restores the latest (or named) session's history; snapshots are never restored, so read-before-write forces fresh reads. `/export` renders the transcript to markdown. Tool-call arguments are redacted recursively (matching the audit log's `_redact_value` logic, now unified in `redact_structure` in `shellpilot/memory/redaction.py`) before they reach the JSONL transcript; `/export` inherits redaction by re-reading the transcript from disk. Fixed in v0.5.2. `session_markdown` re-applies redaction at export time so transcripts written before v0.5.2 (which may contain raw secrets on disk) cannot leak through `/export`; on-disk history is deliberately left untouched. Fixed in v0.5.2 review wave. |
 | Agent raw shell | Do not expose `raw_shell` as an agent tool in v1. Keep Manual Shell for direct user-controlled `shell=True`. |
-| Capability packs (instruction-only Skills v1) | Shipped in v0.6.0 (section 23.1): SKILL.md discovery, `[skills]` config, `/skills` command. Injection + builtin planning skill land in the next task. |
+| Capability packs (instruction-only Skills v1) | Shipped in v0.6.0 (section 23.1): SKILL.md discovery, `[skills]` config, `/skills` command, deterministic system-prompt injection, and the builtin `planning` skill. |
 | Capability packs (heavier: tools/handlers/permissions) | Design later after core tools are stable. v3 candidate (2026-06-11). |
 | Packet capture diagnostics | Revisit as a heavier capability pack. |
 | Skill Builder | Superseded by Skills v1 (section 23.1) and the v3 heavier packs design. |

@@ -19,7 +19,6 @@ from shellpilot.persistence.sessions import SessionStore
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.risk import SideEffect
 from shellpilot.prompts.execution import EXPLAINER_PROMPT
-from shellpilot.prompts.planning import PLANNING_GUIDANCE
 from shellpilot.prompts.system import build_system_prompt
 from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_budget
 from shellpilot.runtime.context import ContextAssembler, ContextSnapshot
@@ -248,7 +247,9 @@ class ConversationRuntime:
             base_prompt=base_prompt,
             behavior_block=self._behavior.as_prompt_block(),
             memory_block=memory_block,
-            planning_guidance=PLANNING_GUIDANCE,
+            skills=self._skills,
+            enabled=self._settings.skills.enabled,
+            skill_token_budget=self.budget.model_context_tokens // 6,
             plan_state=plan_state,
         )
 

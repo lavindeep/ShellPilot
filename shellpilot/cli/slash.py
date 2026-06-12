@@ -701,7 +701,6 @@ class SlashDispatcher:
 
     def _skills(self) -> None:
         from shellpilot.skills.loader import is_enabled
-        from shellpilot.skills.model import SkillTrigger
 
         skills = self._runtime.skills
         if not skills:
@@ -709,8 +708,14 @@ class SlashDispatcher:
             return
 
         enabled = self._runtime.settings.skills.enabled
-        plan = self._runtime.plan_manager.active
-        plan_active = plan is not None and plan.status in ("active", "blocked")
+        # Active status comes from the live context snapshot, so the table and
+        # the real injection share one source of truth (trigger + budget guard).
+        snapshot = self._runtime.context_snapshot()
+        injected_skills = {
+            block.name.removeprefix("skill:")
+            for block in snapshot.blocks
+            if block.name.startswith("skill:") and block.injected
+        }
 
         table = Table(title="Skills")
         table.add_column("Skill")
@@ -721,26 +726,21 @@ class SlashDispatcher:
         for skill in skills:
             if not skill.valid:
                 status_cell = f"[red]invalid: {skill.error}[/red]"
-                active_cell = "[dim]no[/dim]"
             elif skill.root == "builtin" and skill.name == "planning":
                 status_cell = "builtin"
                 if skill.error:
                     status_cell += f" [dim]({skill.error})[/dim]"
-                active_cell = "[green]yes[/green]" if plan_active else "[dim]no[/dim]"
             elif is_enabled(skill, enabled):
                 status_cell = "enabled"
                 if skill.error:
                     status_cell += f" [dim]({skill.error})[/dim]"
-                if skill.trigger is SkillTrigger.ALWAYS:
-                    active_cell = "[green]yes[/green]"
-                else:
-                    active_cell = "[green]yes[/green]" if plan_active else "[dim]no[/dim]"
             else:
                 status_cell = "[dim]disabled[/dim]"
                 if skill.error:
                     status_cell += f" [dim]({skill.error})[/dim]"
-                active_cell = "[dim]no[/dim]"
 
+            active = skill.valid and skill.name in injected_skills
+            active_cell = "[green]yes[/green]" if active else "[dim]no[/dim]"
             table.add_row(skill.name, skill.root, status_cell, active_cell)
 
         self._console.print(table)

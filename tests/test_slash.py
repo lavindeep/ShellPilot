@@ -200,7 +200,7 @@ def test_context_shows_blocks_and_total(tmp_path: Path) -> None:
     harness.dispatcher.handle("/context")
     out = harness.output()
     assert "base prompt" in out
-    assert "planning guidance" in out
+    assert "skills index" in out
     assert "tool schemas" in out
     assert "history" in out
     assert "TOTAL" in out

@@ -190,14 +190,14 @@ def test_merge_already_invalid_builtin_name_still_reserves() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_discover_absent_user_dir_returns_empty(tmp_path: Path) -> None:
-    """An absent user_skills_dir yields no skills and does not raise."""
+def test_discover_absent_user_dir_returns_no_user_skills(tmp_path: Path) -> None:
+    """An absent user_skills_dir yields no user skills and does not raise."""
     skills = discover_skills(
         user_skills_dir=tmp_path / "nonexistent",
         enabled=(),
         max_tokens=MAX_TOKENS,
     )
-    assert skills == []
+    assert [s for s in skills if s.root == "user"] == []
 
 
 def test_discover_user_skills_multiple_alphabetical_order(tmp_path: Path) -> None:
@@ -222,8 +222,9 @@ def test_discover_non_directory_entries_skipped(tmp_path: Path) -> None:
         enabled=(),
         max_tokens=MAX_TOKENS,
     )
-    assert len([s for s in skills if s.root == "user"]) == 1
-    assert skills[0].name == "real-skill"
+    user_skills = [s for s in skills if s.root == "user"]
+    assert len(user_skills) == 1
+    assert user_skills[0].name == "real-skill"
 
 
 def test_discover_invalid_skill_included_not_dropped(tmp_path: Path) -> None:
@@ -236,20 +237,46 @@ def test_discover_invalid_skill_included_not_dropped(tmp_path: Path) -> None:
         enabled=(),
         max_tokens=MAX_TOKENS,
     )
-    assert len(skills) == 1
-    assert skills[0].valid is False
+    user_skills = [s for s in skills if s.root == "user"]
+    assert len(user_skills) == 1
+    assert user_skills[0].valid is False
 
 
-def test_discover_builtin_root_resolves_empty_ok() -> None:
-    """Builtin root can be resolved via importlib.resources; currently returns no skills."""
+def test_discover_builtin_root_resolves() -> None:
+    """Builtin root resolves via importlib.resources and yields the planning skill."""
     skills = discover_skills(
         user_skills_dir=Path("/nonexistent/skills"),
         enabled=(),
         max_tokens=MAX_TOKENS,
     )
-    builtin_skills = [s for s in skills if s.root == "builtin"]
-    # Builtin root is empty in this task — zero builtins expected.
-    assert builtin_skills == []
+    builtin_names = [s.name for s in skills if s.root == "builtin"]
+    assert builtin_names == ["planning"]
+
+
+def test_builtin_planning_skill_loads() -> None:
+    """The builtin planning skill loads valid, PLAN_ACTIVE, with execution body."""
+    skills = discover_skills(
+        user_skills_dir=Path("/nonexistent/skills"),
+        enabled=(),
+        max_tokens=800,
+    )
+    planning = next(s for s in skills if s.root == "builtin" and s.name == "planning")
+    assert planning.valid is True
+    assert planning.trigger is SkillTrigger.PLAN_ACTIVE
+    assert "update_plan" in planning.body
+    assert 'update_plan(blocker="<evidence>")' in planning.body
+
+
+def test_builtin_skills_dir_resolvable() -> None:
+    """Guards the package layout in CI: the builtin root resolves from the source
+    tree and contains planning/SKILL.md."""
+    import importlib.resources
+
+    root = importlib.resources.files("shellpilot.skills.builtin")
+    skill_file = root / "planning" / SKILL_FILENAME
+    assert skill_file.is_file()
+    text = skill_file.read_text(encoding="utf-8")
+    assert text.startswith("---")
 
 
 # ---------------------------------------------------------------------------

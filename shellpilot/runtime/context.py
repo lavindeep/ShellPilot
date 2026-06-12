@@ -1,20 +1,24 @@
 """Structured system-prompt assembly (design section 10.5).
 
 The runtime builds the system prompt from a fixed set of ordered blocks: the
-base prompt, optional behavior instructions, optional memory, the planning
-guidance, and (when a plan is live) a compact plan-state block. This module
-captures that assembly as data — a ``ContextSnapshot`` of ``ContextBlock``s —
-so a single source of truth feeds both the live model prompt and the
-``/context`` breakdown. The assembler is pure: it performs no file or model
-I/O; callers render their inputs (behavior block, memory block, plan state)
-and pass the finished text in.
+base prompt, optional behavior instructions, optional memory, conditional skill
+blocks (with a skills-index block when at least one skill body is injected),
+and (when a plan is live) a compact plan-state block. This module captures that
+assembly as data — a ``ContextSnapshot`` of ``ContextBlock``s — so a single
+source of truth feeds both the live model prompt and the ``/context``
+breakdown. The assembler is pure: it performs no file or model I/O; callers
+render their inputs (behavior block, memory block, plan state) and pass the
+finished texts and the discovered skills in.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from shellpilot.runtime.budget import estimate_tokens
+from shellpilot.skills.loader import is_enabled
+from shellpilot.skills.model import Skill, SkillTrigger
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,25 @@ class ContextSnapshot:
         return estimate_tokens(self.system_text())
 
 
+def _skill_block_text(skill: Skill) -> str:
+    return f"## Skill: {skill.name}\n{skill.body}"
+
+
+def _skill_should_inject(skill: Skill, *, enabled: tuple[str, ...], plan_active: bool) -> bool:
+    """Trigger predicate: PLAN_ACTIVE skills inject only while a plan is live;
+    ALWAYS skills inject when enabled. Single source of truth for both the live
+    prompt and the /skills Active column."""
+    if skill.trigger is SkillTrigger.PLAN_ACTIVE:
+        return plan_active
+    return is_enabled(skill, enabled)
+
+
+def _ordered_valid_skills(skills: Sequence[Skill]) -> list[Skill]:
+    """Valid skills only, planning first, then the rest alphabetical by name."""
+    valid = [s for s in skills if s.valid]
+    return sorted(valid, key=lambda s: (s.name != "planning", s.name))
+
+
 class ContextAssembler:
     """Pure (no I/O). Builds the structured system-prompt snapshot."""
 
@@ -55,16 +78,82 @@ class ContextAssembler:
         base_prompt: str,
         behavior_block: str,
         memory_block: str,
-        planning_guidance: str,
+        skills: Sequence[Skill],
+        enabled: tuple[str, ...],
+        skill_token_budget: int,
         plan_state: str,
     ) -> ContextSnapshot:
-        """Build the snapshot from already-rendered block texts.
+        """Build the snapshot from already-rendered block texts plus the
+        discovered skills.
 
-        Order is load-bearing and must match the legacy concatenation: base
-        prompt, behavior, memory, planning guidance, plan state. Behavior,
-        memory, and plan state are injected only when non-empty; planning
-        guidance is always injected.
+        Order is load-bearing: base prompt, behavior, memory, the skills group
+        (skills-index block then skill bodies), plan state. Behavior, memory,
+        and plan state are injected only when non-empty.
+
+        Skill injection is deterministic. Only valid skills get blocks (planning
+        first, then alphabetical). A skill is injected when its trigger fires —
+        ``PLAN_ACTIVE`` while ``plan_state`` is non-empty, ``ALWAYS`` when
+        enabled — and the cumulative skill-body token budget is not yet
+        exceeded. Non-injected valid skills still appear as blocks (``injected``
+        False, ``reason`` set) so ``/context`` explains itself. The
+        ``skills index`` block is injected only when at least one skill body is
+        injected this turn.
         """
+        plan_active = bool(plan_state)
+
+        skill_blocks: list[ContextBlock] = []
+        injected_names: list[str] = []
+        cumulative = 0
+        budget_blown = False
+        for skill in _ordered_valid_skills(skills):
+            text = _skill_block_text(skill)
+            source = skill.root
+            if not _skill_should_inject(skill, enabled=enabled, plan_active=plan_active):
+                reason = (
+                    "plan not active" if skill.trigger is SkillTrigger.PLAN_ACTIVE else "disabled"
+                )
+                skill_blocks.append(
+                    ContextBlock(
+                        name=f"skill:{skill.name}",
+                        source=source,
+                        text=text,
+                        injected=False,
+                        reason=reason,
+                    )
+                )
+                continue
+            if budget_blown or cumulative + skill.est_tokens > skill_token_budget:
+                budget_blown = True
+                skill_blocks.append(
+                    ContextBlock(
+                        name=f"skill:{skill.name}",
+                        source=source,
+                        text=text,
+                        injected=False,
+                        reason="skipped: skill budget",
+                    )
+                )
+                continue
+            cumulative += skill.est_tokens
+            injected_names.append(skill.name)
+            skill_blocks.append(
+                ContextBlock(
+                    name=f"skill:{skill.name}",
+                    source=source,
+                    text=text,
+                    injected=True,
+                )
+            )
+
+        index_injected = bool(injected_names)
+        index_block = ContextBlock(
+            name="skills index",
+            source="skills",
+            text=f"Loaded skills: {', '.join(injected_names)}.",
+            injected=index_injected,
+            reason="" if index_injected else "no skill bodies injected",
+        )
+
         blocks = (
             ContextBlock(
                 name="base prompt",
@@ -84,12 +173,8 @@ class ContextAssembler:
                 text=memory_block,
                 injected=bool(memory_block),
             ),
-            ContextBlock(
-                name="planning guidance",
-                source="prompts",
-                text=planning_guidance,
-                injected=True,
-            ),
+            index_block,
+            *skill_blocks,
             ContextBlock(
                 name="plan state",
                 source="plan",
