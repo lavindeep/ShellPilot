@@ -42,6 +42,7 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/compact", "Compact older conversation context now."),
     ("/compact status", "Show context usage and compaction thresholds."),
     ("/compact auto <on|off>", "Toggle automatic token-budget compaction."),
+    ("/context", "Show the per-block context breakdown with token estimates."),
     ("/plan", "Show the active plan."),
     ("/plan path", "Show the active plan artifact path."),
     ("/plan cancel", "Cancel the active plan after confirmation."),
@@ -143,6 +144,8 @@ class SlashDispatcher:
             self._config(args)
         elif command == "/compact":
             self._compact(args)
+        elif command == "/context":
+            self._context()
         elif command == "/plan":
             self._plan(args)
         elif command == "/cwd":
@@ -691,6 +694,40 @@ class SlashDispatcher:
                 spec.side_effect.value,
                 "[green]yes[/green]" if enabled else "[red]no[/red]",
             )
+        self._console.print(table)
+
+    def _context(self) -> None:
+        snapshot = self._runtime.context_snapshot()
+        budget = self._runtime.status().budget
+        table = Table(title="Context breakdown")
+        table.add_column("Block")
+        table.add_column("Source")
+        table.add_column("Tokens", justify="right")
+        table.add_column("Injected")
+        for block in snapshot.blocks:
+            injected = "[green]yes[/green]" if block.injected else "[dim]no[/dim]"
+            table.add_row(block.name, block.source, str(block.est_tokens), injected)
+        tool_tokens = self._runtime.tool_schema_tokens()
+        table.add_row(
+            "tool schemas",
+            "tools",
+            str(tool_tokens),
+            "[green]yes[/green]",
+        )
+        history_tokens, history_messages = self._runtime.history_token_estimate()
+        table.add_row(
+            "history",
+            f"{history_messages} messages",
+            str(history_tokens),
+            "[green]yes[/green]",
+        )
+        total = snapshot.est_system_tokens + tool_tokens + history_tokens
+        table.add_row(
+            "TOTAL",
+            f"of {budget.model_context_tokens} (compact at {budget.compact_at_tokens})",
+            str(total),
+            "",
+        )
         self._console.print(table)
 
     def _attach(self, args: list[str]) -> None:

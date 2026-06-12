@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from pathlib import Path
 from shellpilot.config.model import Settings
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
+from shellpilot.llm.ollama import encode_tool
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.memory.store import MemoryStores
 from shellpilot.persistence.audit_store import AuditLogger
@@ -20,6 +22,7 @@ from shellpilot.prompts.execution import EXPLAINER_PROMPT
 from shellpilot.prompts.planning import PLANNING_GUIDANCE
 from shellpilot.prompts.system import build_system_prompt
 from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_budget
+from shellpilot.runtime.context import ContextAssembler, ContextSnapshot
 from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.executor import ExecutionOutcome, ToolExecutor
 from shellpilot.runtime.planner import PlanManager, compact_plan_state, make_plan_tools
@@ -141,6 +144,7 @@ class ConversationRuntime:
             for spec in default_web_tools():
                 self._registry.register(spec)
         self.budget = self._resolve_budget()
+        self._assembler = ContextAssembler()
 
     @property
     def model(self) -> str:
@@ -215,29 +219,59 @@ class ConversationRuntime:
         if self._session is not None:
             self._session.record_clear()
 
-    def _system_message_text(self) -> str:
-        prompt = build_system_prompt(
+    def _context_snapshot(self) -> ContextSnapshot:
+        """Structured system-prompt snapshot — single source for the live
+        prompt and the /context breakdown. Renders each block here (the
+        assembler stays pure) in the order the legacy concatenation used."""
+        base_prompt = build_system_prompt(
             workspace=self._workspace,
             profile=self._settings.runtime.security_profile,
-            behavior_block=self._behavior.as_prompt_block(),
         )
+        memory_block = ""
         if self._memory is not None:
             memory_cap = max(200, self.budget.model_context_tokens // 16)
             memory_block = self._memory.render(max_tokens=memory_cap)
-            if memory_block:
-                prompt = f"{prompt}\n\n{memory_block}"
-        prompt = f"{prompt}\n\n{PLANNING_GUIDANCE}"
         plan = self.plan_manager.active
-        if plan is not None and plan.status in ("active", "blocked"):
-            prompt = f"{prompt}\n\n{compact_plan_state(plan)}"
-        return prompt
+        plan_state = (
+            compact_plan_state(plan)
+            if plan is not None and plan.status in ("active", "blocked")
+            else ""
+        )
+        return self._assembler.assemble(
+            base_prompt=base_prompt,
+            behavior_block=self._behavior.as_prompt_block(),
+            memory_block=memory_block,
+            planning_guidance=PLANNING_GUIDANCE,
+            plan_state=plan_state,
+        )
 
-    def estimated_prompt_tokens(self) -> int:
-        total = estimate_tokens(self._system_message_text())
+    def context_snapshot(self) -> ContextSnapshot:
+        """Public accessor for the CLI (/context)."""
+        return self._context_snapshot()
+
+    def _system_message_text(self) -> str:
+        return self._context_snapshot().system_text()
+
+    def tool_schema_tokens(self) -> int:
+        """Estimated tokens for the live profile's encoded tool schemas."""
+        profile = self._settings.runtime.security_profile
+        return sum(
+            estimate_tokens(json.dumps(encode_tool(definition)))
+            for definition in self._registry.definitions_for_profile(profile)
+        )
+
+    def history_token_estimate(self) -> tuple[int, int]:
+        """Estimated history tokens (incl. images) and message count, counted
+        exactly as estimated_prompt_tokens does for the /context breakdown."""
+        total = 0
         for message in self._history:
             total += estimate_tokens(message.content)
             total += IMAGE_TOKEN_ESTIMATE * len(message.images)
-        return total
+        return total, len(self._history)
+
+    def estimated_prompt_tokens(self) -> int:
+        history_tokens, _ = self.history_token_estimate()
+        return self._context_snapshot().est_system_tokens + history_tokens
 
     def status(self) -> RuntimeStatus:
         return RuntimeStatus(

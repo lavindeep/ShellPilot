@@ -544,6 +544,10 @@ Output generation should also be explicit:
 
 The runtime should expose `/compact status` so the user can see current context usage, selected model context length, compaction threshold, and whether automatic compaction is enabled.
 
+#### ContextAssembler
+
+The system prompt is assembled from a fixed, ordered set of blocks — base prompt, behavior instructions, memory, planning guidance, and (when a plan is live) a compact plan-state block. A pure `ContextAssembler` (no file or model I/O) captures that assembly as a structured `ContextSnapshot` of `ContextBlock`s, each carrying a block name, source, token estimate, an `injected` flag, and an optional skip reason. The snapshot is the single source of truth: the same structure produces both the live model prompt (joining injected blocks with `\n\n`) and the `/context` breakdown, so the figures shown to the user cannot drift from what the model receives. Block order is load-bearing; behavior, memory, and plan state are injected only when non-empty, while planning guidance is always present.
+
 ## 11. Planning Model
 
 Complex tasks require a plan. The plan should be visible and editable before execution.
@@ -1806,6 +1810,7 @@ Planned commands:
 | `/compact status` | Show estimated context usage, model context length, and compaction thresholds. |
 | `/compact auto on` | Enable automatic token-budget compaction. |
 | `/compact auto off` | Disable automatic token-budget compaction. |
+| `/context` | Show the per-block context breakdown (block name, source, token estimate, injected flag) plus tool schemas, history, and a total against the model context and compact-at thresholds. Reads the same `ContextSnapshot` the live prompt is built from (section 10.5). |
 | `/logs` | Show recent local audit/session events. |
 | `/export <path>` | Export this session's transcript to markdown (default `.shellpilot/exports/<session-id>.md`). |
 | `/memory show` | Show project and behavior memory summaries with entry ids. |
@@ -1820,6 +1825,8 @@ Planned commands:
 | `/attach` | List currently staged images, or report "No attachments staged." *(v0.5.0)* |
 
 All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped and appear in the table above.
+
+`/context show` (a redacted dump of the assembled prompt) is deliberately deferred. The `/context` status table does not fully solve prompt inspection — it shows per-block sizes, not the prompt's actual text — but a verbatim dump must not leak secrets. When `show` lands it must reuse the v0.5.2 redaction helpers before printing any block content.
 
 Deferred to v3 candidates:
 

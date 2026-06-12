@@ -195,6 +195,17 @@ def test_compact_status_shows_thresholds(tmp_path: Path) -> None:
     assert "Hard limit: 7372" in out
 
 
+def test_context_shows_blocks_and_total(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/context")
+    out = harness.output()
+    assert "base prompt" in out
+    assert "planning guidance" in out
+    assert "tool schemas" in out
+    assert "history" in out
+    assert "TOTAL" in out
+
+
 def test_cwd_set_changes_boundary_with_confirmation(tmp_path: Path) -> None:
     new_workspace = tmp_path / "other"
     new_workspace.mkdir()

@@ -166,7 +166,7 @@ class OllamaClient:
             "options": {**(options or {}), "num_ctx": num_ctx},
         }
         if tools:
-            payload["tools"] = [_encode_tool(tool) for tool in tools]
+            payload["tools"] = [encode_tool(tool) for tool in tools]
         if self._reasoning and model not in self._no_think:
             payload["think"] = True
         try:
@@ -238,7 +238,7 @@ def _encode_message(message: Message) -> dict[str, Any]:
     return encoded
 
 
-def _encode_tool(tool: ToolDefinition) -> dict[str, Any]:
+def encode_tool(tool: ToolDefinition) -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
