@@ -359,7 +359,7 @@ README.md
 | `memory` | v1: `AGENTS.md` instruction loading and secret redaction helpers. v2: behavior/project/session memory and optimization. |
 | `persistence` | Filesystem paths, atomic JSON/TOML writes, audit logs. |
 | `prompts` | System prompts and prompt templates. |
-| `capabilities` | v2 extension packs. Design only in v1; no loader implementation. |
+| `capabilities` | Extension packs. The instruction-only Skills v1 loader is implemented (v0.6.0, section 23.1); heavier packs (tools/handlers/permissions) remain a v3 candidate. |
 
 ## 10. Unified Conversation Runtime
 
@@ -2095,7 +2095,7 @@ Example future packs:
 - `node_project`
 - `git_workflow`
 
-V1 ships only built-in tools. Capability loading for heavier packs is designed but not implemented (v3 candidate, 2026-06-11).
+The instruction-only skills loader is implemented in v0.6.0 (section 23.1). Capability loading for heavier packs — tools, handlers, and permissions — is designed but not yet implemented (v3 candidate, 2026-06-11).
 
 ## 24. Operational Edge Cases
 
@@ -2214,7 +2214,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 | Memory system | Behavior/project memory, proposals, and optimization move to v2. V1 only reads `AGENTS.md`. Scheduled for v0.3.0 (settled 2026-06-11). |
 | Token-budget compaction | V1 uses oldest-first truncation; selective compaction is v2. Scheduled for v0.3.0 (settled 2026-06-11). |
 | `trusted-local` profile | Deferred from v1, and deferred again at the 2026-06-11 v2 scoping. Revisit for v3. |
-| Session resume | Shipped in v0.3.0 (settled 2026-06-11): append-only JSONL transcripts at `.shellpilot/sessions/<session-id>.jsonl`, written incrementally with secrets redacted; compaction trims memory, never the transcript. `shellpilot --resume [id]` restores the latest (or named) session's history; snapshots are never restored, so read-before-write forces fresh reads. `/export` renders the transcript to markdown. Tool-call arguments are redacted recursively (matching the audit log's `_redact_value` logic, now unified in `redact_structure` in `shellpilot/memory/redaction.py`) before they reach the JSONL transcript; `/export` inherits redaction by re-reading the transcript from disk. Fixed in v0.5.2. `session_markdown` re-applies redaction at export time so transcripts written before v0.5.2 (which may contain raw secrets on disk) cannot leak through `/export`; on-disk history is deliberately left untouched. Fixed in v0.5.2 review wave. |
+| Session resume | Shipped in v0.3.0 (settled 2026-06-11): append-only JSONL transcripts at `.shellpilot/sessions/<session-id>.jsonl`, written incrementally with secrets redacted; compaction trims memory, never the transcript. `shellpilot --resume [id]` restores the latest (or named) session's history; snapshots are never restored, so read-before-write forces fresh reads. `/export` renders the transcript to markdown. Tool-call arguments are redacted recursively (matching the audit log's `_redact_value` logic, now unified in `redact_structure` in `shellpilot/memory/redaction.py`) before they reach the JSONL transcript; `/export` inherits redaction by re-reading the transcript from disk. Fixed in v0.5.2. `session_markdown` re-applies redaction at export time so transcripts written before v0.5.2 (which may contain raw secrets on disk) cannot leak through `/export`; on-disk history is deliberately left untouched. Fixed in v0.5.2 review wave. Plan state now also restores on `--resume` (v0.6.0): an `active_plan` pointer in the transcript is read at boot; if the referenced plan sidecar is live (`proposed`/`active`/`blocked`), `PlanManager.restore` reinstates it (section 11.3). |
 | Agent raw shell | Do not expose `raw_shell` as an agent tool in v1. Keep Manual Shell for direct user-controlled `shell=True`. |
 | Capability packs (instruction-only Skills v1) | Shipped in v0.6.0 (section 23.1): SKILL.md discovery, `[skills]` config, `/skills` command, deterministic system-prompt injection, and the builtin `planning` skill. |
 | Capability packs (heavier: tools/handlers/permissions) | Design later after core tools are stable. v3 candidate (2026-06-11). |
@@ -2232,7 +2232,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 
 - Do not add a dependency unless it removes meaningful code or risk.
 - Do not add a module until there is a real boundary or file size pressure.
-- Do not build extension loading until at least one deferred capability is being implemented.
+- The first slice of extension loading (instruction-only skills, section 23.1) is implemented in v0.6.0. This rule now applies to the heavier pack machinery (tools, handlers, permissions): do not build it until a concrete heavier capability is being implemented.
 - Do not make every nice command a slash command; prefer natural language and keep slash commands for harness controls.
 - Do not add a second model/provider abstraction in v1.
 - Do not make security slower than necessary; deterministic policy comes first.

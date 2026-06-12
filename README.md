@@ -106,6 +106,9 @@ gemma4:e4b · balanced · /help for commands
 | `/profile`, `/profile use <supervised\|balanced>` | Show or switch the security profile for this session (switch lasts until exit; set `[runtime] security_profile` in config.toml to make it permanent). |
 | `/tools` | List tools available under the active profile. |
 | `/config show`, `/config edit`, `/config reload` | Print resolved config; show config path; reload from disk. |
+| `/config set <key> <value>`, `/config unset <key>`, `/config reset` | Set, remove, or clear all runtime overrides for this session (persisted across restarts in `overrides.json`). |
+| `/context` | Per-block context breakdown: each system-prompt block with its source, token estimate, and whether it was injected this turn. |
+| `/skills` | List all discovered skills with root (builtin/user), enabled/disabled/invalid status, and whether the trigger predicate is active now. |
 | `/cwd`, `/cwd set <path>` | Show or change the workspace boundary. |
 | `/logs` | Recent audit events and the log file path. |
 | `/shell` | Manual Shell (raw `shell=True`, model not involved). `/exit-shell` returns. |
@@ -140,10 +143,17 @@ security_profile = "balanced"
 [tools]
 web = false              # set true to enable web_search + web_fetch (always asks)
 
+[skills]
+enabled = ["my-skill"]  # user skill folder names to activate (config-file only)
+
 [ui]
 theme = "default"
 glyphs = "auto"          # auto | unicode | ascii
 ```
+
+**Skills.** User skills live in `~/.config/shellpilot/skills/<name>/SKILL.md` (instruction-only: a frontmatter header plus a body injected into the system prompt when active). List names to activate under `[skills] enabled`; this key is config-file only and cannot be set via env vars, `/config set`, or the overrides layer. The builtin `planning` skill is always managed by the harness — no config entry needed. See `docs/DESIGN.md` §23.1 for the full schema and trigger rules.
+
+**Runtime overrides.** `/config set <key> <value>` and `/config unset <key>` write a lightweight override that survives restarts (stored in `.shellpilot/overrides.json`); `/config reset` clears all overrides at once. Most `[runtime]` and `[model]` keys are reachable this way; `[skills]` is explicitly excluded.
 
 Behavior instructions: ShellPilot reads `AGENTS.md` from your config directory (global) and the workspace root (project) at session start and follows them. It never writes those files.
 
@@ -161,7 +171,7 @@ python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 
 ## Roadmap
 
-v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v0.5.0 added opt-in web grounding and image input/attachments. v0.6.0 candidates are unscheduled and the scope is deliberately open: a `trusted-local` security profile, capability packs, and `/undo` — per section 25.2.
+v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v0.5.0 added opt-in web grounding and image input/attachments. v0.6.0 (in progress on main) brings Skills v1 — instruction-only capability packs with builtin and user `SKILL.md` roots and deterministic system-prompt injection — along with `/context` and `/skills` inspection commands, runtime config editing (`/config set|unset|reset` with a persistent overrides layer), plan state restore on `--resume`, and config-validation hardening. A `trusted-local` security profile, heavier capability packs (tools/handlers/permissions), and `/undo` remain future candidates — per section 25.2.
 
 ## License
 
