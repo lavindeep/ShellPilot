@@ -74,7 +74,7 @@ shellpilot          # start the conversation
 
 ```text
 $ shellpilot
-ShellPilot 0.5.1
+ShellPilot 0.5.2
 gemma4:e4b · balanced · /help for commands
 
 ~/my-project · gemma4:e4b · balanced
