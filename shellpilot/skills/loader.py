@@ -12,7 +12,6 @@ from typing import Any
 
 from shellpilot.runtime.budget import estimate_tokens, truncate_to_tokens
 from shellpilot.skills.model import Skill, SkillResource, SkillScript, SkillTrigger
-from shellpilot.skills.triggers import TriggerContext, any_fires
 
 SKILL_FILENAME = "SKILL.md"
 MAX_RESOURCE_BYTES = 64 * 1024
@@ -32,19 +31,46 @@ _DiscoveryResult = tuple[
     tuple[str, ...],
 ]
 
-# Builtin skill names that are always enabled (harness machinery).
-_ALWAYS_ENABLED_BUILTINS: frozenset[str] = frozenset({"planning"})
-
-_PLANNING_TRIGGERS: tuple[SkillTrigger, ...] = (
-    SkillTrigger.PLAN_PROPOSED,
-    SkillTrigger.PLAN_ACTIVE,
-    SkillTrigger.PLAN_BLOCKED,
-)
+_BUILTIN_TRIGGER_MAP: dict[str, tuple[SkillTrigger, ...]] = {
+    "context-management": (SkillTrigger.ALWAYS_ON,),
+    "planning": (
+        SkillTrigger.PLAN_PROPOSED,
+        SkillTrigger.PLAN_ACTIVE,
+        SkillTrigger.PLAN_BLOCKED,
+    ),
+    "skill-authoring": (SkillTrigger.ENABLED,),
+    "web-grounding": (SkillTrigger.WEB_ENABLED,),
+}
+_PLANNING_REFERENCE_TRIGGER_MAP: dict[str, SkillTrigger] = {
+    "references/proposed.md": SkillTrigger.PLAN_PROPOSED,
+    "references/active.md": SkillTrigger.PLAN_ACTIVE,
+    "references/blocked.md": SkillTrigger.PLAN_BLOCKED,
+}
 _DEFAULT_TRIGGERS: tuple[SkillTrigger, ...] = (SkillTrigger.ENABLED,)
 
 
+def _triggers_for_builtin_skill_name(name: str) -> tuple[SkillTrigger, ...]:
+    return _BUILTIN_TRIGGER_MAP.get(name, _DEFAULT_TRIGGERS)
+
+
+def _assign_builtin_reference_triggers(
+    *,
+    skill_name: str,
+    references: tuple[SkillResource, ...],
+) -> tuple[SkillResource, ...]:
+    if skill_name != "planning":
+        return references
+    return tuple(
+        replace(
+            reference,
+            trigger=_PLANNING_REFERENCE_TRIGGER_MAP.get(reference.rel_path),
+        )
+        for reference in references
+    )
+
+
 def _triggers_for_skill_name(name: str) -> tuple[SkillTrigger, ...]:
-    return _PLANNING_TRIGGERS if name == "planning" else _DEFAULT_TRIGGERS
+    return _triggers_for_builtin_skill_name(name)
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str, bool, str]:
@@ -572,19 +598,6 @@ def merge_skills(builtin: list[Skill], user: list[Skill]) -> list[Skill]:
     return list(builtin) + merged_user
 
 
-def is_enabled(skill: Skill, enabled: tuple[str, ...]) -> bool:
-    """Return whether a skill is currently enabled.
-
-    The builtin planning skill is always considered enabled (harness machinery).
-    Other skills follow the enabled list.
-    """
-    plan_status = (
-        "active" if skill.root == "builtin" and skill.name in _ALWAYS_ENABLED_BUILTINS else None
-    )
-    ctx = TriggerContext(plan_status=plan_status, web_enabled=False, enabled=enabled)
-    return any_fires(skill.triggers, skill.name, ctx)
-
-
 def discover_skills(
     *,
     user_skills_dir: Path,
@@ -594,8 +607,8 @@ def discover_skills(
     """Discover skills from builtin and user roots.
 
     Returns ALL found skills (valid + invalid) in deterministic order:
-    builtin alphabetical first, then user alphabetical.  Enablement is
-    data — callers use is_enabled() to filter.
+    builtin alphabetical first, then user alphabetical. Activation is resolved
+    later from the discovered trigger data and a runtime TriggerContext.
     """
     builtin_skills: list[Skill] = []
     user_skills: list[Skill] = []
@@ -633,6 +646,10 @@ def discover_skills(
             references, templates, scripts, resource_warnings = _discover_resources_traversable(
                 entry,
                 max_tokens=max_tokens,
+            )
+            references = _assign_builtin_reference_triggers(
+                skill_name=entry.name,
+                references=references,
             )
             skill = replace(
                 raw,

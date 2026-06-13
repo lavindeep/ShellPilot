@@ -104,7 +104,7 @@ def test_user_skill_injected_when_enabled(tmp_path: Path) -> None:
     system_text = fake.calls[0].messages[0].content
     assert "## Skill: lint-helper" in system_text
     assert "Always run ruff before committing." in system_text
-    assert "Loaded skills: lint-helper." in system_text
+    assert "Loaded skills: context-management, lint-helper." in system_text
 
 
 def test_disabled_skill_not_injected(tmp_path: Path) -> None:
@@ -119,7 +119,7 @@ def test_disabled_skill_not_injected(tmp_path: Path) -> None:
 
     system_text = fake.calls[0].messages[0].content
     assert "## Skill: lint-helper" not in system_text
-    assert "Loaded skills:" not in system_text
+    assert "Loaded skills: context-management." in system_text
 
     # The /context snapshot still surfaces the block with a disabled reason.
     block = next(b for b in runtime.context_snapshot().blocks if b.name == "skill:lint-helper")

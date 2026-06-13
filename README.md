@@ -25,6 +25,7 @@ ShellPilot gives you one terminal conversation that can answer questions, inspec
 - **Model picker at boot.** When multiple Ollama models are installed, ShellPilot presents a numbered list at startup — tested families (`gemma4`, `qwen3.5`) are tagged `tested`; everything else gets a dim `untested` note. Press Enter to accept the default; the choice is remembered per workspace in `.shellpilot/state.json`. Pass `--model <name>` to skip the picker entirely.
 - **No cold-start stall.** ShellPilot warms the selected model via Ollama's keep-alive preload before your first question, shown as a `fueling <model>` spinner. The first-question latency spike that previously stalled on model loading is gone.
 - **Opt-in web grounding — privacy first.** `[tools] web = true` registers `web_search` (DuckDuckGo, no API key) and `web_fetch` (readable text extraction) — both off by default. Every outbound request requires individual approval in every security profile; no web call ever runs silently. Queries and URLs are audit-logged with secrets redacted. The local-first promise stays intact: opt-out is the default state, and there is no env-var toggle that can bypass the config-file act of opting in.
+- **Skills v2.** ShellPilot loads small markdown skills from builtin and user roots, then deterministically injects only the relevant guidance for the current runtime state. v0.7.0 ships four builtins: `planning` mode references, always-on `context-management`, `web-grounding` when web tools are registered, and opt-in `skill-authoring`. References and templates are bundled read-only resources; scripts are discovered and shown but not executed.
 - **Image input.** `/attach <path>` stages an image file (png, jpg, gif, webp, ≤ 10 MB) to send with your next message; vision-capable models see it automatically. The model can also open workspace images itself via the `view_image` tool — auto-approved at the same level as `read_file`, workspace-boundary enforced. Images are never stored in transcripts; only the path and sha256 are recorded.
 - **Testable without a model.** A fake LLM client exercises the entire runtime in CI — including malformed tool calls and stuck loops. No GPU, no Ollama needed for the test suite.
 
@@ -107,8 +108,8 @@ gemma4:e4b · balanced · /help for commands
 | `/tools` | List tools available under the active profile. |
 | `/config show`, `/config edit`, `/config reload` | Print resolved config; show config path; reload from disk. |
 | `/config set <key> <value>`, `/config unset <key>`, `/config reset` | Set, remove, or clear all runtime overrides for this session (persisted across restarts in `overrides.json`). |
-| `/context` | Per-block context breakdown: each system-prompt block with its source, token estimate, and whether it was injected this turn. |
-| `/skills` | List all discovered skills with root (builtin/user), enabled/disabled/invalid status, and whether the trigger predicate is active now. |
+| `/context` | Per-block context breakdown: each system-prompt block with its source, token estimate, injection state, and skip reason. |
+| `/skills` | List all discovered skills with root, triggers, status, active state, resources, scripts, and reasons. |
 | `/cwd`, `/cwd set <path>` | Show or change the workspace boundary. |
 | `/logs` | Recent audit events and the log file path. |
 | `/shell` | Manual Shell (raw `shell=True`, model not involved). `/exit-shell` returns. |
@@ -151,7 +152,7 @@ theme = "default"
 glyphs = "auto"          # auto | unicode | ascii
 ```
 
-**Skills.** User skills live in `~/.config/shellpilot/skills/<name>/SKILL.md` (instruction-only: a frontmatter header plus a body injected into the system prompt when active). List names to activate under `[skills] enabled`; this key is config-file only and cannot be set via env vars, `/config set`, or the overrides layer. The builtin `planning` skill is always managed by the harness — no config entry needed. See `docs/DESIGN.md` §23.1 for the full schema and trigger rules.
+**Skills.** User skills live in `~/.config/shellpilot/skills/<name>/SKILL.md` (frontmatter plus a small body injected only when its trigger fires). List opt-in user skills, and the builtin `skill-authoring`, under `[skills] enabled`; this key is config-file only and cannot be set via env vars, `/config set`, or the overrides layer. Builtins are harness-managed: `planning` follows plan status, `context-management` is always on, and `web-grounding` activates only when web tools are actually registered. Skills may include read-only `references/` and `templates/`; `scripts/manifest.json` is discovered and validated for visibility, but script execution is deferred to v0.8.0. See `docs/DESIGN.md` §23 for the full schema and trigger rules.
 
 **Runtime overrides.** `/config set <key> <value>` and `/config unset <key>` write a lightweight override that survives restarts (stored in `.shellpilot/overrides.json`); `/config reset` clears all overrides at once. Most `[runtime]` and `[model]` keys are reachable this way; `[skills]` is explicitly excluded.
 
@@ -171,7 +172,7 @@ python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 
 ## Roadmap
 
-v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v0.5.0 added opt-in web grounding and image input/attachments. v0.6.0 (in progress on main) brings Skills v1 — instruction-only capability packs with builtin and user `SKILL.md` roots and deterministic system-prompt injection — along with `/context` and `/skills` inspection commands, runtime config editing (`/config set|unset|reset` with a persistent overrides layer), plan state restore on `--resume`, and config-validation hardening. A `trusted-local` security profile, heavier capability packs (tools/handlers/permissions), and `/undo` remain future candidates — per section 25.2.
+v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v0.5.0 added opt-in web grounding and image input/attachments. v0.6.0 added Skills v1, `/context`, `/skills`, runtime config editing, plan-state restore on `--resume`, and config-validation hardening. v0.7.0 adds Skills v2: trigger-driven builtin guidance, read-only references/templates, enriched skill/context visibility, and script manifest discovery without execution. v0.8.0 is reserved for controlled script execution with its own safety design; v0.9.0 can add richer workflow skills such as debugging, verification, review, and git. A `trusted-local` security profile, heavier capability packs (tools/handlers/permissions), and `/undo` remain future candidates — per section 25.2.
 
 ## License
 

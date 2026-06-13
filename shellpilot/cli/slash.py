@@ -17,6 +17,7 @@ from shellpilot.config.loader import BOOT_ONLY_KEYS, ConfigError, LoadedConfig, 
 from shellpilot.config.overrides import load_overrides, overrides_path, save_overrides
 from shellpilot.llm.client import LLMClient
 from shellpilot.runtime.conversation import ConversationRuntime
+from shellpilot.skills.model import SkillTrigger
 
 
 class SlashAction(Enum):
@@ -66,7 +67,7 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
     ("/attach <path>", "Stage an image to send with your next message (vision models only)."),
     ("/attach", "List currently staged images."),
-    ("/skills", "List discovered skills with triggers, resources, and active status."),
+    ("/skills", "List discovered skills with triggers, resources, reasons, and active status."),
 ]
 
 
@@ -700,60 +701,51 @@ class SlashDispatcher:
         self._console.print(table)
 
     def _skills(self) -> None:
-        from shellpilot.skills.loader import is_enabled
-
-        skills = self._runtime.skills
-        if not skills:
+        snapshot = self._runtime.context_snapshot()
+        if not snapshot.decisions:
             self._console.print("[dim]No skills discovered.[/dim]")
             return
-
-        enabled = self._runtime.settings.skills.enabled
-        snapshot = self._runtime.context_snapshot()
-        decision_by_key = {
-            (decision.skill, decision.root): decision for decision in snapshot.decisions
-        }
 
         table = Table(title="Skills")
         table.add_column("Skill")
         table.add_column("Root")
+        table.add_column("Triggers")
         table.add_column("Status")
         table.add_column("Active")
-        table.add_column("Details", overflow="fold")
+        table.add_column("Resources", overflow="fold")
+        table.add_column("Reason", overflow="fold")
 
-        for index, skill in enumerate(skills):
-            decision = None
-            if index < len(snapshot.decisions):
-                candidate = snapshot.decisions[index]
-                if candidate.skill == skill.name and candidate.root == skill.root:
-                    decision = candidate
-            if decision is None:
-                decision = decision_by_key.get((skill.name, skill.root))
-
-            if not skill.valid:
-                status_cell = f"[red]invalid: {skill.error}[/red]"
-            elif skill.root == "builtin" and skill.name == "planning":
-                status_cell = "builtin"
-            elif is_enabled(skill, enabled):
-                status_cell = "enabled"
-            else:
+        for decision in snapshot.decisions:
+            triggers_cell = (
+                ", ".join(trigger.value for trigger in decision.triggers)
+                if decision.triggers
+                else "[dim]-[/dim]"
+            )
+            if decision.reason.startswith("invalid:"):
+                status_cell = f"[red]{decision.reason}[/red]"
+            elif decision.reason == "disabled":
                 status_cell = "[dim]disabled[/dim]"
+            elif decision.root == "builtin" and SkillTrigger.ENABLED not in decision.triggers:
+                status_cell = "builtin"
+            else:
+                status_cell = "enabled"
 
-            active = bool(decision.injected) if decision is not None else False
+            active = decision.injected
             active_cell = "[green]yes[/green]" if active else "[dim]no[/dim]"
-            details: list[str] = []
-            if decision is not None:
-                if decision.matched_triggers:
-                    triggers = ", ".join(trigger.value for trigger in decision.matched_triggers)
-                    details.append(f"triggers: {triggers}")
-                if decision.reason:
-                    details.append(decision.reason)
-                if decision.resource_summary:
-                    details.append(decision.resource_summary)
-                if decision.script_summary:
-                    details.append(decision.script_summary)
-            details.extend(f"[dim]{warning}[/dim]" for warning in skill.warnings)
-            details_cell = "\n".join(details) if details else "[dim]-[/dim]"
-            table.add_row(skill.name, skill.root, status_cell, active_cell, details_cell)
+            resources = [decision.resource_summary, decision.script_summary]
+            resources_cell = "\n".join(part for part in resources if part) or "[dim]-[/dim]"
+            reasons = [decision.reason] if decision.reason else []
+            reasons.extend(f"[dim]{warning}[/dim]" for warning in decision.warnings)
+            reason_cell = "\n".join(reasons) if reasons else "[dim]-[/dim]"
+            table.add_row(
+                decision.skill,
+                decision.root,
+                triggers_cell,
+                status_cell,
+                active_cell,
+                resources_cell,
+                reason_cell,
+            )
 
         self._console.print(table)
 
@@ -765,15 +757,17 @@ class SlashDispatcher:
         table.add_column("Source")
         table.add_column("Tokens", justify="right")
         table.add_column("Injected")
+        table.add_column("Reason", overflow="fold")
         for block in snapshot.blocks:
             injected = "[green]yes[/green]" if block.injected else "[dim]no[/dim]"
-            table.add_row(block.name, block.source, str(block.est_tokens), injected)
+            table.add_row(block.name, block.source, str(block.est_tokens), injected, block.reason)
         tool_tokens = self._runtime.tool_schema_tokens()
         table.add_row(
             "tool schemas",
             "tools",
             str(tool_tokens),
             "[green]yes[/green]",
+            "",
         )
         history_tokens, history_messages = self._runtime.history_token_estimate()
         table.add_row(
@@ -781,12 +775,14 @@ class SlashDispatcher:
             f"{history_messages} messages",
             str(history_tokens),
             "[green]yes[/green]",
+            "",
         )
         total = snapshot.est_system_tokens + tool_tokens + history_tokens
         table.add_row(
             "TOTAL",
             f"of {budget.model_context_tokens} (compact at {budget.compact_at_tokens})",
             str(total),
+            "",
             "",
         )
         self._console.print(table)

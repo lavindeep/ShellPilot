@@ -4,8 +4,8 @@ The contract test reconstructs the expected system-prompt concatenation inline
 and asserts the assembled snapshot reproduces it across the key states (bare,
 behavior+memory, plan active, plan blocked). The reconstruction is the lock:
 proposal-time guidance lives in the base prompt only, the builtin planning
-skill body appears solely when a plan is active/blocked, and the skills-index
-block appears only when at least one body is injected.
+skill body appears solely when a plan is active/blocked, the mode reference
+matches the plan status, and context-management is always on.
 """
 
 from pathlib import Path
@@ -57,11 +57,25 @@ def _planning_body() -> str:
     return next(s for s in skills if s.root == "builtin" and s.name == "planning").body
 
 
+def _builtin_body(name: str) -> str:
+    skills = discover_skills(
+        user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800
+    )
+    return next(s for s in skills if s.root == "builtin" and s.name == name).body
+
+
+def _planning_reference(name: str) -> str:
+    skills = discover_skills(
+        user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800
+    )
+    planning = next(s for s in skills if s.root == "builtin" and s.name == "planning")
+    return next(reference.text for reference in planning.references if reference.name == name)
+
+
 def _expected_system_text(runtime: ConversationRuntime) -> str:
     """Inline reconstruction of the expected system-prompt concatenation.
 
-    Order: base prompt, behavior, memory, skills-index + skill bodies (only
-    while a plan is active/blocked, since planning is the sole skill here),
+    Order: base prompt, behavior, memory, skills-index + skill bodies/references,
     plan state.
     """
     from shellpilot.prompts.system import build_system_prompt
@@ -78,10 +92,15 @@ def _expected_system_text(runtime: ConversationRuntime) -> str:
         if memory_block:
             prompt = f"{prompt}\n\n{memory_block}"
     plan = runtime.plan_manager.active
-    plan_active = plan is not None and plan.status in ("active", "blocked")
-    if plan_active:
-        prompt = f"{prompt}\n\nLoaded skills: planning."
+    plan_mode = plan.status if plan is not None else None
+    if plan_mode in ("active", "blocked"):
+        prompt = f"{prompt}\n\nLoaded skills: planning, context-management."
         prompt = f"{prompt}\n\n## Skill: planning\n{_planning_body()}"
+        prompt = f"{prompt}\n\n{_planning_reference(plan_mode)}"
+        prompt = f"{prompt}\n\n## Skill: context-management\n{_builtin_body('context-management')}"
+    else:
+        prompt = f"{prompt}\n\nLoaded skills: context-management."
+        prompt = f"{prompt}\n\n## Skill: context-management\n{_builtin_body('context-management')}"
     if plan is not None and plan.status in ("active", "blocked"):
         prompt = f"{prompt}\n\n{compact_plan_state(plan)}"
     return prompt
@@ -100,7 +119,8 @@ def test_context_assembly_contract(tmp_path: Path) -> None:
     assert bare_text == _expected_system_text(bare)
     assert "update_plan" not in bare_text
     assert "## Skill: planning" not in bare_text
-    assert "Loaded skills:" not in bare_text
+    assert "Loaded skills: context-management." in bare_text
+    assert "## Skill: context-management" in bare_text
 
     # State 2: behavior + memory present (still plan-free, so no skill body).
     behavior = BehaviorInstructions(global_text="Be terse.", project_text="Use ruff.")
@@ -110,8 +130,9 @@ def test_context_assembly_contract(tmp_path: Path) -> None:
     assert enriched._context_snapshot().system_text() == enriched._system_message_text()
     assert "Be terse." in enriched_text
     assert "## Skill: planning" not in enriched_text
+    assert "## Skill: context-management" in enriched_text
 
-    # State 3: plan active — planning body + index + plan state all present.
+    # State 3: plan active — planning body + active ref + index + plan state all present.
     active = _make_runtime(tmp_path)
     plan = active.plan_manager.create(
         goal="Ship it",
@@ -124,12 +145,15 @@ def test_context_assembly_contract(tmp_path: Path) -> None:
     assert plan.status == "active"
     active_text = active.context_snapshot().system_text()
     assert active_text == _expected_system_text(active)
-    assert "Loaded skills: planning." in active_text
+    assert "Loaded skills: planning, context-management." in active_text
     assert "## Skill: planning" in active_text
+    assert "## Skill: context-management" in active_text
     assert "update_plan" in active_text
+    active_blocks = {block.name for block in active.context_snapshot().blocks if block.injected}
+    assert "skill:planning:reference:active.md" in active_blocks
     assert "Active task plan" in active_text
 
-    # State 4: plan blocked — same injection as active.
+    # State 4: plan blocked — blocked reference replaces active reference.
     blocked = _make_runtime(tmp_path)
     blocked.plan_manager.create(
         goal="Ship it",
@@ -145,6 +169,11 @@ def test_context_assembly_contract(tmp_path: Path) -> None:
     blocked_text = blocked.context_snapshot().system_text()
     assert blocked_text == _expected_system_text(blocked)
     assert "## Skill: planning" in blocked_text
+    assert 'update_plan(blocker="<evidence>")' in blocked_text
+    blocked_blocks = {block.name for block in blocked.context_snapshot().blocks if block.injected}
+    assert "skill:planning:reference:blocked.md" in blocked_blocks
+    assert "skill:planning:reference:active.md" not in blocked_blocks
+    assert "dependency missing" in blocked_text
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +193,7 @@ def _skill(
     references: tuple[SkillResource, ...] = (),
     templates: tuple[SkillResource, ...] = (),
     scripts: tuple[SkillScript, ...] = (),
+    warnings: tuple[str, ...] = (),
 ) -> Skill:
     return Skill(
         name=name,
@@ -177,6 +207,7 @@ def _skill(
         references=references,
         templates=templates,
         scripts=scripts,
+        warnings=warnings,
     )
 
 
@@ -462,7 +493,12 @@ def test_skill_group_budget_is_atomic_for_body_and_reference() -> None:
 
 
 def test_decisions_include_invalid_skills_and_resource_summaries() -> None:
-    invalid = _skill("broken", valid=False, error="reserved builtin name")
+    invalid = _skill(
+        "broken",
+        valid=False,
+        error="reserved builtin name",
+        warnings=("frontmatter name ignored",),
+    )
     skill = _skill(
         "authoring",
         triggers=(SkillTrigger.ENABLED,),
@@ -484,6 +520,9 @@ def test_decisions_include_invalid_skills_and_resource_summaries() -> None:
     by_name = {decision.skill: decision for decision in snapshot.decisions}
     assert by_name["broken"].injected is False
     assert by_name["broken"].reason == "invalid: reserved builtin name"
+    assert by_name["broken"].triggers == (SkillTrigger.ENABLED,)
+    assert by_name["broken"].warnings == ("frontmatter name ignored",)
+    assert by_name["authoring"].triggers == (SkillTrigger.ENABLED,)
     assert by_name["authoring"].resource_summary == "1 ref, 1 template"
     assert by_name["authoring"].script_summary == "1 script (execution unsupported)"
     assert not any(block.name.startswith("skill:authoring:reference:") for block in snapshot.blocks)

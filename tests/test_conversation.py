@@ -3,10 +3,11 @@
 import json
 from pathlib import Path
 
-from shellpilot.config.model import ContextSettings, Settings, ToolSettings
+from shellpilot.config.model import ContextSettings, Settings, SkillSettings, ToolSettings
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.runtime.conversation import ConversationRuntime
+from shellpilot.skills.loader import discover_skills
 from shellpilot.skills.model import Skill, SkillTrigger
 from tests.fakes.fake_llm import FakeLLM, answer, tool_call
 from tests.fakes.fake_ui import FakeUI
@@ -115,6 +116,16 @@ def _web_grounding_skill() -> Skill:
     )
 
 
+def _real_builtin_skills() -> tuple[Skill, ...]:
+    return tuple(
+        discover_skills(user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800)
+    )
+
+
+def _injected_block_texts(runtime: ConversationRuntime) -> dict[str, str]:
+    return {block.name: block.text for block in runtime.context_snapshot().blocks if block.injected}
+
+
 def test_web_enabled_trigger_uses_registered_tools(tmp_path: Path) -> None:
     runtime = ConversationRuntime(
         llm=FakeLLM(script=[]),
@@ -184,6 +195,81 @@ def test_plan_proposed_trigger_fires_without_plan_state_block(tmp_path: Path) ->
     assert decision.matched_triggers == (SkillTrigger.PLAN_PROPOSED,)
     plan_state = next(block for block in snapshot.blocks if block.name == "plan state")
     assert plan_state.injected is False
+
+
+def test_planning_builtin_references_follow_plan_mode(tmp_path: Path) -> None:
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        skills=_real_builtin_skills(),
+    )
+    plan = runtime.plan_manager.create(
+        goal="ship",
+        user_intent="ship",
+        steps=["check", "change", "verify"],
+        assumptions=[],
+        verification=[],
+    )
+
+    proposed_blocks = _injected_block_texts(runtime)
+    assert plan.status == "proposed"
+    assert "propose_plan once" in proposed_blocks["skill:planning:reference:proposed.md"]
+    assert "skill:planning:reference:active.md" not in proposed_blocks
+    assert "skill:planning:reference:blocked.md" not in proposed_blocks
+
+    runtime.plan_manager.approve()
+    active_blocks = _injected_block_texts(runtime)
+    assert plan.status == "active"
+    assert (
+        'update_plan(step=N, status="completed")'
+        in active_blocks["skill:planning:reference:active.md"]
+    )
+    assert "skill:planning:reference:proposed.md" not in active_blocks
+    assert "skill:planning:reference:blocked.md" not in active_blocks
+
+    runtime.plan_manager.record_blocker("dependency missing")
+    blocked_blocks = _injected_block_texts(runtime)
+    assert plan.status == "blocked"
+    assert (
+        'update_plan(blocker="<evidence>")' in blocked_blocks["skill:planning:reference:blocked.md"]
+    )
+    assert "skill:planning:reference:proposed.md" not in blocked_blocks
+    assert "skill:planning:reference:active.md" not in blocked_blocks
+
+
+def test_skill_authoring_builtin_inactive_unless_enabled(tmp_path: Path) -> None:
+    disabled = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        skills=_real_builtin_skills(),
+    )
+
+    disabled_snapshot = disabled.context_snapshot()
+    disabled_decision = next(d for d in disabled_snapshot.decisions if d.skill == "skill-authoring")
+    assert disabled_decision.injected is False
+    assert disabled_decision.reason == "disabled"
+    assert "## Skill: skill-authoring" not in disabled_snapshot.system_text()
+
+    enabled = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(skills=SkillSettings(enabled=("skill-authoring",))),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        skills=_real_builtin_skills(),
+    )
+
+    enabled_snapshot = enabled.context_snapshot()
+    enabled_decision = next(d for d in enabled_snapshot.decisions if d.skill == "skill-authoring")
+    assert enabled_decision.injected is True
+    assert enabled_decision.matched_triggers == (SkillTrigger.ENABLED,)
+    assert "## Skill: skill-authoring" in enabled_snapshot.system_text()
 
 
 # ---------------------------------------------------------------------------

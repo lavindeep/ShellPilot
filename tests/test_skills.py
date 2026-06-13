@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,6 @@ import shellpilot.skills.loader as loader
 from shellpilot.skills.loader import (
     SKILL_FILENAME,
     discover_skills,
-    is_enabled,
     merge_skills,
     parse_skill_md,
 )
@@ -57,6 +58,15 @@ def _only_user_skill(
 ) -> Skill:
     skills = discover_skills(user_skills_dir=tmp_path, enabled=(folder,), max_tokens=max_tokens)
     return next(s for s in skills if s.root == "user" and s.name == folder)
+
+
+def _builtin_skills(*, max_tokens: int = 800) -> dict[str, Skill]:
+    skills = discover_skills(
+        user_skills_dir=Path("/nonexistent/skills"),
+        enabled=(),
+        max_tokens=max_tokens,
+    )
+    return {skill.name: skill for skill in skills if skill.root == "builtin"}
 
 
 # ---------------------------------------------------------------------------
@@ -329,32 +339,135 @@ def test_discover_invalid_skill_included_not_dropped(tmp_path: Path) -> None:
 
 
 def test_discover_builtin_root_resolves() -> None:
-    """Builtin root resolves via importlib.resources and yields the planning skill."""
+    """Builtin root resolves via importlib.resources and yields all shipped builtins."""
     skills = discover_skills(
         user_skills_dir=Path("/nonexistent/skills"),
         enabled=(),
         max_tokens=MAX_TOKENS,
     )
     builtin_names = [s.name for s in skills if s.root == "builtin"]
-    assert builtin_names == ["planning"]
+    assert builtin_names == [
+        "context-management",
+        "planning",
+        "skill-authoring",
+        "web-grounding",
+    ]
 
 
 def test_builtin_planning_skill_loads() -> None:
-    """The builtin planning skill loads valid, plan triggers, with execution body."""
-    skills = discover_skills(
-        user_skills_dir=Path("/nonexistent/skills"),
-        enabled=(),
-        max_tokens=800,
-    )
-    planning = next(s for s in skills if s.root == "builtin" and s.name == "planning")
+    """The builtin planning skill loads valid with tiny body and mode references."""
+    planning = _builtin_skills()["planning"]
     assert planning.valid is True
     assert planning.triggers == (
         SkillTrigger.PLAN_PROPOSED,
         SkillTrigger.PLAN_ACTIVE,
         SkillTrigger.PLAN_BLOCKED,
     )
-    assert "update_plan" in planning.body
-    assert 'update_plan(blocker="<evidence>")' in planning.body
+    assert planning.body == (
+        "You are working with a harness-managed plan. "
+        "Follow only the current plan-mode guidance injected below."
+    )
+    assert "approval" not in planning.body.lower()
+    assert "update_plan" not in planning.body
+    assert [reference.rel_path for reference in planning.references] == [
+        "references/active.md",
+        "references/blocked.md",
+        "references/proposed.md",
+    ]
+    reference_triggers = {reference.name: reference.trigger for reference in planning.references}
+    assert reference_triggers == {
+        "active": SkillTrigger.PLAN_ACTIVE,
+        "blocked": SkillTrigger.PLAN_BLOCKED,
+        "proposed": SkillTrigger.PLAN_PROPOSED,
+    }
+    assert [template.rel_path for template in planning.templates] == [
+        "templates/blocker.md",
+        "templates/plan.md",
+        "templates/revised-plan.md",
+    ]
+    assert all(template.trigger is None for template in planning.templates)
+    assert planning.scripts == ()
+
+
+def test_builtin_trigger_map_and_resources_by_folder_name() -> None:
+    builtins = _builtin_skills()
+
+    assert builtins["context-management"].triggers == (SkillTrigger.ALWAYS_ON,)
+    assert builtins["context-management"].est_tokens <= 180
+    assert [reference.rel_path for reference in builtins["context-management"].references] == [
+        "references/context-budgeting.md",
+        "references/file-triage.md",
+    ]
+    assert all(reference.trigger is None for reference in builtins["context-management"].references)
+    assert builtins["context-management"].templates == ()
+    assert builtins["context-management"].scripts == ()
+
+    assert builtins["web-grounding"].triggers == (SkillTrigger.WEB_ENABLED,)
+    assert "available does not mean use web" in builtins["web-grounding"].body
+    assert "cite sources" in builtins["web-grounding"].body
+    assert "approval" in builtins["web-grounding"].body
+    assert builtins["web-grounding"].references == ()
+    assert builtins["web-grounding"].templates == ()
+    assert builtins["web-grounding"].scripts == ()
+
+    assert builtins["skill-authoring"].triggers == (SkillTrigger.ENABLED,)
+    assert [reference.rel_path for reference in builtins["skill-authoring"].references] == [
+        "references/resource-routing.md",
+        "references/skill-anatomy.md",
+        "references/trigger-writing.md",
+    ]
+    assert all(reference.trigger is None for reference in builtins["skill-authoring"].references)
+    assert [template.rel_path for template in builtins["skill-authoring"].templates] == [
+        "templates/SKILL.md",
+        "templates/skill-eval.md",
+    ]
+    assert all(template.trigger is None for template in builtins["skill-authoring"].templates)
+    assert builtins["skill-authoring"].scripts == ()
+
+
+def test_builtin_layout_loads_with_importlib_resources() -> None:
+    root = importlib.resources.files("shellpilot.skills.builtin")
+    expected_files = {
+        "context-management": {
+            "SKILL.md",
+            "references/context-budgeting.md",
+            "references/file-triage.md",
+        },
+        "planning": {
+            "SKILL.md",
+            "references/active.md",
+            "references/blocked.md",
+            "references/proposed.md",
+            "templates/blocker.md",
+            "templates/plan.md",
+            "templates/revised-plan.md",
+        },
+        "skill-authoring": {
+            "SKILL.md",
+            "references/resource-routing.md",
+            "references/skill-anatomy.md",
+            "references/trigger-writing.md",
+            "templates/SKILL.md",
+            "templates/skill-eval.md",
+        },
+        "web-grounding": {"SKILL.md"},
+    }
+
+    for folder, rel_paths in expected_files.items():
+        skill_dir = root / folder
+        assert skill_dir.is_dir()
+        for rel_path in rel_paths:
+            resource = skill_dir
+            for part in rel_path.split("/"):
+                resource = resource / part
+            assert resource.is_file(), f"missing {folder}/{rel_path}"
+            assert resource.read_text(encoding="utf-8").strip()
+
+
+def test_builtin_package_artifact_glob_stays_markdown_only() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert wheel["artifacts"] == ["shellpilot/skills/builtin/**/*.md"]
 
 
 def test_unreadable_builtin_planning_preserves_plan_triggers(
@@ -402,15 +515,14 @@ def test_unreadable_builtin_planning_preserves_plan_triggers(
 
 
 def test_builtin_skills_dir_resolvable() -> None:
-    """Guards the package layout in CI: the builtin root resolves from the source
-    tree and contains planning/SKILL.md."""
-    import importlib.resources
+    """Guards the package layout in CI: builtin SKILL.md files are resources."""
 
     root = importlib.resources.files("shellpilot.skills.builtin")
-    skill_file = root / "planning" / SKILL_FILENAME
-    assert skill_file.is_file()
-    text = skill_file.read_text(encoding="utf-8")
-    assert text.startswith("---")
+    for name in ("context-management", "planning", "skill-authoring", "web-grounding"):
+        skill_file = root / name / SKILL_FILENAME
+        assert skill_file.is_file()
+        text = skill_file.read_text(encoding="utf-8")
+        assert text.startswith("---")
 
 
 def test_discover_valid_references_and_templates_ordered(tmp_path: Path) -> None:
@@ -874,39 +986,17 @@ def test_discover_scripts_without_manifest_ignored_with_warning(tmp_path: Path) 
     assert skill.warnings == ("scripts/: contains files but no manifest.json; scripts ignored",)
 
 
-# ---------------------------------------------------------------------------
-# is_enabled helper
-# ---------------------------------------------------------------------------
+def test_user_skills_default_to_enabled_trigger(tmp_path: Path) -> None:
+    _user_skill(tmp_path, "ordinary", make_skill_md(name="ordinary"))
+    skill = _only_user_skill(tmp_path, "ordinary")
+    assert skill.triggers == (SkillTrigger.ENABLED,)
 
 
-def test_is_enabled_planning_builtin_always_enabled() -> None:
-    """The planning builtin skill is always enabled regardless of the enabled list."""
-    skill = Skill(
-        name="planning",
-        description="",
-        body="",
-        root="builtin",
-        triggers=(
-            SkillTrigger.PLAN_PROPOSED,
-            SkillTrigger.PLAN_ACTIVE,
-            SkillTrigger.PLAN_BLOCKED,
-        ),
-        est_tokens=0,
-    )
-    assert is_enabled(skill, ()) is True
-    assert is_enabled(skill, ("other",)) is True
+def test_new_builtin_names_are_reserved(tmp_path: Path) -> None:
+    _user_skill(tmp_path, "skill-authoring", make_skill_md(name="skill-authoring"))
 
+    skills = discover_skills(user_skills_dir=tmp_path, enabled=("skill-authoring",), max_tokens=800)
 
-def test_is_enabled_user_skill_follows_enabled_list() -> None:
-    """A user skill is enabled only when its name is in the enabled tuple."""
-    skill = Skill(
-        name="my-skill",
-        description="",
-        body="",
-        root="user",
-        triggers=(SkillTrigger.ENABLED,),
-        est_tokens=0,
-    )
-    assert is_enabled(skill, ()) is False
-    assert is_enabled(skill, ("my-skill",)) is True
-    assert is_enabled(skill, ("other",)) is False
+    collision = next(s for s in skills if s.root == "user" and s.name == "skill-authoring")
+    assert collision.valid is False
+    assert collision.error == "reserved builtin name"

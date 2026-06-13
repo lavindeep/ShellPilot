@@ -359,7 +359,7 @@ README.md
 | `memory` | v1: `AGENTS.md` instruction loading and secret redaction helpers. v2: behavior/project/session memory and optimization. |
 | `persistence` | Filesystem paths, atomic JSON/TOML writes, audit logs. |
 | `prompts` | System prompts and prompt templates. |
-| `capabilities` | Extension packs. The instruction-only Skills v1 loader is implemented (v0.6.0, section 23.1); heavier packs (tools/handlers/permissions) remain a v3 candidate. |
+| `capabilities` | Extension packs. Skills v2 is implemented through deterministic trigger-selected markdown guidance and read-only resources (v0.7.0, section 23); heavier packs (tools/handlers/permissions) remain a v3 candidate. |
 
 ## 10. Unified Conversation Runtime
 
@@ -762,7 +762,8 @@ Recommended workflow:
    `update_plan`, and keep executing steps without asking the user again. The user
    approval has already been captured; the model must not re-ask in prose. This
    execution discipline also arrives in the system prompt via the conditional builtin
-   `planning` skill, injected only while a plan is active/blocked (section 23.1).
+   `planning` skill and its plan-mode references, selected only while a plan is live
+   (`proposed`/`active`/`blocked`; section 23.1).
 9. Each `update_plan` call for a non-final step instructs the model to continue with the
    next step in the same turn. The final completion result instructs the model to summarize
    the outcome instead.
@@ -1733,11 +1734,11 @@ Prompt principles:
 - (v2) The model should propose memory updates through a schema.
 - The model should summarize evidence and uncertainty.
 
-**Proposal-vs-execution split (Settled 2026-06-12).** Planning guidance is partitioned by when it applies, so the model only carries the rules relevant to the current turn:
+**Proposal-vs-execution split (Settled 2026-06-12; refined for Skills v2 on 2026-06-13).** Planning guidance is partitioned by when it applies, so the model only carries the rules relevant to the current turn:
 
-- **Proposal-time rules live in the base prompt** (`shellpilot/prompts/system.py`, `_BASE`): plans go through `propose_plan`; only real multi-step work (3+ distinct steps) gets a plan; fold all related setup into one plan; do not plan trivial single-command/single-edit/inspection tasks. The base prompt keeps a single bridge sentence ("After a plan is approved, keep working in this same turn…") and carries no `update_plan` mechanics. The base prompt is always present.
-- **Plan-mode discipline is the builtin `planning` skill** (`shellpilot/skills/builtin/planning/SKILL.md`, triggers `PLAN_PROPOSED`, `PLAN_ACTIVE`, and `PLAN_BLOCKED`): plan-specific guidance is injected only while a harness-managed plan exists in one of those live states. Active-mode guidance covers step execution and `update_plan(step=…, status="completed")`; blocked-mode guidance covers recording `update_plan(blocker="<evidence>")`, then revising the plan or asking one short question.
-- **Rationale.** The 8K-context target model pays for every system-prompt token on every turn, and system blocks are never compacted (section 20.2). The `update_plan` mechanics are dead weight before a plan exists; selecting planning guidance by exact plan status keeps plan-free turns lean while guaranteeing the relevant discipline is present exactly when it can be acted on. The split is enforced by tests: the base prompt must contain the proposal rules and not `update_plan`; the skill body must contain the execution mechanics. `PROMPT_VERSION` is bumped to 3 to mark the move.
+- **Proposal-time rules live in the base prompt** (`shellpilot/prompts/system.py`, `_BASE`): call `propose_plan` once for real multi-step work (3+ distinct steps), include all known setup/work, do not plan trivial one-step command/edit/inspection tasks, and never write plans as prose. The base prompt keeps a single bridge sentence ("After a plan is approved, keep working in this same turn…") and carries no `update_plan` mechanics. The base prompt is always present.
+- **Plan-mode discipline is the builtin `planning` skill** (`shellpilot/skills/builtin/planning/`): `SKILL.md` is only a tiny harness-managed-plan preamble, and mode-specific guidance lives in `references/proposed.md`, `references/active.md`, and `references/blocked.md`. The loader assigns those three references to `PLAN_PROPOSED`, `PLAN_ACTIVE`, and `PLAN_BLOCKED` by filename convention; templates are discovered metadata only.
+- **Rationale.** The 8K-context target model pays for every system-prompt token on every turn, and system blocks are never compacted (section 20.2). `update_plan` mechanics are dead weight before an active/blocked plan, while expanded proposal guidance is dead weight outside proposal mode. Selecting planning references by exact plan status keeps plan-free turns lean while guaranteeing the relevant discipline is present exactly when it can be acted on. The split is enforced by tests: the base prompt must contain compact proposal rules and no `update_plan`; planning references must carry the mode mechanics. `PROMPT_VERSION` is bumped to 4 for the Skills v2 builtin-resource layout.
 
 ### 19.1 Unified System Prompt Themes
 
@@ -1749,7 +1750,7 @@ The main system prompt should communicate:
 - Use tools for bash commands, project search, file operations, memory operations, and verification.
 - Do not call tools for ordinary conversation when plain text is enough.
 - For multi-step work call propose_plan; never write a plan as chat text or ask for approval in prose. (Settled 2026-06-11)
-- After plan approval, keep working in the same turn until done or blocked. (Settled 2026-06-11) The detailed execution mechanics (`update_plan` step/blocker recording) arrive via the conditional builtin `planning` skill, injected only while a plan is active/blocked (section 23.1).
+- After plan approval, keep working in the same turn until done or blocked. (Settled 2026-06-11) The detailed execution mechanics (`update_plan` step/blocker recording) arrive via triggered builtin `planning` references, injected only in the matching plan mode (section 23.1).
 - Do not hide shell commands.
 - Respect the active security profile.
 - Do not store secrets in memory.
@@ -1861,7 +1862,7 @@ Planned commands:
 | `/compact status` | Show estimated context usage, model context length, and compaction thresholds. |
 | `/compact auto on` | Enable automatic token-budget compaction. |
 | `/compact auto off` | Disable automatic token-budget compaction. |
-| `/context` | Show the per-block context breakdown (block name, source, token estimate, injected flag) plus tool schemas, history, and a total against the model context and compact-at thresholds. Reads the same `ContextSnapshot` the live prompt is built from (section 10.5). |
+| `/context` | Show the per-block context breakdown (block name, source, token estimate, injected flag, and skip reason) plus tool schemas, history, and a total against the model context and compact-at thresholds. Reads the same `ContextSnapshot` the live prompt is built from (section 10.5). |
 | `/logs` | Show recent local audit/session events. |
 | `/export <path>` | Export this session's transcript to markdown (default `.shellpilot/exports/<session-id>.md`). |
 | `/memory show` | Show project and behavior memory summaries with entry ids. |
@@ -1874,7 +1875,7 @@ Planned commands:
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
 | `/attach <path>` | Stage an image file to send with the next user message (vision-capable models only). Path is validated eagerly; bytes are re-read at send time. *(v0.5.0)* |
 | `/attach` | List currently staged images, or report "No attachments staged." *(v0.5.0)* |
-| `/skills` | List all discovered skills with root, enabled/disabled/invalid status, decision-derived active state, matched triggers, resource/script summaries, skip reasons, and advisory warnings. *(v0.7.0)* |
+| `/skills` | List all discovered skills with root, trigger declarations, enabled/builtin/disabled/invalid status, decision-derived active state, resource/script summaries, skip reasons, and advisory warnings. *(v0.7.0)* |
 
 All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped and appear in the table above.
 
@@ -2036,7 +2037,7 @@ The frontmatter is hand-parsed (no YAML library). Rules:
 
 Two roots only — project/workspace roots are deliberately excluded (prompt-injection vector, §24.5):
 
-- **Builtin root**: `shellpilot/skills/builtin/` inside the installed package, resolved via `importlib.resources.files("shellpilot.skills.builtin")`. Ships the canonical `planning/SKILL.md` (the execution-discipline skill). The `SKILL.md` is a non-`.py` data file, so the wheel build explicitly includes it (`[tool.hatch.build.targets.wheel]` `artifacts = ["shellpilot/skills/builtin/**/*.md"]`); resolution must work zip-safe from an installed wheel, not just the source tree.
+- **Builtin root**: `shellpilot/skills/builtin/` inside the installed package, resolved via `importlib.resources.files("shellpilot.skills.builtin")`. v0.7.0 ships four markdown-only builtin directories: `planning/`, `context-management/`, `web-grounding/`, and `skill-authoring/`. These non-`.py` data files must travel in wheels, so the wheel build explicitly includes `artifacts = ["shellpilot/skills/builtin/**/*.md"]`; resolution must work zip-safe from an installed wheel, not just the source tree. Builtins deliberately ship no `scripts/` manifests in v0.7.0.
 - **User root**: `<config_dir>/skills/` (e.g. `~/.config/shellpilot/skills/`). Absent directory → no user skills, no error.
 
 **Reserved builtin names**
@@ -2045,13 +2046,13 @@ Builtin names are harness machinery. A user skill folder whose name matches any 
 
 **Enablement**
 
-`[skills] enabled = ["my-skill"]` in `config.toml` lists the names of user skills (and non-planning builtins) that are active. Config-file only: no env-var, no `/config set`, no overrides.
+`[skills] enabled = ["my-skill"]` in `config.toml` lists the names of user skills and enabled-trigger builtins (for v0.7.0, `skill-authoring`) that are active. Config-file only: no env-var, no `/config set`, no overrides.
 
-The builtin `planning` skill is always considered enabled (harness machinery); it must not appear in the list and does not need to. Disabling it via the list would have no effect.
+The builtin `planning` skill is always considered enabled as harness machinery; `context-management` uses `ALWAYS_ON`; `web-grounding` uses `WEB_ENABLED`. None of those need to appear in the enabled list.
 
 **Discovery order and data contract**
 
-`discover_skills(...)` returns ALL found skills (valid + invalid) in deterministic order: builtin alphabetical, then user alphabetical. The list is inert data — enablement is checked by `is_enabled(skill, enabled)`.
+`discover_skills(...)` returns ALL found skills (valid + invalid) in deterministic order: builtin alphabetical, then user alphabetical. The list is inert data — activation is checked later by evaluating each skill's triggers against the runtime `TriggerContext`.
 
 **Triggers**
 
@@ -2060,6 +2061,8 @@ Each skill carries `triggers: tuple[SkillTrigger, ...]`; a skill is active when 
 - `ENABLED` — injected when the skill name appears in `[skills] enabled`.
 - `PLAN_PROPOSED`, `PLAN_ACTIVE`, `PLAN_BLOCKED` — injected only when the live `TaskPlan.status` exactly matches `proposed`, `active`, or `blocked`.
 - `WEB_ENABLED` — injected only when both `web_search` and `web_fetch` are registered in the runtime `ToolRegistry`.
+
+Builtin trigger assignment is by folder name: `context-management` → `ALWAYS_ON`; `planning` → `PLAN_PROPOSED`, `PLAN_ACTIVE`, and `PLAN_BLOCKED`; `web-grounding` → `WEB_ENABLED`; `skill-authoring` → `ENABLED`. User skills default to `ENABLED`.
 
 **Injection contract**
 
@@ -2072,13 +2075,18 @@ The `ContextAssembler` (section 10.5) folds discovered skills into the system pr
 - **Cumulative budget guard.** Injectable skills are walked in order, summing each active skill's body plus selected triggered references against a budget of `ctx // 6` (computed in `conversation.py` from the model context). Once a whole group would push the running total over budget, that skill and every later one are marked `injected=False, reason="skipped: skill budget"`. System blocks are never compacted (section 20.2), so this hard cap bounds the worst case.
 - **Skills index block.** A block named `skills index` (source `skills`, text `Loaded skills: {comma-separated injected names}.`) is placed before the first skill block and injected **only when at least one skill body is injected this turn**. With no model-facing skill tools in v1, advertising unloaded skills would give the model nothing actionable, so the index lists exactly what is present.
 
-The builtin `planning` skill is the canonical first builtin: it is always enabled and carries `PLAN_PROPOSED`, `PLAN_ACTIVE`, and `PLAN_BLOCKED` triggers so mode-specific planning guidance can be selected by exact plan status (section 19).
+The builtin `planning` skill is the canonical first builtin: it is always enabled and carries `PLAN_PROPOSED`, `PLAN_ACTIVE`, and `PLAN_BLOCKED` triggers so mode-specific planning guidance can be selected by exact plan status (section 19). Its `SKILL.md` body is a tiny harness-managed-plan preamble; `references/proposed.md`, `references/active.md`, and `references/blocked.md` carry the longer mode guidance and are assigned matching triggers by filename convention. `templates/plan.md`, `templates/revised-plan.md`, and `templates/blocker.md` are discovered metadata only.
+
+The other v0.7.0 builtins are:
+- `context-management/` (`ALWAYS_ON`): tiny context hygiene guidance plus discovered-only `references/file-triage.md` and `references/context-budgeting.md`.
+- `web-grounding/` (`WEB_ENABLED`): short guidance that web tools being available does not mean use web; use them only for current/external/source-backed information, cite sources, and remember network calls require approval.
+- `skill-authoring/` (`ENABLED`): opt-in guidance for creating skills, with discovered-only references (`skill-anatomy.md`, `trigger-writing.md`, `resource-routing.md`) and templates (`SKILL.md`, `skill-eval.md`).
 
 **`/skills` command**
 
-Lists all discovered skills in a table with columns: Skill, Root, Status, Active, Details.
+Lists all discovered skills in a table with columns: Skill, Root, Triggers, Status, Active, Resources, Reason.
 - Status: `invalid: <error>` for invalid skills; `builtin` for planning-style builtins; `enabled` or `disabled` for others.
-- Active and Details: read from the live `ContextSnapshot.decisions` (matched triggers, non-active reason, resource summary, script summary, and dim advisory warnings), so there is one source of truth with the assembled prompt.
+- Triggers, Active, Resources, and Reason are read from the live `ContextSnapshot.decisions` (declared triggers, injection result, non-active reason, resource summary, script summary, and dim advisory warnings), so there is one source of truth with the assembled prompt.
 - Empty discovery → "No skills discovered."
 
 `/capabilities` remains reserved for the heavier future capability packs (tools, handlers, permissions).
@@ -2130,7 +2138,7 @@ Example future packs:
 - `node_project`
 - `git_workflow`
 
-The instruction-only skills loader is implemented in v0.6.0 (section 23.1). Capability loading for heavier packs — tools, handlers, and permissions — is designed but not yet implemented (v3 candidate, 2026-06-11).
+Skills v2 is implemented in v0.7.0 (sections 23.1-23.2): deterministic trigger selection, builtin planning modes, read-only references/templates, and script manifest discovery without execution. Runtime script execution is explicitly deferred to v0.8.0 with its own safety design. Capability loading for heavier packs — tools, handlers, and permissions — is designed but not yet implemented (v3 candidate, 2026-06-11).
 
 ## 24. Operational Edge Cases
 
@@ -2251,10 +2259,10 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 | `trusted-local` profile | Deferred from v1, and deferred again at the 2026-06-11 v2 scoping. Revisit for v3. |
 | Session resume | Shipped in v0.3.0 (settled 2026-06-11): append-only JSONL transcripts at `.shellpilot/sessions/<session-id>.jsonl`, written incrementally with secrets redacted; compaction trims memory, never the transcript. `shellpilot --resume [id]` restores the latest (or named) session's history; snapshots are never restored, so read-before-write forces fresh reads. `/export` renders the transcript to markdown. Tool-call arguments are redacted recursively (matching the audit log's `_redact_value` logic, now unified in `redact_structure` in `shellpilot/memory/redaction.py`) before they reach the JSONL transcript; `/export` inherits redaction by re-reading the transcript from disk. Fixed in v0.5.2. `session_markdown` re-applies redaction at export time so transcripts written before v0.5.2 (which may contain raw secrets on disk) cannot leak through `/export`; on-disk history is deliberately left untouched. Fixed in v0.5.2 review wave. Plan state now also restores on `--resume` (v0.6.0): an `active_plan` pointer in the transcript is read at boot; if the referenced plan sidecar is live (`proposed`/`active`/`blocked`), `PlanManager.restore` reinstates it (section 11.3). |
 | Agent raw shell | Do not expose `raw_shell` as an agent tool in v1. Keep Manual Shell for direct user-controlled `shell=True`. |
-| Capability packs (instruction-only Skills v1) | Shipped in v0.6.0 (section 23.1): SKILL.md discovery, `[skills]` config, `/skills` command, deterministic system-prompt injection, and the builtin `planning` skill. |
+| Capability packs (Skills v2) | v0.6.0 shipped instruction-only SKILL.md discovery; v0.7.0 extends it with deterministic trigger selection, four markdown-only builtins, read-only references/templates, script manifest discovery without execution, and enriched `/skills` + `/context` visibility (section 23). |
 | Capability packs (heavier: tools/handlers/permissions) | Design later after core tools are stable. v3 candidate (2026-06-11). |
 | Packet capture diagnostics | Revisit as a heavier capability pack. |
-| Skill Builder | Superseded by Skills v1 (section 23.1) and the v3 heavier packs design. |
+| Skill Builder | Superseded by Skills v2 (section 23) and the v3 heavier packs design. |
 | Plugin marketplace | Out of scope. |
 | Advanced audit signing | Defer until threat model requires it. |
 | Undo system | Defer until edits and snapshots are stable. v3 candidate (2026-06-11). |
@@ -2267,7 +2275,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 
 - Do not add a dependency unless it removes meaningful code or risk.
 - Do not add a module until there is a real boundary or file size pressure.
-- The first slice of extension loading (instruction-only skills, section 23.1) is implemented in v0.6.0. This rule now applies to the heavier pack machinery (tools, handlers, permissions): do not build it until a concrete heavier capability is being implemented.
+- Skills v2 (section 23) is the current lightweight extension boundary. Script execution is deferred to v0.8.0, and heavier pack machinery (tools, handlers, permissions) must wait until a concrete heavier capability is being implemented.
 - Do not make every nice command a slash command; prefer natural language and keep slash commands for harness controls.
 - Do not add a second model/provider abstraction in v1.
 - Do not make security slower than necessary; deterministic policy comes first.

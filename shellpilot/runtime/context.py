@@ -43,10 +43,12 @@ class SkillDecision:
     skill: str
     root: str
     injected: bool
+    triggers: tuple[SkillTrigger, ...]
     matched_triggers: tuple[SkillTrigger, ...]
     reason: str
     resource_summary: str = ""
     script_summary: str = ""
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -170,10 +172,12 @@ class ContextAssembler:
                     skill=skill.name,
                     root=skill.root,
                     injected=False,
+                    triggers=skill.triggers,
                     matched_triggers=(),
                     reason=f"invalid: {skill.error}",
                     resource_summary=_resource_summary(skill, ()),
                     script_summary=_script_summary(skill),
+                    warnings=skill.warnings,
                 )
 
         for skill in _ordered_valid_skills(skills):
@@ -195,10 +199,12 @@ class ContextAssembler:
                     skill=skill.name,
                     root=skill.root,
                     injected=False,
+                    triggers=skill.triggers,
                     matched_triggers=matched,
                     reason=reason,
                     resource_summary=_resource_summary(skill, ()),
                     script_summary=_script_summary(skill),
+                    warnings=skill.warnings,
                 )
                 continue
             references = _triggered_references(skill, ctx=trigger_ctx)
@@ -218,10 +224,12 @@ class ContextAssembler:
                     skill=skill.name,
                     root=skill.root,
                     injected=False,
+                    triggers=skill.triggers,
                     matched_triggers=matched,
                     reason="skipped: skill budget",
                     resource_summary=_resource_summary(skill, ()),
                     script_summary=_script_summary(skill),
+                    warnings=skill.warnings,
                 )
                 continue
             cumulative += group_tokens
@@ -247,10 +255,12 @@ class ContextAssembler:
                 skill=skill.name,
                 root=skill.root,
                 injected=True,
+                triggers=skill.triggers,
                 matched_triggers=matched,
                 reason="",
                 resource_summary=_resource_summary(skill, references),
                 script_summary=_script_summary(skill),
+                warnings=skill.warnings,
             )
 
         index_injected = bool(injected_names)

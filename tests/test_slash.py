@@ -206,6 +206,18 @@ def test_context_shows_blocks_and_total(tmp_path: Path) -> None:
     assert "TOTAL" in out
 
 
+def test_context_shows_non_injected_block_reason(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    harness.runtime._skills = (_make_skill("lint-helper"),)  # type: ignore[attr-defined]
+
+    harness.dispatcher.handle("/context")
+
+    out = harness.output()
+    assert "Reason" in out
+    assert "skill:lint-helper" in out
+    assert "disabled" in out
+
+
 def test_cwd_set_changes_boundary_with_confirmation(tmp_path: Path) -> None:
     new_workspace = tmp_path / "other"
     new_workspace.mkdir()
@@ -898,10 +910,17 @@ def test_skills_renders_decision_resource_script_and_warning_details(tmp_path: P
     out = harness.output()
     assert "authoring" in out
     assert "yes" in out
-    assert "triggers: enabled" in out
-    assert "1 ref injected (route.md)" in out
-    assert "1 script (execution unsupported)" in out
-    assert "scripts/extra.py has no manifest entry" in out
+    assert "Triggers" in out
+    assert "Resources" in out
+    assert "Reason" in out
+    assert "enabled" in out
+    assert "triggers: enabled" not in out
+    assert "1 ref injected" in out
+    assert "route.md" in out
+    assert "1 script" in out
+    assert "unsupported" in out
+    assert "scripts/extra.py has" in out
+    assert "no manifest entry" in out
 
 
 def test_skills_renders_budget_skip_reason_from_decision(tmp_path: Path) -> None:
@@ -927,4 +946,5 @@ def test_skills_renders_budget_skip_reason_from_decision(tmp_path: Path) -> None
     out = harness.output()
     assert "large" in out
     assert "no" in out
+    assert "Reason" in out
     assert "skipped: skill budget" in out
