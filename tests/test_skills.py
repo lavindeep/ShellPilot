@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,21 @@ def _user_skill(
     d.mkdir(parents=True, exist_ok=True)
     (d / SKILL_FILENAME).write_text(content, encoding="utf-8")
     return tmp_path
+
+
+def _user_skill_dir(tmp_path: Path, folder: str = "alpha") -> Path:
+    _user_skill(tmp_path, folder, make_skill_md(name=folder))
+    return tmp_path / folder
+
+
+def _only_user_skill(
+    tmp_path: Path,
+    folder: str = "alpha",
+    *,
+    max_tokens: int = MAX_TOKENS,
+) -> Skill:
+    skills = discover_skills(user_skills_dir=tmp_path, enabled=(folder,), max_tokens=max_tokens)
+    return next(s for s in skills if s.root == "user" and s.name == folder)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +205,11 @@ def test_skill_resource_and_script_construct() -> None:
     assert template.trigger is None
     assert script.valid is True
     assert script.error == ""
+
+
+def test_loader_resource_constants_are_exact() -> None:
+    assert loader.MAX_RESOURCE_BYTES == 64 * 1024
+    assert loader.MAX_RESOURCES_PER_KIND == 16
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +411,467 @@ def test_builtin_skills_dir_resolvable() -> None:
     assert skill_file.is_file()
     text = skill_file.read_text(encoding="utf-8")
     assert text.startswith("---")
+
+
+def test_discover_valid_references_and_templates_ordered(tmp_path: Path) -> None:
+    """Direct markdown resources are discovered in deterministic stem order."""
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    templates = skill_dir / "templates"
+    refs.mkdir()
+    templates.mkdir()
+    (refs / "zeta.md").write_text("Z reference", encoding="utf-8")
+    (refs / "alpha.md").write_text("A reference", encoding="utf-8")
+    (templates / "plan.md").write_text("Plan template", encoding="utf-8")
+    (templates / "draft.md").write_text("Draft template", encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert [r.name for r in skill.references] == ["alpha", "zeta"]
+    assert [r.rel_path for r in skill.references] == ["references/alpha.md", "references/zeta.md"]
+    assert [r.kind for r in skill.references] == ["reference", "reference"]
+    assert [t.name for t in skill.templates] == ["draft", "plan"]
+    assert [t.rel_path for t in skill.templates] == ["templates/draft.md", "templates/plan.md"]
+    assert [t.kind for t in skill.templates] == ["template", "template"]
+    assert skill.references[0].text == "A reference"
+    assert skill.templates[0].text == "Draft template"
+    assert skill.references[0].est_tokens == loader.estimate_tokens("A reference")
+    assert skill.warnings == ()
+
+
+def test_discover_ignores_non_markdown_resources(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    refs.mkdir()
+    (refs / "keep.md").write_text("Keep", encoding="utf-8")
+    (refs / "ignore.txt").write_text("Ignore", encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert [r.name for r in skill.references] == ["keep"]
+
+
+def test_discover_ignores_nested_resource_subdirs(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    nested = refs / "nested"
+    nested.mkdir(parents=True)
+    (nested / "ignore.md").write_text("Ignore", encoding="utf-8")
+    (refs / "keep.md").write_text("Keep", encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert [r.name for r in skill.references] == ["keep"]
+
+
+def test_discover_caps_resources_per_kind_with_exact_warning(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    templates = skill_dir / "templates"
+    refs.mkdir()
+    templates.mkdir()
+    for index in range(18):
+        (refs / f"ref-{index:02d}.md").write_text(f"Reference {index}", encoding="utf-8")
+    for index in range(17):
+        (templates / f"template-{index:02d}.md").write_text(f"Template {index}", encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.references) == 16
+    assert len(skill.templates) == 16
+    assert skill.references[-1].name == "ref-15"
+    assert skill.templates[-1].name == "template-15"
+    assert skill.warnings == (
+        "references: found 18 markdown resources; loaded first 16 sorted by name",
+        "templates: found 17 markdown resources; loaded first 16 sorted by name",
+    )
+
+
+def test_discover_oversized_resource_byte_capped_then_token_truncated(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    refs.mkdir()
+    (refs / "large.md").write_bytes(b"a" * ((64 * 1024) + 2048))
+
+    skill = _only_user_skill(tmp_path, max_tokens=32)
+
+    resource = skill.references[0]
+    assert resource.name == "large"
+    assert resource.text.startswith("a" * 128)
+    assert "... [truncated " in resource.text
+    assert "truncated 65408 chars" in resource.text
+    assert len(resource.text) < 64 * 1024
+
+
+def test_discover_resources_do_not_use_whole_file_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    refs.mkdir()
+    (refs / "bounded.md").write_text("Bounded read", encoding="utf-8")
+
+    def fail_read_bytes(self: Path) -> bytes:
+        if self.name == "bounded.md":
+            raise AssertionError("resource discovery must not read whole files")
+        return original_read_bytes(self)
+
+    original_read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    skill = _only_user_skill(tmp_path)
+
+    assert [resource.name for resource in skill.references] == ["bounded"]
+    assert skill.references[0].text == "Bounded read"
+
+
+def test_discover_ignores_disallowed_top_level_dirs(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    docs = skill_dir / "docs"
+    docs.mkdir()
+    (docs / "ignore.md").write_text("Ignore", encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert skill.references == ()
+    assert skill.templates == ()
+    assert skill.warnings == ()
+
+
+def test_discover_rejects_resource_symlink_escape_with_warning(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text("Outside", encoding="utf-8")
+    refs = skill_dir / "references"
+    refs.mkdir()
+    (refs / "escape.md").symlink_to(outside)
+
+    skill = _only_user_skill(tmp_path)
+
+    assert skill.references == ()
+    assert skill.warnings == ("references/escape.md: skipped unsafe path",)
+
+
+def test_discover_invalid_utf8_resource_is_warning_not_fatal(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    refs.mkdir()
+    (refs / "binary.md").write_bytes(b"\xff\xfe\xfd")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert skill.references == ()
+    assert skill.warnings == ("references/binary.md: could not decode resource",)
+
+
+def test_discover_unreadable_resource_dir_is_warning_not_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    refs.mkdir()
+
+    def fail_iterdir(self: Path) -> object:
+        if self == refs:
+            raise OSError("blocked")
+        return original_iterdir(self)
+
+    original_iterdir = Path.iterdir
+    monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+
+    skill = _only_user_skill(tmp_path)
+
+    assert skill.references == ()
+    assert skill.warnings == ("references/: could not read resources",)
+
+
+def test_discover_valid_script_manifest(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "doctor.py").write_text("print('ok')\n", encoding="utf-8")
+    (scripts / "manifest.json").write_text(
+        """
+[
+  {
+    "name": "doctor",
+    "entry": "doctor.py",
+    "description": "Check environment.",
+    "mode": "read",
+    "timeout_seconds": 30
+  }
+]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == 1
+    script = skill.scripts[0]
+    assert script.name == "doctor"
+    assert script.entry == "scripts/doctor.py"
+    assert script.description == "Check environment."
+    assert script.mode == "read"
+    assert script.timeout_seconds == 30
+    assert script.valid is True
+    assert script.error == ""
+    assert skill.warnings == ()
+
+
+@pytest.mark.parametrize(
+    ("manifest_entry", "expected_error"),
+    [
+        (
+            {
+                "name": "bad-mode",
+                "entry": "tool.py",
+                "description": "Bad mode.",
+                "mode": "execute",
+                "timeout_seconds": 10,
+            },
+            "mode must be 'read' or 'write'",
+        ),
+        (
+            {
+                "name": "missing-description",
+                "entry": "tool.py",
+                "mode": "read",
+                "timeout_seconds": -1,
+            },
+            "missing required key: description",
+        ),
+        (
+            {
+                "name": "bad-timeout",
+                "entry": "tool.py",
+                "description": "Bad timeout.",
+                "mode": "read",
+                "timeout_seconds": "10",
+            },
+            "timeout_seconds must be a positive int",
+        ),
+        (
+            {
+                "name": "zero-timeout",
+                "entry": "tool.py",
+                "description": "Zero timeout.",
+                "mode": "read",
+                "timeout_seconds": 0,
+            },
+            "timeout_seconds must be a positive int",
+        ),
+        (
+            {
+                "name": "missing-entry",
+                "entry": "missing.py",
+                "description": "Missing entry.",
+                "mode": "read",
+                "timeout_seconds": 10,
+            },
+            "entry does not exist under scripts/: missing.py",
+        ),
+    ],
+)
+def test_discover_invalid_script_manifest_entries(
+    tmp_path: Path,
+    manifest_entry: dict[str, object],
+    expected_error: str,
+) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "tool.py").write_text("print('ok')\n", encoding="utf-8")
+    (scripts / "manifest.json").write_text(
+        json.dumps([manifest_entry]),
+        encoding="utf-8",
+    )
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == 1
+    script = skill.scripts[0]
+    assert script.valid is False
+    assert script.error == expected_error
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected_error"),
+    [
+        ("../outside.py", "entry must be a bare relative filename"),
+        ("/tmp/outside.py", "entry must be a bare relative filename"),
+        ("nested/tool.py", "entry must be a bare relative filename"),
+    ],
+)
+def test_discover_rejects_traversal_absolute_and_nested_script_entries(
+    tmp_path: Path,
+    entry: str,
+    expected_error: str,
+) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "name": "unsafe",
+                    "entry": entry,
+                    "description": "Unsafe entry.",
+                    "mode": "read",
+                    "timeout_seconds": 10,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == 1
+    assert skill.scripts[0].valid is False
+    assert skill.scripts[0].error == expected_error
+
+
+def test_discover_rejects_script_symlink_escape(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text("print('outside')\n", encoding="utf-8")
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "escape.py").symlink_to(outside)
+    (scripts / "manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "name": "escape",
+                    "entry": "escape.py",
+                    "description": "Unsafe symlink.",
+                    "mode": "read",
+                    "timeout_seconds": 10,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == 1
+    assert skill.scripts[0].valid is False
+    assert skill.scripts[0].error == "entry path escapes skill root: escape.py"
+
+
+def test_discover_rejects_script_symlink_outside_scripts_dir(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    inside_root = skill_dir / "tool.py"
+    inside_root.write_text("print('not under scripts')\n", encoding="utf-8")
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "alias.py").symlink_to(inside_root)
+    (scripts / "manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "name": "alias",
+                    "entry": "alias.py",
+                    "description": "Unsafe alias.",
+                    "mode": "read",
+                    "timeout_seconds": 10,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == 1
+    assert skill.scripts[0].valid is False
+    assert skill.scripts[0].error == "entry path escapes scripts/: alias.py"
+
+
+def test_discover_malformed_script_manifest_creates_invalid_placeholder(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "manifest.json").write_text("{not valid json", encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == 1
+    script = skill.scripts[0]
+    assert script.name == "manifest"
+    assert script.entry == "scripts/manifest.json"
+    assert script.description == ""
+    assert script.mode == "read"
+    assert script.timeout_seconds == 0
+    assert script.valid is False
+    assert script.error.startswith("malformed scripts/manifest.json:")
+
+
+def test_discover_invalid_utf8_script_manifest_creates_invalid_placeholder(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "manifest.json").write_bytes(b"\xff\xfe\xfd")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == 1
+    assert skill.scripts[0].valid is False
+    assert skill.scripts[0].error.startswith("malformed scripts/manifest.json:")
+
+
+def test_discover_rejects_manifest_symlink_outside_scripts_dir(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    root_manifest = skill_dir / "manifest.json"
+    root_manifest.write_text("[]", encoding="utf-8")
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "manifest.json").symlink_to(root_manifest)
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == 1
+    assert skill.scripts[0].valid is False
+    assert skill.scripts[0].error == "scripts/manifest.json: skipped unsafe path"
+
+
+def test_discover_unreadable_scripts_dir_is_warning_not_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+
+    def fail_iterdir(self: Path) -> object:
+        if self == scripts:
+            raise OSError("blocked")
+        return original_iterdir(self)
+
+    original_iterdir = Path.iterdir
+    monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+
+    skill = _only_user_skill(tmp_path)
+
+    assert skill.scripts == ()
+    assert skill.warnings == ("scripts/: could not read scripts directory; scripts ignored",)
+
+
+def test_discover_scripts_without_manifest_ignored_with_warning(tmp_path: Path) -> None:
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "doctor.py").write_text("print('ok')\n", encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert skill.scripts == ()
+    assert skill.warnings == ("scripts/: contains files but no manifest.json; scripts ignored",)
 
 
 # ---------------------------------------------------------------------------

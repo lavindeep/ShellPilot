@@ -2021,7 +2021,7 @@ The frontmatter is hand-parsed (no YAML library). Rules:
 - Only `name:` and `description:` are recognized — any other key → invalid skill.
 - A malformed pair line (no `:`) → invalid skill.
 - Missing opening or closing `---` → invalid skill.
-- **The folder name is the authoritative skill name.** If frontmatter `name:` is present and mismatches, the skill still loads as valid with an advisory in `error` (e.g. `frontmatter name 'x' ignored — folder name is authoritative`).
+- **The folder name is the authoritative skill name.** If frontmatter `name:` is present and mismatches, the skill still loads as valid with an advisory in `warnings` (e.g. `frontmatter name 'x' ignored — folder name is authoritative`).
 - Body = everything after the closing `---`, stripped, bounded by `truncate_to_tokens` (per-skill cap: `min(800, ctx // 12)` where `ctx` is the detected model context).
 - Empty body is valid.
 - Invalid skills are listed in `/skills` but never injected.
@@ -2074,7 +2074,33 @@ Lists all discovered skills in a table with columns: Skill, Root, Status, Active
 
 `/capabilities` remains reserved for the heavier future capability packs (tools, handlers, permissions).
 
-### 23.2 Heavier Capability Packs (v3 candidate)
+### 23.2 Skills v2 — Bounded Resources And Script Manifests (v0.7.0)
+
+Skills v2 keeps `SKILL.md` as the only injected instruction body, but the loader now records adjacent resources and script metadata as inert data on the discovered `Skill`. Discovery is deterministic and advisory failures are recorded in `Skill.warnings`; invalid scripts are represented as `SkillScript(valid=False, error=...)`. Resource and script discovery must not execute code.
+
+**Folder layout**
+
+Only these direct child folders under a skill root are recognized:
+
+- `references/` — direct `*.md` children become `SkillResource(kind="reference", name=<file stem>, rel_path="references/<file>.md", text=<bounded text>, est_tokens=<estimate>, trigger=None)`.
+- `templates/` — direct `*.md` children become `SkillResource(kind="template", name=<file stem>, rel_path="templates/<file>.md", text=<bounded text>, est_tokens=<estimate>, trigger=None)`.
+- `scripts/` — optional script files plus `scripts/manifest.json`.
+
+All other top-level folders and files are ignored. Resource discovery is direct-child only: nested subdirectories and non-`.md` files under `references/` or `templates/` are ignored. Resources are sorted by file stem for stable ordering.
+
+**Resource caps**
+
+Each resource file is read as at most `MAX_RESOURCE_BYTES = 64 * 1024` bytes before UTF-8 decode, then bounded again with `truncate_to_tokens(max_tokens)`. Each skill loads at most `MAX_RESOURCES_PER_KIND = 16` references and 16 templates. Excess resources are dropped after sorting and an advisory warning records the count, for example `references: found 18 markdown resources; loaded first 16 sorted by name`.
+
+**Path safety**
+
+For filesystem user roots, all discovered resource and script entry paths are resolved with `Path.resolve()` and must remain inside the resolved skill root. Symlinks or aliases that escape the skill root are rejected without raising. Unsafe resources/templates are skipped with a warning; unsafe script entries become invalid `SkillScript` records. For builtin roots resolved through `importlib.resources.Traversable`, discovery is restricted to direct children of the allowed folders and only regular file entries are considered, preserving zip-safe package loading.
+
+**Scripts**
+
+`scripts/manifest.json` is parsed with stdlib `json` only. The loader never executes scripts. Manifest entries create `SkillScript` values and must include `name`, `entry`, `description`, `mode`, and `timeout_seconds`. `mode` must be `"read"` or `"write"`, `timeout_seconds` must be a positive integer, and `entry` must be a bare relative filename that exists directly under `scripts/`. Malformed JSON creates one invalid placeholder script for the manifest; malformed entries create invalid scripts with precise errors. Direct script files without a manifest are ignored with a warning. Runtime execution, permission prompts, and script result handling are deferred to v0.8.0.
+
+### 23.3 Heavier Capability Packs (v3 candidate)
 
 The original heavier design remains the future direction. A capability pack can include:
 
