@@ -1,0 +1,49 @@
+{
+  "model": "nemotron-3-nano:4b",
+  "trials": 10,
+  "num_ctx": 8192,
+  "temperature": 0.2,
+  "tool_format": {
+    "read_file": 1.0,
+    "list_dir": 1.0,
+    "search_text": 1.0,
+    "write_file": 1.0,
+    "patch_file": 1.0,
+    "run_command": 1.0,
+    "env_info": 1.0
+  },
+  "exact_span": {
+    "rate": 0.0,
+    "ok": 0,
+    "total": 15,
+    "notes": [
+      "subtotal: content mismatch",
+      "subtotal: content mismatch",
+      "subtotal: content mismatch",
+      "subtotal: content mismatch",
+      "subtotal: content mismatch",
+      "apply_discount: content mismatch",
+      "apply_discount: content mismatch",
+      "apply_discount: content mismatch",
+      "apply_discount: content mismatch",
+      "apply_discount: content mismatch"
+    ]
+  },
+  "chaining": {
+    "chains": 5,
+    "completed": 0,
+    "per_step_rate": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ],
+    "step5_rate": 1.0
+  },
+  "stopping": {
+    "chat_no_tool_rate": 1.0,
+    "stop_when_done_rate": 1.0
+  }
+}
