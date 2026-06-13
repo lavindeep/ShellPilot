@@ -7,9 +7,45 @@ from enum import Enum
 
 
 class SkillTrigger(Enum):
-    ALWAYS = "always"  # user/builtin general skills: injected every turn when enabled
-    # builtin planning skill: injected only while a plan is active/blocked
+    ALWAYS_ON = "always_on"
+    ENABLED = "enabled"
+    PLAN_PROPOSED = "plan_proposed"
     PLAN_ACTIVE = "plan_active"
+    PLAN_BLOCKED = "plan_blocked"
+    WEB_ENABLED = "web_enabled"
+
+
+@dataclass(frozen=True)
+class SkillResource:
+    kind: str
+    name: str
+    rel_path: str
+    text: str
+    est_tokens: int
+    trigger: SkillTrigger | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("reference", "template"):
+            raise ValueError("SkillResource.kind must be 'reference' or 'template'")
+        if self.est_tokens < 0:
+            raise ValueError("SkillResource.est_tokens must be non-negative")
+
+
+@dataclass(frozen=True)
+class SkillScript:
+    name: str
+    entry: str
+    description: str
+    mode: str
+    timeout_seconds: int
+    valid: bool = True
+    error: str = ""
+
+    def __post_init__(self) -> None:
+        if self.timeout_seconds < 0:
+            raise ValueError("SkillScript.timeout_seconds must be non-negative")
+        if self.valid and self.error:
+            raise ValueError("SkillScript.error is only valid when valid=False")
 
 
 @dataclass(frozen=True)
@@ -18,7 +54,19 @@ class Skill:
     description: str
     body: str  # already token-bounded
     root: str  # "builtin" | "user"
-    trigger: SkillTrigger
+    triggers: tuple[SkillTrigger, ...]
     est_tokens: int
     valid: bool = True
-    error: str = ""  # invalid reason, or an advisory note on a valid skill
+    error: str = ""  # invalid/fatal reason
+    references: tuple[SkillResource, ...] = ()
+    templates: tuple[SkillResource, ...] = ()
+    scripts: tuple[SkillScript, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.triggers, tuple):
+            raise TypeError("Skill.triggers must be a tuple")
+        if any(not isinstance(trigger, SkillTrigger) for trigger in self.triggers):
+            raise TypeError("Skill.triggers must contain SkillTrigger values")
+        if self.est_tokens < 0:
+            raise ValueError("Skill.est_tokens must be non-negative")

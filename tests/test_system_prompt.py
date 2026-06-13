@@ -93,5 +93,9 @@ def test_prompt_network_statement_is_accurate() -> None:
     assert "no independent network access" in prompt.lower()
 
 
-def test_planning_skill_trigger_is_plan_active() -> None:
-    assert _planning_skill().trigger is SkillTrigger.PLAN_ACTIVE
+def test_planning_skill_triggers_are_plan_states() -> None:
+    assert _planning_skill().triggers == (
+        SkillTrigger.PLAN_PROPOSED,
+        SkillTrigger.PLAN_ACTIVE,
+        SkillTrigger.PLAN_BLOCKED,
+    )

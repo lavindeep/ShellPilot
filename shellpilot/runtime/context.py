@@ -17,8 +17,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from shellpilot.runtime.budget import estimate_tokens
-from shellpilot.skills.loader import is_enabled
 from shellpilot.skills.model import Skill, SkillTrigger
+from shellpilot.skills.triggers import TriggerContext, any_fires
 
 
 @dataclass(frozen=True)
@@ -54,13 +54,20 @@ def _skill_block_text(skill: Skill) -> str:
     return f"## Skill: {skill.name}\n{skill.body}"
 
 
-def _skill_should_inject(skill: Skill, *, enabled: tuple[str, ...], plan_active: bool) -> bool:
-    """Trigger predicate: PLAN_ACTIVE skills inject only while a plan is live;
-    ALWAYS skills inject when enabled. Single source of truth for both the live
-    prompt and the /skills Active column."""
-    if skill.trigger is SkillTrigger.PLAN_ACTIVE:
-        return plan_active
-    return is_enabled(skill, enabled)
+def _skill_should_inject(skill: Skill, *, ctx: TriggerContext) -> bool:
+    """Trigger predicate used by both the live prompt and /skills Active column."""
+    return any_fires(skill.triggers, skill.name, ctx)
+
+
+def _skill_not_injected_reason(skill: Skill, *, ctx: TriggerContext) -> str:
+    if any(
+        trigger in (SkillTrigger.PLAN_PROPOSED, SkillTrigger.PLAN_ACTIVE, SkillTrigger.PLAN_BLOCKED)
+        for trigger in skill.triggers
+    ):
+        return "plan not active" if ctx.plan_status is None else "plan state mismatch"
+    if SkillTrigger.WEB_ENABLED in skill.triggers:
+        return "web disabled"
+    return "disabled"
 
 
 def _ordered_valid_skills(skills: Sequence[Skill]) -> list[Skill]:
@@ -91,15 +98,18 @@ class ContextAssembler:
         and plan state are injected only when non-empty.
 
         Skill injection is deterministic. Only valid skills get blocks (planning
-        first, then alphabetical). A skill is injected when its trigger fires —
-        ``PLAN_ACTIVE`` while ``plan_state`` is non-empty, ``ALWAYS`` when
-        enabled — and the cumulative skill-body token budget is not yet
-        exceeded. Non-injected valid skills still appear as blocks (``injected``
-        False, ``reason`` set) so ``/context`` explains itself. The
-        ``skills index`` block is injected only when at least one skill body is
-        injected this turn.
+        first, then alphabetical). A skill is injected when any of its triggers
+        fires and the cumulative skill-body token budget is not yet exceeded.
+        Non-injected valid skills still appear as blocks (``injected`` False,
+        ``reason`` set) so ``/context`` explains itself. The ``skills index``
+        block is injected only when at least one skill body is injected this
+        turn.
         """
-        plan_active = bool(plan_state)
+        ctx = TriggerContext(
+            plan_status="active" if plan_state else None,
+            web_enabled=False,
+            enabled=enabled,
+        )
 
         skill_blocks: list[ContextBlock] = []
         injected_names: list[str] = []
@@ -108,10 +118,8 @@ class ContextAssembler:
         for skill in _ordered_valid_skills(skills):
             text = _skill_block_text(skill)
             source = skill.root
-            if not _skill_should_inject(skill, enabled=enabled, plan_active=plan_active):
-                reason = (
-                    "plan not active" if skill.trigger is SkillTrigger.PLAN_ACTIVE else "disabled"
-                )
+            if not _skill_should_inject(skill, ctx=ctx):
+                reason = _skill_not_injected_reason(skill, ctx=ctx)
                 skill_blocks.append(
                     ContextBlock(
                         name=f"skill:{skill.name}",

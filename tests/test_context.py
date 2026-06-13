@@ -155,7 +155,7 @@ def _skill(
     name: str,
     *,
     root: str = "user",
-    trigger: SkillTrigger = SkillTrigger.ALWAYS,
+    triggers: tuple[SkillTrigger, ...] = (SkillTrigger.ENABLED,),
     body: str = "body",
     est_tokens: int = 1,
     valid: bool = True,
@@ -165,7 +165,7 @@ def _skill(
         description="desc",
         body=body,
         root=root,
-        trigger=trigger,
+        triggers=triggers,
         est_tokens=est_tokens,
         valid=valid,
     )
@@ -242,7 +242,15 @@ def test_skills_index_only_when_a_body_is_injected() -> None:
 def test_planning_first_then_alphabetical() -> None:
     skills = (
         _skill("zebra"),
-        _skill("planning", root="builtin", trigger=SkillTrigger.PLAN_ACTIVE),
+        _skill(
+            "planning",
+            root="builtin",
+            triggers=(
+                SkillTrigger.PLAN_PROPOSED,
+                SkillTrigger.PLAN_ACTIVE,
+                SkillTrigger.PLAN_BLOCKED,
+            ),
+        ),
         _skill("alpha"),
     )
     snapshot = _assemble(skills=skills, enabled=("zebra", "alpha"), plan_state="PS")
@@ -261,7 +269,17 @@ def test_disabled_skill_not_injected_with_reason() -> None:
 
 def test_plan_active_skill_not_injected_when_no_plan() -> None:
     snapshot = _assemble(
-        skills=(_skill("planning", root="builtin", trigger=SkillTrigger.PLAN_ACTIVE),),
+        skills=(
+            _skill(
+                "planning",
+                root="builtin",
+                triggers=(
+                    SkillTrigger.PLAN_PROPOSED,
+                    SkillTrigger.PLAN_ACTIVE,
+                    SkillTrigger.PLAN_BLOCKED,
+                ),
+            ),
+        ),
         plan_state="",
     )
     block = next(b for b in snapshot.blocks if b.name == "skill:planning")

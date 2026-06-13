@@ -4,15 +4,28 @@ from __future__ import annotations
 
 import importlib.resources
 import importlib.resources.abc
+from dataclasses import replace
 from pathlib import Path
 
 from shellpilot.runtime.budget import estimate_tokens, truncate_to_tokens
 from shellpilot.skills.model import Skill, SkillTrigger
+from shellpilot.skills.triggers import TriggerContext, any_fires
 
 SKILL_FILENAME = "SKILL.md"
 
 # Builtin skill names that are always enabled (harness machinery).
 _ALWAYS_ENABLED_BUILTINS: frozenset[str] = frozenset({"planning"})
+
+_PLANNING_TRIGGERS: tuple[SkillTrigger, ...] = (
+    SkillTrigger.PLAN_PROPOSED,
+    SkillTrigger.PLAN_ACTIVE,
+    SkillTrigger.PLAN_BLOCKED,
+)
+_DEFAULT_TRIGGERS: tuple[SkillTrigger, ...] = (SkillTrigger.ENABLED,)
+
+
+def _triggers_for_skill_name(name: str) -> tuple[SkillTrigger, ...]:
+    return _PLANNING_TRIGGERS if name == "planning" else _DEFAULT_TRIGGERS
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str, bool, str]:
@@ -57,16 +70,16 @@ def parse_skill_md(text: str, *, folder_name: str, max_tokens: int) -> Skill:
             description="",
             body="",
             root="",
-            trigger=SkillTrigger.ALWAYS,
+            triggers=_DEFAULT_TRIGGERS,
             est_tokens=0,
             valid=False,
             error=error,
         )
 
     # Folder name is authoritative; frontmatter name is advisory only.
-    advisory = ""
+    warnings: tuple[str, ...] = ()
     if "name" in meta and meta["name"] != folder_name:
-        advisory = f"frontmatter name {meta['name']!r} ignored — folder name is authoritative"
+        warnings = (f"frontmatter name {meta['name']!r} ignored — folder name is authoritative",)
 
     description = meta.get("description", "")
     bounded_body, _ = truncate_to_tokens(body, max_tokens)
@@ -77,10 +90,11 @@ def parse_skill_md(text: str, *, folder_name: str, max_tokens: int) -> Skill:
         description=description,
         body=bounded_body,
         root="",  # caller sets root
-        trigger=SkillTrigger.ALWAYS,  # caller sets trigger
+        triggers=_DEFAULT_TRIGGERS,  # caller sets triggers
         est_tokens=est,
         valid=True,
-        error=advisory,
+        error="",
+        warnings=warnings,
     )
 
 
@@ -95,18 +109,7 @@ def merge_skills(builtin: list[Skill], user: list[Skill]) -> list[Skill]:
     merged_user: list[Skill] = []
     for skill in user:
         if skill.name in builtin_names:
-            merged_user.append(
-                Skill(
-                    name=skill.name,
-                    description=skill.description,
-                    body=skill.body,
-                    root=skill.root,
-                    trigger=skill.trigger,
-                    est_tokens=skill.est_tokens,
-                    valid=False,
-                    error="reserved builtin name",
-                )
-            )
+            merged_user.append(replace(skill, valid=False, error="reserved builtin name"))
         else:
             merged_user.append(skill)
     return list(builtin) + merged_user
@@ -118,9 +121,11 @@ def is_enabled(skill: Skill, enabled: tuple[str, ...]) -> bool:
     The builtin planning skill is always considered enabled (harness machinery).
     Other skills follow the enabled list.
     """
-    if skill.root == "builtin" and skill.name in _ALWAYS_ENABLED_BUILTINS:
-        return True
-    return skill.name in enabled
+    plan_status = (
+        "active" if skill.root == "builtin" and skill.name in _ALWAYS_ENABLED_BUILTINS else None
+    )
+    ctx = TriggerContext(plan_status=plan_status, web_enabled=False, enabled=enabled)
+    return any_fires(skill.triggers, skill.name, ctx)
 
 
 def discover_skills(
@@ -160,7 +165,7 @@ def discover_skills(
                     description="",
                     body="",
                     root="builtin",
-                    trigger=SkillTrigger.ALWAYS,
+                    triggers=_triggers_for_skill_name(entry.name),
                     est_tokens=0,
                     valid=False,
                     error="could not read SKILL.md",
@@ -168,17 +173,7 @@ def discover_skills(
                 builtin_skills.append(skill)
                 continue
             raw = parse_skill_md(text, folder_name=entry.name, max_tokens=max_tokens)
-            trigger = SkillTrigger.PLAN_ACTIVE if entry.name == "planning" else SkillTrigger.ALWAYS
-            skill = Skill(
-                name=raw.name,
-                description=raw.description,
-                body=raw.body,
-                root="builtin",
-                trigger=trigger,
-                est_tokens=raw.est_tokens,
-                valid=raw.valid,
-                error=raw.error,
-            )
+            skill = replace(raw, root="builtin", triggers=_triggers_for_skill_name(entry.name))
             builtin_skills.append(skill)
     except Exception:  # noqa: BLE001 — importlib resolution failure is non-fatal
         pass
@@ -199,7 +194,7 @@ def discover_skills(
                     description="",
                     body="",
                     root="user",
-                    trigger=SkillTrigger.ALWAYS,
+                    triggers=_DEFAULT_TRIGGERS,
                     est_tokens=0,
                     valid=False,
                     error="could not read SKILL.md",
@@ -207,16 +202,6 @@ def discover_skills(
                 user_skills.append(skill)
                 continue
             raw = parse_skill_md(text, folder_name=entry_path.name, max_tokens=max_tokens)
-            skill = Skill(
-                name=raw.name,
-                description=raw.description,
-                body=raw.body,
-                root="user",
-                trigger=SkillTrigger.ALWAYS,
-                est_tokens=raw.est_tokens,
-                valid=raw.valid,
-                error=raw.error,
-            )
-            user_skills.append(skill)
+            user_skills.append(replace(raw, root="user", triggers=_DEFAULT_TRIGGERS))
 
     return merge_skills(builtin_skills, user_skills)
