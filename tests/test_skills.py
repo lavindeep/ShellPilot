@@ -56,14 +56,13 @@ def _only_user_skill(
     *,
     max_tokens: int = MAX_TOKENS,
 ) -> Skill:
-    skills = discover_skills(user_skills_dir=tmp_path, enabled=(folder,), max_tokens=max_tokens)
+    skills = discover_skills(user_skills_dir=tmp_path, max_tokens=max_tokens)
     return next(s for s in skills if s.root == "user" and s.name == folder)
 
 
 def _builtin_skills(*, max_tokens: int = 800) -> dict[str, Skill]:
     skills = discover_skills(
         user_skills_dir=Path("/nonexistent/skills"),
-        enabled=(),
         max_tokens=max_tokens,
     )
     return {skill.name: skill for skill in skills if skill.root == "builtin"}
@@ -290,7 +289,6 @@ def test_discover_absent_user_dir_returns_no_user_skills(tmp_path: Path) -> None
     """An absent user_skills_dir yields no user skills and does not raise."""
     skills = discover_skills(
         user_skills_dir=tmp_path / "nonexistent",
-        enabled=(),
         max_tokens=MAX_TOKENS,
     )
     assert [s for s in skills if s.root == "user"] == []
@@ -302,7 +300,6 @@ def test_discover_user_skills_multiple_alphabetical_order(tmp_path: Path) -> Non
         _user_skill(tmp_path, name, make_skill_md(name=name, description=f"The {name} skill."))
     skills = discover_skills(
         user_skills_dir=tmp_path,
-        enabled=("alpha", "zebra", "mango"),
         max_tokens=MAX_TOKENS,
     )
     user_skills = [s for s in skills if s.root == "user"]
@@ -315,7 +312,6 @@ def test_discover_non_directory_entries_skipped(tmp_path: Path) -> None:
     (tmp_path / "stray-file.txt").write_text("hello", encoding="utf-8")
     skills = discover_skills(
         user_skills_dir=tmp_path,
-        enabled=(),
         max_tokens=MAX_TOKENS,
     )
     user_skills = [s for s in skills if s.root == "user"]
@@ -330,7 +326,6 @@ def test_discover_invalid_skill_included_not_dropped(tmp_path: Path) -> None:
     (d / SKILL_FILENAME).write_text("no frontmatter at all", encoding="utf-8")
     skills = discover_skills(
         user_skills_dir=tmp_path,
-        enabled=(),
         max_tokens=MAX_TOKENS,
     )
     user_skills = [s for s in skills if s.root == "user"]
@@ -342,7 +337,6 @@ def test_discover_builtin_root_resolves() -> None:
     """Builtin root resolves via importlib.resources and yields all shipped builtins."""
     skills = discover_skills(
         user_skills_dir=Path("/nonexistent/skills"),
-        enabled=(),
         max_tokens=MAX_TOKENS,
     )
     builtin_names = [s.name for s in skills if s.root == "builtin"]
@@ -500,7 +494,6 @@ def test_unreadable_builtin_planning_preserves_plan_triggers(
 
     skills = discover_skills(
         user_skills_dir=tmp_path / "missing-user-skills",
-        enabled=(),
         max_tokens=MAX_TOKENS,
     )
 
@@ -995,7 +988,7 @@ def test_user_skills_default_to_enabled_trigger(tmp_path: Path) -> None:
 def test_new_builtin_names_are_reserved(tmp_path: Path) -> None:
     _user_skill(tmp_path, "skill-authoring", make_skill_md(name="skill-authoring"))
 
-    skills = discover_skills(user_skills_dir=tmp_path, enabled=("skill-authoring",), max_tokens=800)
+    skills = discover_skills(user_skills_dir=tmp_path, max_tokens=800)
 
     collision = next(s for s in skills if s.root == "user" and s.name == "skill-authoring")
     assert collision.valid is False

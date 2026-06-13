@@ -647,7 +647,6 @@ def merge_skills(builtin: list[Skill], user: list[Skill]) -> list[Skill]:
 def discover_skills(
     *,
     user_skills_dir: Path,
-    enabled: tuple[str, ...],
     max_tokens: int,
 ) -> list[Skill]:
     """Discover skills from builtin and user roots.

@@ -117,9 +117,7 @@ def _web_grounding_skill() -> Skill:
 
 
 def _real_builtin_skills() -> tuple[Skill, ...]:
-    return tuple(
-        discover_skills(user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800)
-    )
+    return tuple(discover_skills(user_skills_dir=Path("/nonexistent/skills"), max_tokens=800))
 
 
 def _injected_block_texts(runtime: ConversationRuntime) -> dict[str, str]:

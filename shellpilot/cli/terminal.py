@@ -285,7 +285,6 @@ def run_interactive(
     skills_cap = min(800, ctx // 12)
     discovered_skills = discover_skills(
         user_skills_dir=paths.config_dir / "skills",
-        enabled=settings.skills.enabled,
         max_tokens=skills_cap,
     )
 

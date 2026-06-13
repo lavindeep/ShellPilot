@@ -37,9 +37,7 @@ def _make_runtime(
         behavior=behavior or BehaviorInstructions(global_text=None, project_text=None),
         ui=FakeUI(),
         memory=memory,
-        skills=discover_skills(
-            user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800
-        ),
+        skills=discover_skills(user_skills_dir=Path("/nonexistent/skills"), max_tokens=800),
     )
 
 
@@ -51,23 +49,17 @@ def _memory_stores(tmp_path: Path) -> MemoryStores:
 
 
 def _planning_body() -> str:
-    skills = discover_skills(
-        user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800
-    )
+    skills = discover_skills(user_skills_dir=Path("/nonexistent/skills"), max_tokens=800)
     return next(s for s in skills if s.root == "builtin" and s.name == "planning").body
 
 
 def _builtin_body(name: str) -> str:
-    skills = discover_skills(
-        user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800
-    )
+    skills = discover_skills(user_skills_dir=Path("/nonexistent/skills"), max_tokens=800)
     return next(s for s in skills if s.root == "builtin" and s.name == name).body
 
 
 def _planning_reference(name: str) -> str:
-    skills = discover_skills(
-        user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800
-    )
+    skills = discover_skills(user_skills_dir=Path("/nonexistent/skills"), max_tokens=800)
     planning = next(s for s in skills if s.root == "builtin" and s.name == "planning")
     return next(reference.text for reference in planning.references if reference.name == name)
 

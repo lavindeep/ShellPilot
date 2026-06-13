@@ -11,7 +11,6 @@ def _planning_skill() -> Skill:
     """Load the real builtin planning skill body from the package."""
     skills = discover_skills(
         user_skills_dir=Path("/nonexistent/skills"),
-        enabled=(),
         max_tokens=800,
     )
     planning = next(s for s in skills if s.root == "builtin" and s.name == "planning")

@@ -32,9 +32,7 @@ def _make_runtime(
 
 
 def _builtin_skills() -> tuple[Skill, ...]:
-    return tuple(
-        discover_skills(user_skills_dir=Path("/nonexistent/skills"), enabled=(), max_tokens=800)
-    )
+    return tuple(discover_skills(user_skills_dir=Path("/nonexistent/skills"), max_tokens=800))
 
 
 def _make_skill_md(*, name: str, body: str) -> str:
@@ -92,9 +90,7 @@ def test_planning_skill_injected_only_when_plan_active(tmp_path: Path) -> None:
 def test_user_skill_injected_when_enabled(tmp_path: Path) -> None:
     skills_dir = _user_skill(tmp_path, "lint-helper", "Always run ruff before committing.")
     settings = Settings(skills=SkillSettings(enabled=("lint-helper",)))
-    discovered = tuple(
-        discover_skills(user_skills_dir=skills_dir, enabled=("lint-helper",), max_tokens=800)
-    )
+    discovered = tuple(discover_skills(user_skills_dir=skills_dir, max_tokens=800))
     fake = FakeLLM(script=[answer("ok")])
     ui = FakeUI()
     runtime = _make_runtime(fake, ui, tmp_path, settings=settings, skills=discovered)
@@ -110,7 +106,7 @@ def test_user_skill_injected_when_enabled(tmp_path: Path) -> None:
 def test_disabled_skill_not_injected(tmp_path: Path) -> None:
     skills_dir = _user_skill(tmp_path, "lint-helper", "Always run ruff before committing.")
     # Not in the enabled list → discovered but never injected.
-    discovered = tuple(discover_skills(user_skills_dir=skills_dir, enabled=(), max_tokens=800))
+    discovered = tuple(discover_skills(user_skills_dir=skills_dir, max_tokens=800))
     fake = FakeLLM(script=[answer("ok")])
     ui = FakeUI()
     runtime = _make_runtime(fake, ui, tmp_path, skills=discovered)
