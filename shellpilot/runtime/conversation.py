@@ -300,7 +300,6 @@ class ConversationRuntime:
             behavior_block=self._behavior.as_prompt_block(),
             memory_block=memory_block,
             skills=self._skills,
-            enabled=self._settings.skills.enabled,
             skill_token_budget=self.budget.model_context_tokens // 6,
             plan_state=plan_state,
             trigger_ctx=trigger_ctx,

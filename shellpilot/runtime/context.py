@@ -140,7 +140,6 @@ class ContextAssembler:
         behavior_block: str,
         memory_block: str,
         skills: Sequence[Skill],
-        enabled: tuple[str, ...],
         skill_token_budget: int,
         plan_state: str,
         trigger_ctx: TriggerContext,

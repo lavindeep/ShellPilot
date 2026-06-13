@@ -1000,3 +1000,73 @@ def test_new_builtin_names_are_reserved(tmp_path: Path) -> None:
     collision = next(s for s in skills if s.root == "user" and s.name == "skill-authoring")
     assert collision.valid is False
     assert collision.error == "reserved builtin name"
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: manifest.json byte-cap and entry-count cap (boot-DoS hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_discover_oversized_manifest_skipped_gracefully(tmp_path: Path) -> None:
+    """A manifest.json exceeding MAX_RESOURCE_BYTES is treated as invalid and no scripts loaded.
+
+    The manifest is valid JSON but larger than the byte cap; the loader must
+    cap the read and return an invalid placeholder — it must NOT load scripts
+    from the oversized file.
+    """
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    (scripts / "tool.py").write_text("print('ok')\n", encoding="utf-8")
+    # Build a manifest that is valid JSON but exceeds MAX_RESOURCE_BYTES.
+    # A list of dicts with large description strings yields a file > 64 KiB.
+    many_entries = [
+        {
+            "name": f"tool-{i:03d}",
+            "entry": "tool.py",
+            "description": "x" * 4000,
+            "mode": "read",
+            "timeout_seconds": 10,
+        }
+        for i in range(20)
+    ]
+    oversized_json = json.dumps(many_entries).encode("utf-8")
+    assert len(oversized_json) > loader.MAX_RESOURCE_BYTES, (
+        f"test setup: expected oversized JSON, got {len(oversized_json)} bytes"
+    )
+    (scripts / "manifest.json").write_bytes(oversized_json)
+
+    skill = _only_user_skill(tmp_path)
+
+    # Must not crash; oversized manifest treated as invalid — one invalid placeholder.
+    assert len(skill.scripts) == 1
+    script = skill.scripts[0]
+    assert script.valid is False
+    assert script.entry == "scripts/manifest.json"
+
+
+def test_discover_manifest_entry_count_capped_at_max_resources_per_kind(tmp_path: Path) -> None:
+    """A manifest with more than MAX_RESOURCES_PER_KIND entries yields at most that many scripts."""
+    skill_dir = _user_skill_dir(tmp_path)
+    scripts = skill_dir / "scripts"
+    scripts.mkdir()
+    entry_count = loader.MAX_RESOURCES_PER_KIND + 5
+    entries = []
+    for i in range(entry_count):
+        fname = f"tool_{i:02d}.py"
+        (scripts / fname).write_text(f"print({i!r})\n", encoding="utf-8")
+        entries.append(
+            {
+                "name": f"tool-{i:02d}",
+                "entry": fname,
+                "description": f"Tool {i}.",
+                "mode": "read",
+                "timeout_seconds": 10,
+            }
+        )
+    (scripts / "manifest.json").write_text(json.dumps(entries), encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert len(skill.scripts) == loader.MAX_RESOURCES_PER_KIND
+    assert all(s.valid for s in skill.scripts)

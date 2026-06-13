@@ -98,6 +98,11 @@ def _expected_system_text(runtime: ConversationRuntime) -> str:
         prompt = f"{prompt}\n\n## Skill: planning\n{_planning_body()}"
         prompt = f"{prompt}\n\n{_planning_reference(plan_mode)}"
         prompt = f"{prompt}\n\n## Skill: context-management\n{_builtin_body('context-management')}"
+    elif plan_mode == "proposed":
+        prompt = f"{prompt}\n\nLoaded skills: planning, context-management."
+        prompt = f"{prompt}\n\n## Skill: planning\n{_planning_body()}"
+        prompt = f"{prompt}\n\n{_planning_reference('proposed')}"
+        prompt = f"{prompt}\n\n## Skill: context-management\n{_builtin_body('context-management')}"
     else:
         prompt = f"{prompt}\n\nLoaded skills: context-management."
         prompt = f"{prompt}\n\n## Skill: context-management\n{_builtin_body('context-management')}"
@@ -174,6 +179,39 @@ def test_context_assembly_contract(tmp_path: Path) -> None:
     assert "skill:planning:reference:blocked.md" in blocked_blocks
     assert "skill:planning:reference:active.md" not in blocked_blocks
     assert "dependency missing" in blocked_text
+
+
+def test_context_assembly_contract_proposed(tmp_path: Path) -> None:
+    """State 5: plan proposed — planning body + proposed ref injected; no plan-state block."""
+    proposed = _make_runtime(tmp_path)
+    proposed.plan_manager.create(
+        goal="Ship it",
+        user_intent="ship",
+        steps=["one", "two", "three"],
+        assumptions=[],
+        verification=[],
+    )
+    assert proposed.plan_manager.active is not None
+    assert proposed.plan_manager.active.status == "proposed"
+
+    proposed_text = proposed.context_snapshot().system_text()
+
+    # Must match the inline reconstruction for proposed state.
+    assert proposed_text == _expected_system_text(proposed)
+
+    # Planning body and proposed reference must be injected.
+    assert "## Skill: planning" in proposed_text
+    assert "Loaded skills: planning, context-management." in proposed_text
+    assert "## Skill: context-management" in proposed_text
+
+    proposed_blocks = {block.name for block in proposed.context_snapshot().blocks if block.injected}
+    assert "skill:planning:reference:proposed.md" in proposed_blocks
+    assert "skill:planning:reference:active.md" not in proposed_blocks
+    assert "skill:planning:reference:blocked.md" not in proposed_blocks
+
+    # No plan-state block: plan_state is only rendered for active/blocked.
+    plan_state_block = next(b for b in proposed.context_snapshot().blocks if b.name == "plan state")
+    assert not plan_state_block.injected
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +293,6 @@ def _assemble(
         behavior_block=behavior_block,
         memory_block=memory_block,
         skills=skills,
-        enabled=enabled,
         skill_token_budget=skill_token_budget,
         plan_state=plan_state,
         trigger_ctx=ctx,

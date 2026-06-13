@@ -453,6 +453,25 @@ def _discover_scripts_path(skill_root: Path) -> tuple[tuple[SkillScript, ...], t
         )
 
     try:
+        manifest_size = manifest.stat().st_size
+    except OSError:
+        manifest_size = 0
+    if manifest_size > MAX_RESOURCE_BYTES:
+        return (
+            (
+                _invalid_script(
+                    name="manifest",
+                    entry="scripts/manifest.json",
+                    error=(
+                        f"scripts/manifest.json too large "
+                        f"({manifest_size} bytes > {MAX_RESOURCE_BYTES}); skipped"
+                    ),
+                ),
+            ),
+            (),
+        )
+
+    try:
         raw_manifest = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return (
@@ -478,7 +497,8 @@ def _discover_scripts_path(skill_root: Path) -> tuple[tuple[SkillScript, ...], t
             (),
         )
 
-    scripts = tuple(_script_from_manifest_entry_path(skill_root, entry) for entry in raw_manifest)
+    entries = raw_manifest[:MAX_RESOURCES_PER_KIND]
+    scripts = tuple(_script_from_manifest_entry_path(skill_root, entry) for entry in entries)
     return scripts, ()
 
 
@@ -510,7 +530,34 @@ def _discover_scripts_traversable(
         return (), ()
 
     try:
-        raw_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+        with manifest.open("rb") as _mf:
+            manifest_bytes = _mf.read(MAX_RESOURCE_BYTES + 1)
+    except Exception as exc:  # noqa: BLE001 — advisory invalid script, not fatal
+        return (
+            (
+                _invalid_script(
+                    name="manifest",
+                    entry="scripts/manifest.json",
+                    error=f"malformed scripts/manifest.json: {exc}",
+                ),
+            ),
+            (),
+        )
+    if len(manifest_bytes) > MAX_RESOURCE_BYTES:
+        return (
+            (
+                _invalid_script(
+                    name="manifest",
+                    entry="scripts/manifest.json",
+                    error=(
+                        f"scripts/manifest.json too large (> {MAX_RESOURCE_BYTES} bytes); skipped"
+                    ),
+                ),
+            ),
+            (),
+        )
+    try:
+        raw_manifest = json.loads(manifest_bytes.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001 — advisory invalid script, not fatal
         return (
             (
@@ -533,9 +580,8 @@ def _discover_scripts_traversable(
             ),
             (),
         )
-    scripts = tuple(
-        _script_from_manifest_entry_traversable(skill_root, entry) for entry in raw_manifest
-    )
+    entries = raw_manifest[:MAX_RESOURCES_PER_KIND]
+    scripts = tuple(_script_from_manifest_entry_traversable(skill_root, entry) for entry in entries)
     return scripts, ()
 
 
