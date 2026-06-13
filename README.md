@@ -111,7 +111,8 @@ gemma4:e4b · balanced · /help for commands
 | `/context` | Per-block context breakdown: each system-prompt block with its source, token estimate, injection state, and skip reason. |
 | `/skills` | List all discovered skills with root, triggers, status, active state, resources, scripts, and reasons. |
 | `/cwd`, `/cwd set <path>` | Show or change the workspace boundary. |
-| `/logs` | Recent audit events and the log file path. |
+| `/logs` | Recent audit events for this session. |
+| `/logs all` | Recent audit events across all sessions. |
 | `/shell` | Manual Shell (raw `shell=True`, model not involved). `/exit-shell` returns. |
 | `/attach <path>` | Stage an image to send with your next message (vision models). Bare `/attach` lists staged images. |
 | `/doctor` | Check Python, Ollama, models, and paths from within a session. |
@@ -152,7 +153,7 @@ theme = "default"
 glyphs = "auto"          # auto | unicode | ascii
 ```
 
-**Skills.** User skills live in `~/.config/shellpilot/skills/<name>/SKILL.md` (frontmatter plus a small body injected only when its trigger fires). List opt-in user skills, and the builtin `skill-authoring`, under `[skills] enabled`; this key is config-file only and cannot be set via env vars, `/config set`, or the overrides layer. Builtins are harness-managed: `planning` follows plan status, `context-management` is always on, and `web-grounding` activates only when web tools are actually registered. Skills may include read-only `references/` and `templates/`; `scripts/manifest.json` is discovered and validated for visibility, but script execution is deferred to v0.8.0. See `docs/DESIGN.md` §23 for the full schema and trigger rules.
+**Skills.** User skills live in `<config_dir>/skills/<name>/SKILL.md` (frontmatter plus a small body injected only when its trigger fires). The config dir is platform-native via `platformdirs` — on macOS that is `~/Library/Application Support/shellpilot/`; on Linux `~/.config/shellpilot/`. List opt-in user skills, and the builtin `skill-authoring`, under `[skills] enabled`; this key is config-file only and cannot be set via env vars, `/config set`, or the overrides layer. Builtins are harness-managed: `planning` follows plan status, `context-management` is always on, and `web-grounding` activates only when web tools are actually registered. Skills may include read-only `references/` and `templates/`; `scripts/manifest.json` is discovered and validated for visibility, but script execution is deferred to v0.8.0. See `docs/DESIGN.md` §23 for the full schema and trigger rules.
 
 **Runtime overrides.** `/config set <key> <value>` and `/config unset <key>` write a lightweight override that survives restarts (stored in `.shellpilot/overrides.json`); `/config reset` clears all overrides at once. Most `[runtime]` and `[model]` keys are reachable this way; `[skills]` is explicitly excluded.
 
