@@ -18,7 +18,8 @@ from shellpilot.runtime.context import ContextAssembler, ContextBlock, ContextSn
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.planner import compact_plan_state
 from shellpilot.skills.loader import discover_skills
-from shellpilot.skills.model import Skill, SkillTrigger
+from shellpilot.skills.model import Skill, SkillResource, SkillScript, SkillTrigger
+from shellpilot.skills.triggers import TriggerContext
 from tests.fakes.fake_llm import FakeLLM
 from tests.fakes.fake_ui import FakeUI
 
@@ -159,6 +160,10 @@ def _skill(
     body: str = "body",
     est_tokens: int = 1,
     valid: bool = True,
+    error: str = "",
+    references: tuple[SkillResource, ...] = (),
+    templates: tuple[SkillResource, ...] = (),
+    scripts: tuple[SkillScript, ...] = (),
 ) -> Skill:
     return Skill(
         name=name,
@@ -168,6 +173,33 @@ def _skill(
         triggers=triggers,
         est_tokens=est_tokens,
         valid=valid,
+        error=error,
+        references=references,
+        templates=templates,
+        scripts=scripts,
+    )
+
+
+def _reference(name: str, trigger: SkillTrigger | None, text: str | None = None) -> SkillResource:
+    body = text or f"{name} guidance"
+    return SkillResource(
+        kind="reference",
+        name=name,
+        rel_path=f"references/{name}.md",
+        text=body,
+        est_tokens=estimate_tokens(body),
+        trigger=trigger,
+    )
+
+
+def _template(name: str) -> SkillResource:
+    text = f"{name} template"
+    return SkillResource(
+        kind="template",
+        name=name,
+        rel_path=f"templates/{name}.md",
+        text=text,
+        est_tokens=estimate_tokens(text),
     )
 
 
@@ -180,7 +212,13 @@ def _assemble(
     enabled: tuple[str, ...] = (),
     skill_token_budget: int = 10_000,
     plan_state: str = "",
+    trigger_ctx: TriggerContext | None = None,
 ) -> ContextSnapshot:
+    ctx = trigger_ctx or TriggerContext(
+        plan_status="active" if plan_state else None,
+        web_enabled=False,
+        enabled=enabled,
+    )
     return ContextAssembler().assemble(
         base_prompt=base_prompt,
         behavior_block=behavior_block,
@@ -189,6 +227,7 @@ def _assemble(
         enabled=enabled,
         skill_token_budget=skill_token_budget,
         plan_state=plan_state,
+        trigger_ctx=ctx,
     )
 
 
@@ -258,6 +297,7 @@ def test_planning_first_then_alphabetical() -> None:
         b.name.removeprefix("skill:") for b in snapshot.blocks if b.name.startswith("skill:")
     ]
     assert skill_names == ["planning", "alpha", "zebra"]
+    assert [decision.skill for decision in snapshot.decisions] == ["zebra", "planning", "alpha"]
 
 
 def test_disabled_skill_not_injected_with_reason() -> None:
@@ -324,3 +364,126 @@ def test_block_est_tokens_matches_estimate_tokens() -> None:
 def test_snapshot_est_system_tokens_matches_estimate_tokens() -> None:
     snapshot = _assemble(behavior_block="BEHAVE")
     assert snapshot.est_system_tokens == estimate_tokens(snapshot.system_text())
+
+
+def test_triggered_reference_selected_by_plan_status() -> None:
+    planning = _skill(
+        "planning",
+        root="builtin",
+        triggers=(
+            SkillTrigger.PLAN_PROPOSED,
+            SkillTrigger.PLAN_ACTIVE,
+            SkillTrigger.PLAN_BLOCKED,
+        ),
+        body="plan body",
+        references=(
+            _reference("proposed", SkillTrigger.PLAN_PROPOSED, "proposed mode"),
+            _reference("active", SkillTrigger.PLAN_ACTIVE, "active mode"),
+            _reference("blocked", SkillTrigger.PLAN_BLOCKED, "blocked mode"),
+        ),
+        est_tokens=2,
+    )
+
+    snapshot = _assemble(
+        skills=(planning,),
+        plan_state="PLAN",
+        trigger_ctx=TriggerContext(plan_status="active", web_enabled=False, enabled=()),
+    )
+
+    injected = {block.name: block.text for block in snapshot.blocks if block.injected}
+    assert injected["skill:planning"] == "## Skill: planning\nplan body"
+    assert injected["skill:planning:reference:active.md"] == "active mode"
+    assert "skill:planning:reference:proposed.md" not in injected
+    assert "skill:planning:reference:blocked.md" not in injected
+    assert snapshot.decisions[0].matched_triggers == (SkillTrigger.PLAN_ACTIVE,)
+    assert snapshot.decisions[0].resource_summary == "1 ref injected (active.md)"
+
+
+def test_plan_completed_does_not_inject_planning() -> None:
+    planning = _skill(
+        "planning",
+        root="builtin",
+        triggers=(SkillTrigger.PLAN_ACTIVE,),
+        references=(_reference("active", SkillTrigger.PLAN_ACTIVE),),
+    )
+
+    snapshot = _assemble(
+        skills=(planning,),
+        trigger_ctx=TriggerContext(plan_status="completed", web_enabled=False, enabled=()),
+    )
+
+    assert not any(block.name == "skill:planning" and block.injected for block in snapshot.blocks)
+    assert snapshot.decisions[0].matched_triggers == ()
+    assert snapshot.decisions[0].reason == "plan state mismatch"
+
+
+def test_always_on_skill_injects_without_enablement() -> None:
+    snapshot = _assemble(
+        skills=(_skill("context-management", root="builtin", triggers=(SkillTrigger.ALWAYS_ON,)),),
+        enabled=(),
+    )
+
+    block = next(block for block in snapshot.blocks if block.name == "skill:context-management")
+    assert block.injected
+    assert snapshot.decisions[0].matched_triggers == (SkillTrigger.ALWAYS_ON,)
+
+
+def test_enabled_skill_requires_enabled_list() -> None:
+    skill = _skill("alpha", triggers=(SkillTrigger.ENABLED,))
+
+    disabled = _assemble(skills=(skill,), enabled=())
+    enabled = _assemble(skills=(skill,), enabled=("alpha",))
+
+    assert disabled.decisions[0].reason == "disabled"
+    assert enabled.decisions[0].injected is True
+    assert enabled.decisions[0].matched_triggers == (SkillTrigger.ENABLED,)
+
+
+def test_skill_group_budget_is_atomic_for_body_and_reference() -> None:
+    skill = _skill(
+        "planning",
+        root="builtin",
+        triggers=(SkillTrigger.PLAN_ACTIVE,),
+        body="body",
+        est_tokens=6,
+        references=(_reference("active", SkillTrigger.PLAN_ACTIVE, "reference"),),
+    )
+
+    snapshot = _assemble(
+        skills=(skill,),
+        skill_token_budget=1,
+        trigger_ctx=TriggerContext(plan_status="active", web_enabled=False, enabled=()),
+    )
+
+    assert not any(block.name == "skill:planning" and block.injected for block in snapshot.blocks)
+    assert not any(block.name.startswith("skill:planning:reference:") for block in snapshot.blocks)
+    assert snapshot.decisions[0].injected is False
+    assert snapshot.decisions[0].reason == "skipped: skill budget"
+
+
+def test_decisions_include_invalid_skills_and_resource_summaries() -> None:
+    invalid = _skill("broken", valid=False, error="reserved builtin name")
+    skill = _skill(
+        "authoring",
+        triggers=(SkillTrigger.ENABLED,),
+        references=(_reference("route", None),),
+        templates=(_template("SKILL"),),
+        scripts=(
+            SkillScript(
+                name="doctor",
+                entry="scripts/doctor.py",
+                description="Check",
+                mode="read",
+                timeout_seconds=5,
+            ),
+        ),
+    )
+
+    snapshot = _assemble(skills=(invalid, skill), enabled=("authoring",))
+
+    by_name = {decision.skill: decision for decision in snapshot.decisions}
+    assert by_name["broken"].injected is False
+    assert by_name["broken"].reason == "invalid: reserved builtin name"
+    assert by_name["authoring"].resource_summary == "1 ref, 1 template"
+    assert by_name["authoring"].script_summary == "1 script (execution unsupported)"
+    assert not any(block.name.startswith("skill:authoring:reference:") for block in snapshot.blocks)

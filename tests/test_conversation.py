@@ -3,10 +3,11 @@
 import json
 from pathlib import Path
 
-from shellpilot.config.model import ContextSettings, Settings
+from shellpilot.config.model import ContextSettings, Settings, ToolSettings
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.runtime.conversation import ConversationRuntime
+from shellpilot.skills.model import Skill, SkillTrigger
 from tests.fakes.fake_llm import FakeLLM, answer, tool_call
 from tests.fakes.fake_ui import FakeUI
 
@@ -101,6 +102,88 @@ def test_status_snapshot(tmp_path: Path) -> None:
     assert status.profile == "balanced"
     assert status.history_messages == 2
     assert status.estimated_prompt_tokens > 0
+
+
+def _web_grounding_skill() -> Skill:
+    return Skill(
+        name="web-grounding",
+        description="Web guidance.",
+        body="Use web only when needed.",
+        root="builtin",
+        triggers=(SkillTrigger.WEB_ENABLED,),
+        est_tokens=6,
+    )
+
+
+def test_web_enabled_trigger_uses_registered_tools(tmp_path: Path) -> None:
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(tools=ToolSettings(web=True)),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        skills=(_web_grounding_skill(),),
+    )
+
+    snapshot = runtime.context_snapshot()
+
+    decision = snapshot.decisions[0]
+    assert decision.skill == "web-grounding"
+    assert decision.injected is True
+    assert decision.matched_triggers == (SkillTrigger.WEB_ENABLED,)
+
+
+def test_web_setting_drift_without_registered_tools_does_not_fire(tmp_path: Path) -> None:
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        skills=(_web_grounding_skill(),),
+    )
+    runtime.update_settings(Settings(tools=ToolSettings(web=True)))
+
+    snapshot = runtime.context_snapshot()
+
+    decision = snapshot.decisions[0]
+    assert decision.skill == "web-grounding"
+    assert decision.injected is False
+    assert decision.reason == "web disabled"
+
+
+def test_plan_proposed_trigger_fires_without_plan_state_block(tmp_path: Path) -> None:
+    proposed_skill = Skill(
+        name="planning",
+        description="Planning guidance.",
+        body="Propose a concise plan.",
+        root="builtin",
+        triggers=(SkillTrigger.PLAN_PROPOSED,),
+        est_tokens=6,
+    )
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        skills=(proposed_skill,),
+    )
+    runtime.plan_manager.create(
+        goal="ship",
+        user_intent="ship",
+        steps=["check"],
+        assumptions=[],
+        verification=[],
+    )
+
+    snapshot = runtime.context_snapshot()
+
+    decision = snapshot.decisions[0]
+    assert decision.injected is True
+    assert decision.matched_triggers == (SkillTrigger.PLAN_PROPOSED,)
+    plan_state = next(block for block in snapshot.blocks if block.name == "plan state")
+    assert plan_state.injected is False
 
 
 # ---------------------------------------------------------------------------

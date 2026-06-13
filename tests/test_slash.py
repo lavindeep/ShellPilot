@@ -854,3 +854,77 @@ def test_skills_invalid_skill_shows_invalid_status(tmp_path: Path) -> None:
     out = harness.output()
     assert "broken" in out
     assert "invalid" in out
+
+
+def test_skills_renders_decision_resource_script_and_warning_details(tmp_path: Path) -> None:
+    """/skills surfaces SkillDecision details instead of re-deriving visibility."""
+    from shellpilot.config.model import Settings, SkillSettings
+    from shellpilot.skills.model import Skill, SkillResource, SkillScript, SkillTrigger
+
+    skill = Skill(
+        name="authoring",
+        description="Authoring help.",
+        body="Draft carefully.",
+        root="user",
+        triggers=(SkillTrigger.ENABLED,),
+        est_tokens=4,
+        references=(
+            SkillResource(
+                kind="reference",
+                name="route",
+                rel_path="references/route.md",
+                text="routing guidance",
+                est_tokens=4,
+                trigger=SkillTrigger.ENABLED,
+            ),
+        ),
+        scripts=(
+            SkillScript(
+                name="doctor",
+                entry="scripts/doctor.py",
+                description="Check files",
+                mode="read",
+                timeout_seconds=5,
+            ),
+        ),
+        warnings=("scripts/extra.py has no manifest entry",),
+    )
+    harness = Harness(tmp_path)
+    harness.runtime._skills = (skill,)  # type: ignore[attr-defined]
+    harness.runtime.update_settings(Settings(skills=SkillSettings(enabled=("authoring",))))
+
+    harness.dispatcher.handle("/skills")
+
+    out = harness.output()
+    assert "authoring" in out
+    assert "yes" in out
+    assert "triggers: enabled" in out
+    assert "1 ref injected (route.md)" in out
+    assert "1 script (execution unsupported)" in out
+    assert "scripts/extra.py has no manifest entry" in out
+
+
+def test_skills_renders_budget_skip_reason_from_decision(tmp_path: Path) -> None:
+    """/skills shows budget skip reasons from the live SkillDecision."""
+    from shellpilot.config.model import Settings, SkillSettings
+    from shellpilot.skills.model import Skill, SkillTrigger
+
+    skill = Skill(
+        name="large",
+        description="Large skill.",
+        body="Instructions.",
+        root="user",
+        triggers=(SkillTrigger.ENABLED,),
+        est_tokens=10_000,
+        valid=True,
+    )
+    harness = Harness(tmp_path)
+    harness.runtime._skills = (skill,)  # type: ignore[attr-defined]
+    harness.runtime.update_settings(Settings(skills=SkillSettings(enabled=("large",))))
+
+    harness.dispatcher.handle("/skills")
+
+    out = harness.output()
+    assert "large" in out
+    assert "no" in out
+    assert "skipped: skill budget" in out

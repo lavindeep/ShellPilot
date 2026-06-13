@@ -66,7 +66,7 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
     ("/attach <path>", "Stage an image to send with your next message (vision models only)."),
     ("/attach", "List currently staged images."),
-    ("/skills", "List discovered skills with root, enabled, and active status."),
+    ("/skills", "List discovered skills with triggers, resources, and active status."),
 ]
 
 
@@ -708,13 +708,9 @@ class SlashDispatcher:
             return
 
         enabled = self._runtime.settings.skills.enabled
-        # Active status comes from the live context snapshot, so the table and
-        # the real injection share one source of truth (trigger + budget guard).
         snapshot = self._runtime.context_snapshot()
-        injected_skills = {
-            block.name.removeprefix("skill:")
-            for block in snapshot.blocks
-            if block.name.startswith("skill:") and block.injected
+        decision_by_key = {
+            (decision.skill, decision.root): decision for decision in snapshot.decisions
         }
 
         table = Table(title="Skills")
@@ -722,26 +718,42 @@ class SlashDispatcher:
         table.add_column("Root")
         table.add_column("Status")
         table.add_column("Active")
+        table.add_column("Details", overflow="fold")
 
-        for skill in skills:
+        for index, skill in enumerate(skills):
+            decision = None
+            if index < len(snapshot.decisions):
+                candidate = snapshot.decisions[index]
+                if candidate.skill == skill.name and candidate.root == skill.root:
+                    decision = candidate
+            if decision is None:
+                decision = decision_by_key.get((skill.name, skill.root))
+
             if not skill.valid:
                 status_cell = f"[red]invalid: {skill.error}[/red]"
             elif skill.root == "builtin" and skill.name == "planning":
                 status_cell = "builtin"
-                if skill.error:
-                    status_cell += f" [dim]({skill.error})[/dim]"
             elif is_enabled(skill, enabled):
                 status_cell = "enabled"
-                if skill.error:
-                    status_cell += f" [dim]({skill.error})[/dim]"
             else:
                 status_cell = "[dim]disabled[/dim]"
-                if skill.error:
-                    status_cell += f" [dim]({skill.error})[/dim]"
 
-            active = skill.valid and skill.name in injected_skills
+            active = bool(decision.injected) if decision is not None else False
             active_cell = "[green]yes[/green]" if active else "[dim]no[/dim]"
-            table.add_row(skill.name, skill.root, status_cell, active_cell)
+            details: list[str] = []
+            if decision is not None:
+                if decision.matched_triggers:
+                    triggers = ", ".join(trigger.value for trigger in decision.matched_triggers)
+                    details.append(f"triggers: {triggers}")
+                if decision.reason:
+                    details.append(decision.reason)
+                if decision.resource_summary:
+                    details.append(decision.resource_summary)
+                if decision.script_summary:
+                    details.append(decision.script_summary)
+            details.extend(f"[dim]{warning}[/dim]" for warning in skill.warnings)
+            details_cell = "\n".join(details) if details else "[dim]-[/dim]"
+            table.add_row(skill.name, skill.root, status_cell, active_cell, details_cell)
 
         self._console.print(table)
 

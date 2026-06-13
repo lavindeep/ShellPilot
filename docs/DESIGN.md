@@ -546,7 +546,13 @@ The runtime should expose `/compact status` so the user can see current context 
 
 #### ContextAssembler
 
-The system prompt is assembled from a fixed, ordered set of blocks — base prompt, behavior instructions, memory, the conditional skills group (a `skills index` block plus per-skill bodies, section 23.1), and (when a plan is live) a compact plan-state block. A pure `ContextAssembler` (no file or model I/O) captures that assembly as a structured `ContextSnapshot` of `ContextBlock`s, each carrying a block name, source, token estimate, an `injected` flag, and an optional skip reason. The snapshot is the single source of truth: the same structure produces both the live model prompt (joining injected blocks with `\n\n`) and the `/context` breakdown, so the figures shown to the user cannot drift from what the model receives. Block order is load-bearing; the base prompt is always present, while behavior, memory, skills, and plan state are injected only when their trigger or non-empty condition holds.
+The system prompt is assembled from a fixed, ordered set of blocks — base prompt, behavior instructions, memory, the conditional skills group (a `skills index` block plus per-skill bodies and triggered references, section 23), and (when a plan is live) a compact plan-state block. A pure `ContextAssembler` (no file or model I/O) captures that assembly as a structured `ContextSnapshot` of `ContextBlock`s, each carrying a block name, source, token estimate, an `injected` flag, and an optional skip reason. The snapshot is the single source of truth: the same structure produces both the live model prompt (joining injected blocks with `\n\n`) and the `/context` breakdown, so the figures shown to the user cannot drift from what the model receives. Block order is load-bearing; the base prompt is always present, while behavior, memory, skills, and plan state are injected only when their trigger or non-empty condition holds.
+
+Skill activation uses an explicit `TriggerContext(plan_status, web_enabled, enabled)` rendered by the runtime. `plan_status` is the live plan status when a plan sidecar exists, `web_enabled` is true only when both `web_search` and `web_fetch` are registered in the `ToolRegistry`, and `enabled` is the `[skills] enabled` tuple. This keeps boot-only settings drift from accidentally activating web guidance.
+
+Each discovered skill also receives a `SkillDecision` in the snapshot, including valid, invalid, disabled, and budget-skipped skills. Decisions record the matched triggers, injection result, reason, resource summary, and script summary; slash commands render active state and row details from these decisions instead of re-deriving visibility.
+
+For active skills, the assembler selects only references whose own trigger fires. The skill body and all selected references are one budget group: if the group would exceed the skill budget, neither body nor references are injected, and later skills are skipped with the same budget reason. Templates and scripts are discovered metadata only; they are never injected in v0.7.0.
 
 ## 11. Planning Model
 
@@ -1730,8 +1736,8 @@ Prompt principles:
 **Proposal-vs-execution split (Settled 2026-06-12).** Planning guidance is partitioned by when it applies, so the model only carries the rules relevant to the current turn:
 
 - **Proposal-time rules live in the base prompt** (`shellpilot/prompts/system.py`, `_BASE`): plans go through `propose_plan`; only real multi-step work (3+ distinct steps) gets a plan; fold all related setup into one plan; do not plan trivial single-command/single-edit/inspection tasks. The base prompt keeps a single bridge sentence ("After a plan is approved, keep working in this same turn…") and carries no `update_plan` mechanics. The base prompt is always present.
-- **Execution-time discipline is the builtin `planning` skill** (`shellpilot/skills/builtin/planning/SKILL.md`, trigger `PLAN_ACTIVE`): execute step 1 immediately and record progress with `update_plan(step=…, status="completed")`; on an invalidating failure stop, record `update_plan(blocker="<evidence>")`, then propose a revised plan or ask one short question. This block is injected **only while a plan is active or blocked**.
-- **Rationale.** The 8K-context target model pays for every system-prompt token on every turn, and system blocks are never compacted (section 20.2). The `update_plan` mechanics are dead weight before a plan exists; gating them behind `PLAN_ACTIVE` keeps plan-free turns lean while guaranteeing the discipline is present exactly when it can be acted on. The split is enforced by tests: the base prompt must contain the proposal rules and not `update_plan`; the skill body must contain the execution mechanics. `PROMPT_VERSION` is bumped to 3 to mark the move.
+- **Plan-mode discipline is the builtin `planning` skill** (`shellpilot/skills/builtin/planning/SKILL.md`, triggers `PLAN_PROPOSED`, `PLAN_ACTIVE`, and `PLAN_BLOCKED`): plan-specific guidance is injected only while a harness-managed plan exists in one of those live states. Active-mode guidance covers step execution and `update_plan(step=…, status="completed")`; blocked-mode guidance covers recording `update_plan(blocker="<evidence>")`, then revising the plan or asking one short question.
+- **Rationale.** The 8K-context target model pays for every system-prompt token on every turn, and system blocks are never compacted (section 20.2). The `update_plan` mechanics are dead weight before a plan exists; selecting planning guidance by exact plan status keeps plan-free turns lean while guaranteeing the relevant discipline is present exactly when it can be acted on. The split is enforced by tests: the base prompt must contain the proposal rules and not `update_plan`; the skill body must contain the execution mechanics. `PROMPT_VERSION` is bumped to 3 to mark the move.
 
 ### 19.1 Unified System Prompt Themes
 
@@ -1868,7 +1874,7 @@ Planned commands:
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
 | `/attach <path>` | Stage an image file to send with the next user message (vision-capable models only). Path is validated eagerly; bytes are re-read at send time. *(v0.5.0)* |
 | `/attach` | List currently staged images, or report "No attachments staged." *(v0.5.0)* |
-| `/skills` | List all discovered skills with root (builtin/user), enabled/disabled/invalid status, and whether the trigger predicate is active now. *(v0.6.0)* |
+| `/skills` | List all discovered skills with root, enabled/disabled/invalid status, decision-derived active state, matched triggers, resource/script summaries, skip reasons, and advisory warnings. *(v0.7.0)* |
 
 All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped and appear in the table above.
 
@@ -2047,29 +2053,32 @@ The builtin `planning` skill is always considered enabled (harness machinery); i
 
 `discover_skills(...)` returns ALL found skills (valid + invalid) in deterministic order: builtin alphabetical, then user alphabetical. The list is inert data — enablement is checked by `is_enabled(skill, enabled)`.
 
-**Trigger**
+**Triggers**
 
-Each skill carries a `SkillTrigger`:
-- `ALWAYS` — injected every turn when enabled (all user skills; builtin skills other than `planning`).
-- `PLAN_ACTIVE` — injected only while a plan is active or blocked (the `planning` skill).
+Each skill carries `triggers: tuple[SkillTrigger, ...]`; a skill is active when any trigger fires:
+- `ALWAYS_ON` — injected every turn.
+- `ENABLED` — injected when the skill name appears in `[skills] enabled`.
+- `PLAN_PROPOSED`, `PLAN_ACTIVE`, `PLAN_BLOCKED` — injected only when the live `TaskPlan.status` exactly matches `proposed`, `active`, or `blocked`.
+- `WEB_ENABLED` — injected only when both `web_search` and `web_fetch` are registered in the runtime `ToolRegistry`.
 
 **Injection contract**
 
 The `ContextAssembler` (section 10.5) folds discovered skills into the system prompt as conditional blocks. The contract is deterministic:
 
-- **Valid skills only.** Invalid skills are `/skills`-only; they never produce a context block. Each injectable valid skill becomes a block named `skill:{name}`, source = the skill's root (`builtin`/`user`), body text `## Skill: {name}\n{body}`.
+- **Valid skills only.** Invalid skills are `/skills`-only via `SkillDecision`; they never produce a context block. Each valid skill gets a block named `skill:{name}`, source = the skill's root (`builtin`/`user`), body text `## Skill: {name}\n{body}`.
 - **Order.** `planning` first (when present), then the rest alphabetical by name. The skills group sits **after memory, before plan state**.
-- **Trigger predicate** (single source of truth, shared by the live prompt and the `/skills` Active column): `PLAN_ACTIVE` → injected only when a plan is active or blocked (the same gate as the plan-state block); `ALWAYS` → injected when `is_enabled(skill, enabled)`. A non-injected valid skill still appears as a block with `injected=False` and a `reason` (`"plan not active"` / `"disabled"`) so `/context` explains itself.
-- **Cumulative budget guard.** Injectable skills are walked in order, summing `est_tokens` against a budget of `ctx // 6` (computed in `conversation.py` from the model context). Once a skill would push the running total over budget, that skill and every later one are marked `injected=False, reason="skipped: skill budget"`. System blocks are never compacted (section 20.2), so this hard cap bounds the worst case.
+- **Trigger predicate** (single source of truth, shared by the live prompt and the `/skills` Active column): `ContextAssembler` receives an explicit `TriggerContext(plan_status, web_enabled, enabled)` from the runtime. A non-injected valid skill still appears as a block with `injected=False` and a `reason` (`"plan not active"`, `"plan state mismatch"`, `"web disabled"`, `"disabled"`, or `"skipped: skill budget"`) so `/context` explains itself.
+- **Triggered references.** Active skills inject their `SKILL.md` body plus references whose own trigger fires. References with `trigger=None` and all templates/scripts are metadata only.
+- **Cumulative budget guard.** Injectable skills are walked in order, summing each active skill's body plus selected triggered references against a budget of `ctx // 6` (computed in `conversation.py` from the model context). Once a whole group would push the running total over budget, that skill and every later one are marked `injected=False, reason="skipped: skill budget"`. System blocks are never compacted (section 20.2), so this hard cap bounds the worst case.
 - **Skills index block.** A block named `skills index` (source `skills`, text `Loaded skills: {comma-separated injected names}.`) is placed before the first skill block and injected **only when at least one skill body is injected this turn**. With no model-facing skill tools in v1, advertising unloaded skills would give the model nothing actionable, so the index lists exactly what is present.
 
-The builtin `planning` skill is the canonical first builtin: `PLAN_ACTIVE`, always enabled, carrying the execution discipline that the base prompt deliberately omits (section 19).
+The builtin `planning` skill is the canonical first builtin: it is always enabled and carries `PLAN_PROPOSED`, `PLAN_ACTIVE`, and `PLAN_BLOCKED` triggers so mode-specific planning guidance can be selected by exact plan status (section 19).
 
 **`/skills` command**
 
-Lists all discovered skills in a table with columns: Skill, Root, Status, Active.
-- Status: `invalid: <error>` for invalid skills; `builtin` for planning-style always-enabled builtins; `enabled` or `disabled` for others. Advisory notes (name mismatch) appear dimly after the status.
-- Active: real injection for this turn, read from the live context snapshot (trigger predicate plus the cumulative budget guard) — one source of truth with the assembled prompt.
+Lists all discovered skills in a table with columns: Skill, Root, Status, Active, Details.
+- Status: `invalid: <error>` for invalid skills; `builtin` for planning-style builtins; `enabled` or `disabled` for others.
+- Active and Details: read from the live `ContextSnapshot.decisions` (matched triggers, non-active reason, resource summary, script summary, and dim advisory warnings), so there is one source of truth with the assembled prompt.
 - Empty discovery → "No skills discovered."
 
 `/capabilities` remains reserved for the heavier future capability packs (tools, handlers, permissions).

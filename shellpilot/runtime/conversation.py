@@ -26,6 +26,7 @@ from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.executor import ExecutionOutcome, ToolExecutor
 from shellpilot.runtime.planner import PlanManager, TaskPlan, compact_plan_state, make_plan_tools
 from shellpilot.skills.model import Skill
+from shellpilot.skills.triggers import TriggerContext
 from shellpilot.tools.images import make_view_image_tool
 from shellpilot.tools.registry import ToolRegistry, default_registry
 
@@ -286,6 +287,14 @@ class ConversationRuntime:
             if plan is not None and plan.status in ("active", "blocked")
             else ""
         )
+        trigger_ctx = TriggerContext(
+            plan_status=plan.status if plan is not None else None,
+            web_enabled=(
+                self._registry.get("web_search") is not None
+                and self._registry.get("web_fetch") is not None
+            ),
+            enabled=self._settings.skills.enabled,
+        )
         return self._assembler.assemble(
             base_prompt=base_prompt,
             behavior_block=self._behavior.as_prompt_block(),
@@ -294,6 +303,7 @@ class ConversationRuntime:
             enabled=self._settings.skills.enabled,
             skill_token_budget=self.budget.model_context_tokens // 6,
             plan_state=plan_state,
+            trigger_ctx=trigger_ctx,
         )
 
     def context_snapshot(self) -> ContextSnapshot:
