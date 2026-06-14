@@ -18,7 +18,6 @@ from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.sessions import SessionStore
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.risk import SideEffect
-from shellpilot.prompts.execution import EXPLAINER_PROMPT
 from shellpilot.prompts.system import build_system_prompt
 from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_budget
 from shellpilot.runtime.context import ContextAssembler, ContextSnapshot
@@ -444,24 +443,6 @@ class ConversationRuntime:
             warn=used > self.budget.compact_at_tokens,
         )
 
-    def _explain_purpose(self, display: str, reasons: tuple[str, ...]) -> str:
-        """Short model-written purpose for a dangerous command (section 13.4)."""
-        prompt = EXPLAINER_PROMPT.format(
-            command=display,
-            cwd=self._workspace,
-            reasons="; ".join(reasons) or "high risk",
-            context=self._last_user_text[:500],
-        )
-        try:
-            reply = self._llm.chat(
-                self._model,
-                [Message(role="user", content=prompt)],
-                num_ctx=min(4096, self.budget.model_context_tokens),
-            )
-        except Exception:  # noqa: BLE001 - explanation is best-effort, never blocking
-            return ""
-        return reply.content.strip()[:500]
-
     def _pending_plan_step(self) -> tuple[int, str] | None:
         """First unfinished step of the active plan, as (1-based index, title).
 
@@ -501,7 +482,6 @@ class ConversationRuntime:
             ask_approval=self._ui.ask_approval,
             emit_output=self._ui.show_command_output,
             snapshots=self.snapshots,
-            explain_purpose=self._explain_purpose,
             audit=self._audit,
             allow_sensitive_reads=self._settings.privacy.allow_sensitive_reads,
         )

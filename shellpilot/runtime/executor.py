@@ -16,6 +16,7 @@ from shellpilot.llm.messages import ToolCall, ToolDefinition
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.approvals import ApprovalRequest, Decision, decide
+from shellpilot.policy.explanations import explain_risk
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.budget import estimate_tokens, truncate_to_tokens
 from shellpilot.tools.base import (
@@ -28,8 +29,6 @@ from shellpilot.tools.base import (
 from shellpilot.tools.registry import ToolRegistry
 
 ApprovalAsker = Callable[[ApprovalRequest], bool]
-# Generates the short purpose explanation for risky commands (section 13.4).
-PurposeExplainer = Callable[[str, tuple[str, ...]], str]
 
 
 @dataclass(frozen=True)
@@ -57,12 +56,10 @@ class ToolExecutor:
         ask_approval: ApprovalAsker | None = None,
         emit_output: Callable[[str], None] | None = None,
         snapshots: SnapshotStore | None = None,
-        explain_purpose: PurposeExplainer | None = None,
         audit: AuditLogger | None = None,
         allow_sensitive_reads: str = "ask",
     ) -> None:
         self._snapshots = snapshots
-        self._explain_purpose = explain_purpose
         self._audit = audit
         self._registry = registry
         self._workspace = workspace
@@ -146,17 +143,14 @@ class ToolExecutor:
                 except Exception as exc:  # noqa: BLE001 - preview must never block approval
                     diff = f"(preview failed: {exc})"
             purpose = ""
-            if (
-                classification.risk is RiskLevel.HIGH
-                and spec.side_effect is not SideEffect.NONE
-                and self._explain_purpose is not None
-            ):
-                # Model-written purpose explanation for dangerous commands
-                # (section 13.4); it can never downgrade the deterministic risk.
-                # Skipped for NONE-side-effect tools: a HIGH-risk sensitive read
-                # gets the standard prompt with the classifier reason, never a
-                # model purpose round-trip (design section 15).
-                purpose = self._explain_purpose(display, classification.reasons)
+            if classification.risk is RiskLevel.HIGH and spec.side_effect is not SideEffect.NONE:
+                # Deterministic purpose explanation for dangerous commands
+                # (section 13.4): built from the classifier reasons by a pure
+                # function, with no model call. It can never downgrade the
+                # deterministic risk classification. Skipped for NONE-side-effect
+                # tools: a HIGH-risk sensitive read gets the standard prompt with
+                # the classifier reason and no purpose at all (design section 15).
+                purpose = explain_risk(classification.reasons)
             request = ApprovalRequest(
                 kind="command" if call.name == "run_command" else "tool",
                 display=display,

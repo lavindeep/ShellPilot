@@ -1,4 +1,4 @@
-"""Phase 5 flows: explainer, audit wiring, profile switching, manual shell."""
+"""Phase 5 flows: high-risk explanation, audit wiring, profile switching, manual shell."""
 
 import json
 from pathlib import Path
@@ -9,6 +9,7 @@ from shellpilot.cli.manual_shell import BANNER, manual_shell_loop, run_manual_co
 from shellpilot.config.model import Settings
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
+from shellpilot.policy.explanations import explain_risk
 from shellpilot.runtime.conversation import ConversationRuntime
 from tests.fakes.fake_llm import FakeLLM, answer, tool_call
 from tests.fakes.fake_ui import FakeUI
@@ -43,11 +44,10 @@ def read_events(tmp_path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-def test_high_risk_command_gets_model_explanation(tmp_path: Path) -> None:
+def test_high_risk_command_gets_deterministic_explanation(tmp_path: Path) -> None:
     fake = FakeLLM(
         script=[
             tool_call("run_command", argv=["rm", "-rf", "build"]),
-            answer("This removes the stale build directory before a clean rebuild."),
             answer("Done."),
         ]
     )
@@ -55,16 +55,20 @@ def test_high_risk_command_gets_model_explanation(tmp_path: Path) -> None:
     runtime = make_runtime(fake, ui, tmp_path, make_audit(tmp_path))
     (tmp_path / "build").mkdir()
 
-    runtime.run_turn("clean the build dir")
+    text = runtime.run_turn("clean the build dir")
 
     request = ui.approval_requests[0]
     assert request.risk.value == "high"
-    assert "stale build directory" in request.purpose
+    assert request.purpose == explain_risk(("recursive delete",))
+    assert "permanently deletes" in request.purpose
+    assert text == "Done."
+    # No extra explainer model round-trip: exactly the two scripted calls ran.
+    assert len(fake.calls) == 2
     events = read_events(tmp_path)
     approval = next(e for e in events if e["event"] == "approval")
     assert approval["decision"] == "approved"
     assert approval["risk"] == "high"
-    assert "stale build" in str(approval["explanation"])
+    assert "permanently deletes" in str(approval["explanation"])
 
 
 def test_audit_records_turn_tool_and_result(tmp_path: Path) -> None:

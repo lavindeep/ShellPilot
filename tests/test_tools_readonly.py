@@ -195,7 +195,6 @@ def _executor(
     *,
     allow_sensitive_reads: str,
     ask_approval: Any = None,
-    explain_purpose: Any = None,
 ) -> ToolExecutor:
     registry = ToolRegistry()
     registry.register(READ_FILE)
@@ -207,7 +206,6 @@ def _executor(
         max_result_tokens=2000,
         max_total_tokens=10_000,
         ask_approval=ask_approval,
-        explain_purpose=explain_purpose,
         allow_sensitive_reads=allow_sensitive_reads,
     )
 
@@ -279,22 +277,15 @@ def test_plain_file_read_is_auto_no_prompt(tmp_path: Path) -> None:
     assert "nothing secret here" in outcome.result.content
 
 
-def test_sensitive_read_never_calls_explain_purpose(tmp_path: Path) -> None:
+def test_sensitive_read_gets_no_purpose(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("API_KEY=secret-value")
-    called = False
-
-    def _explain(display: str, reasons: tuple[str, ...]) -> str:
-        nonlocal called
-        called = True
-        return "should never run"
-
     asker = _SpyAsker(approve=True)
-    executor = _executor(
-        tmp_path, allow_sensitive_reads="ask", ask_approval=asker, explain_purpose=_explain
-    )
+    executor = _executor(tmp_path, allow_sensitive_reads="ask", ask_approval=asker)
+
     executor.execute(ToolCall(name="read_file", arguments={"path": ".env"}))
 
-    assert not called  # no model purpose generation for a sensitive read
+    # HIGH risk + NONE side effect: the gate yields no purpose for a sensitive read.
+    assert asker.requests[0].purpose == ""
 
 
 # -- search_text traversal skips sensitive files ------------------------------
