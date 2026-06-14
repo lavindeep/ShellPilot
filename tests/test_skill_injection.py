@@ -5,10 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from shellpilot.config.model import Settings, SkillSettings
+from shellpilot.llm.messages import ToolDefinition
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.skills.loader import SKILL_FILENAME, discover_skills
 from shellpilot.skills.model import Skill
+from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
+from shellpilot.tools.registry import default_registry
 from tests.fakes.fake_llm import FakeLLM, answer, tool_call
 from tests.fakes.fake_ui import FakeUI
 
@@ -121,3 +125,43 @@ def test_disabled_skill_not_injected(tmp_path: Path) -> None:
     block = next(b for b in runtime.context_snapshot().blocks if b.name == "skill:lint-helper")
     assert not block.injected
     assert block.reason == "disabled"
+
+
+def _make_stub_tool(name: str) -> ToolSpec:
+    """Create a minimal stub ToolSpec for use in registry-wiring tests."""
+
+    def _handler(ctx: ToolContext, args: dict) -> ToolResult:  # pragma: no cover
+        return ToolResult(success=True, summary="stub", content="stub")
+
+    return ToolSpec(
+        definition=ToolDefinition(name=name, description=f"stub {name}"),
+        side_effect=SideEffect.NONE,
+        default_risk=RiskLevel.LOW,
+        allowed_profiles=frozenset({"supervised", "balanced"}),
+        handler=_handler,
+    )
+
+
+def test_web_grounding_skill_injected_when_web_enabled(tmp_path: Path) -> None:
+    """WEB_ENABLED trigger fires when both web_search and web_fetch are registered."""
+    registry = default_registry()
+    registry.register(_make_stub_tool("web_search"))
+    registry.register(_make_stub_tool("web_fetch"))
+
+    fake = FakeLLM(script=[answer("ok")])
+    ui = FakeUI()
+    runtime = ConversationRuntime(
+        llm=fake,
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=ui,
+        registry=registry,
+        skills=_builtin_skills(),
+    )
+
+    runtime.run_turn("hello")
+
+    system_text = fake.calls[0].messages[0].content
+    assert "## Skill: web-grounding" in system_text
+    assert "leads, not evidence" in system_text

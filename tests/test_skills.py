@@ -400,6 +400,11 @@ def test_builtin_trigger_map_and_resources_by_folder_name() -> None:
     assert "available does not mean use web" in builtins["web-grounding"].body
     assert "cite sources" in builtins["web-grounding"].body
     assert "approval" in builtins["web-grounding"].body
+    assert "web_fetch" in builtins["web-grounding"].body
+    assert "leads, not evidence" in builtins["web-grounding"].body
+    assert "separate search" in builtins["web-grounding"].body
+    assert "official" in builtins["web-grounding"].body
+    assert builtins["web-grounding"].est_tokens <= 300
     assert builtins["web-grounding"].references == ()
     assert builtins["web-grounding"].templates == ()
     assert builtins["web-grounding"].scripts == ()

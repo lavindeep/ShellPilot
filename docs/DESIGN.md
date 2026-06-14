@@ -2080,7 +2080,7 @@ The builtin `planning` skill is the canonical first builtin: it is always enable
 
 The other v0.7.0 builtins are:
 - `context-management/` (`ALWAYS_ON`): tiny context hygiene guidance plus discovered-only `references/file-triage.md` and `references/context-budgeting.md`.
-- `web-grounding/` (`WEB_ENABLED`): short guidance that web tools being available does not mean use web; use them only for current/external/source-backed information, cite sources, and remember network calls require approval.
+- `web-grounding/` (`WEB_ENABLED`): standing grounding guidance — web tools being available does not mean use web; treat search snippets as leads, not evidence, and fetch the official source with web_fetch before asserting factual/current/numeric claims; decompose multi-entity or comparison questions into separate searches; shape discover-first queries and prefer a specific page over a homepage; cite sources; network calls require approval.
 - `skill-authoring/` (`ENABLED`): opt-in guidance for creating skills, with discovered-only references (`skill-anatomy.md`, `trigger-writing.md`, `resource-routing.md`) and templates (`SKILL.md`, `skill-eval.md`).
 
 **`/skills` command**
