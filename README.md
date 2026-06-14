@@ -4,50 +4,74 @@
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**A local-first AI shell harness for your terminal, powered by Ollama.**
+**A local-first AI shell harness for inspecting and changing real projects from one terminal conversation.**
 
-ShellPilot gives you one terminal conversation that can answer questions, inspect your project, plan multi-step work, edit files, and run commands with risk-based approvals — all against a local model (Gemma 4 via [Ollama](https://ollama.com)). Local by default: your code and your shell never leave your machine — no telemetry, no API keys. Optional, off-by-default web grounding (`[tools] web = true`) contacts only the search provider and the pages you approve, one approved request at a time.
+ShellPilot is for developers and power users who want an AI assistant close to their shell without sending their code, commands, or project state to a hosted agent. It runs against a local Ollama model, inspects files through structured tools, proposes plans for complex work, shows diffs before edits land, and routes commands through deterministic risk-based approvals.
+
+The core promise is local control: no telemetry, no cloud model calls, no API keys, and no silent network egress. Optional web grounding is off by default; when enabled, each search or page fetch is individually approved.
 
 ![ShellPilot demo](docs/assets/demo.gif)
 
-## What it does
+## What it is for
 
-- **One conversation loop.** No separate chat/agent modes — ask a question and it answers; ask for work and it inspects, plans, and acts.
-- **A terminal UI that earns its keep.** Live-rendered markdown responses, Claude-Code-style diff panels with line numbers and word-level highlights, risk badges (`MEDIUM`/`HIGH`/`BLOCKED`), a plan panel with checklist progress, input history and tab-completed slash commands, and an aviation-themed spinner (`taxiing… climbing… cruising…`). Degrades cleanly under `NO_COLOR`, pipes, and ASCII-only terminals.
-- **Plans are artifacts.** Complex tasks get a visible, editable plan saved to `.shellpilot/tasks/<task-id>/PLAN.md`, approved by you before execution and updated as work progresses — once approved, the plan executes straight through in a single turn without pausing to ask for permission it already has. If the model hits a roadblock, it records the blocker and replans instead of pushing through.
-- **Deterministic security first.** Command risk is classified by deterministic policy (executable, flags, targets, shell metacharacters, workspace boundary) — never by asking the model whether something is safe. Agent commands run with `shell=False`; there is no agent-accessible raw shell.
-- **Dangerous commands are explained.** High-risk actions show the exact command, a short model-written purpose explanation, and require you to literally type `run`. The explanation can never downgrade the deterministic risk.
-- **Read-before-write edits.** File edits are anchored patches validated against a content-hashed snapshot of what was actually read — no blind writes, no stale writes, diffs shown before approval.
-- **Memory with consent.** The model can propose remembering preferences and project facts (`memory_propose_update`), but every update shows a preview and needs your approval — it never writes memory silently. `/memory show|add|forget|compact`, `/prefs` to inspect; stored as plain JSON you can edit by hand.
-- **Sessions that survive.** Every conversation is journaled (redacted) to `.shellpilot/sessions/`; `shellpilot --resume` picks up where you left off, and `/export` writes a markdown transcript. Long sessions stay healthy via selective compaction that digests old tool output first and never drops your instructions (`/compact auto on|off`).
-- **Local audit log.** Every approval, command, and edit is recorded as redacted JSONL on your machine (`/logs` to view).
-- **Manual Shell.** `/shell` drops you into a clearly-bannered raw `shell=True` mode that the model never touches.
-- **Model picker at boot.** When multiple Ollama models are installed, ShellPilot presents a numbered list at startup — tested families (`gemma4`, `qwen3.5`) are tagged `tested`; everything else gets a dim `untested` note. Press Enter to accept the default; the choice is remembered per workspace in `.shellpilot/state.json`. Pass `--model <name>` to skip the picker entirely.
-- **No cold-start stall.** ShellPilot warms the selected model via Ollama's keep-alive preload before your first question, shown as a `fueling <model>` spinner. The first-question latency spike that previously stalled on model loading is gone.
-- **Opt-in web grounding — privacy first.** `[tools] web = true` registers `web_search` (DuckDuckGo, no API key) and `web_fetch` (readable text extraction) — both off by default. Every outbound request requires individual approval in every security profile; no web call ever runs silently. Queries and URLs are audit-logged with secrets redacted. The local-first promise stays intact: opt-out is the default state, and there is no env-var toggle that can bypass the config-file act of opting in.
-- **Skills v2.** ShellPilot loads small markdown skills from builtin and user roots, then deterministically injects only the relevant guidance for the current runtime state. v0.7.0 ships four builtins: `planning` mode references, always-on `context-management`, `web-grounding` when web tools are registered, and opt-in `skill-authoring`. References and templates are bundled read-only resources; scripts are discovered and shown but not executed.
-- **Image input.** `/attach <path>` stages an image file (png, jpg, gif, webp, ≤ 10 MB) to send with your next message; vision-capable models see it automatically. The model can also open workspace images itself via the `view_image` tool — auto-approved at the same level as `read_file`, workspace-boundary enforced. Images are never stored in transcripts; only the path and sha256 are recorded.
-- **Testable without a model.** A fake LLM client exercises the entire runtime in CI — including malformed tool calls and stuck loops. No GPU, no Ollama needed for the test suite.
+- Understanding a repository from inside the terminal.
+- Asking a local model to inspect files, search code, explain behavior, and make scoped edits.
+- Running tests, formatters, and project commands with visible approvals instead of hidden shell access.
+- Letting the model plan multi-step work while keeping the plan, diffs, approvals, logs, and memory on disk where you can inspect them.
+- Looking up current external information only when you explicitly enable web tools and approve each network request.
+
+ShellPilot is not a cloud coding agent, a general multi-provider SDK, a sandbox, or a replacement for your shell. It is a local harness around a small model, structured tools, deterministic policy, and your approval loop.
+
+## Design principles
+
+- **Local first.** Ollama is the model backend. State, sessions, memory, logs, and audit trails stay on your machine.
+- **Deterministic safety.** Command risk is classified by policy, not by asking the model whether a command is safe.
+- **Read before write.** Edits are anchored to content the model actually read, then shown as diffs before approval.
+- **Plans are artifacts.** Complex tasks produce a visible plan file under `.shellpilot/tasks/`, then update it as work progresses.
+- **Small-model friendly.** Prompts, skills, tool schemas, retries, and grounding guidance are built around the constraints of local models such as `gemma4:e4b`.
+
+## Feature map
+
+- **One conversation loop.** No separate chat/agent modes. Ask a question and it answers; ask for work and it inspects, plans, edits, and runs commands.
+- **Terminal UI.** Live-rendered markdown, diff panels with line numbers and word-level highlights, risk badges, plan progress, input history, tab-completed slash commands, and clean fallbacks for `NO_COLOR`, pipes, and ASCII-only terminals.
+- **Approval-aware execution.** Agent commands run with `shell=False`; the model never gets raw shell access. High-risk commands show the exact command, a deterministic purpose explanation derived from classifier reasons, and require typing `run`.
+- **Memory with consent.** The model can propose memories, but every update shows a preview and needs approval. Memory is stored as plain JSON.
+- **Resumable sessions.** Conversations are journaled to `.shellpilot/sessions/`; `shellpilot --resume` restores a session, and `/export` writes markdown.
+- **Local audit log.** Approvals, commands, edits, and config changes are recorded as redacted JSONL.
+- **Manual Shell.** `/shell` opens a clearly-bannered raw shell mode that the model never touches.
+- **Model picker and warmup.** ShellPilot lists installed Ollama models at boot, tags tested families, remembers the workspace choice, and preloads the selected model to avoid the first-turn cold-start stall.
+- **Opt-in web grounding.** `[tools] web = true` registers `web_search` and `web_fetch`, both off by default and always approval-gated. v0.8.0 teaches the model to treat search snippets as leads, fetch the source before factual/current claims, and use a more specific URL when a page is truncated.
+- **Skills v2.** Triggered markdown skills add only the guidance relevant to the current runtime state. Builtins cover planning, context management, web grounding, and skill authoring; references and templates are read-only resources; scripts are visible but not executed.
+- **Image input.** `/attach <path>` stages png, jpg, gif, or webp images for the next message when the active model supports vision.
+- **Model-free CI.** A fake LLM client exercises the runtime in tests, so CI needs no GPU or Ollama.
 
 ## How it works
 
 ```mermaid
 flowchart TD
-    User["User"] --> CLI["Terminal UI"]
+    User["User"] <--> CLI["Terminal UI"]
     CLI --> Runtime["Conversation Runtime"]
-    Runtime --> Planner["Planner"]
+
+    Skills["Skills (triggered)"] --> Context["Context Assembler"]
+    Memory["Memory"] --> Context
+    Runtime --> Context
+    Context --> LLM["LLM Client"]
+    LLM --> Ollama["Local Ollama API"]
+    LLM -->|tool calls| Runtime
+
+    Runtime --> Planner["Planner (plan files)"]
     Runtime --> Broker["Tool Broker"]
-    Runtime --> LLM["Ollama Gemma Client"]
     Broker --> Policy["Policy Engine"]
-    Broker --> Tools["Structured Tools"]
+    Policy -->|approval needed| CLI
+    Broker --> Tools["Structured Tools (incl. web grounding)"]
     Broker --> Commands["Command Runner (shell=False)"]
+
     Policy --> Audit["Audit Logger"]
     Tools --> Audit
     Commands --> Audit
-    LLM --> Ollama["Local Ollama API"]
 ```
 
-The model talks to seven flat-schema tools (`read_file`, `list_dir`, `search_text`, `env_info`, `run_command`, `write_file`, `patch_file`) plus two plan tools. Small local models make mistakes, so recovery is the main loop, not an edge case: malformed calls get one schema-reminder retry, repeated failures trigger the roadblock protocol, and tool/turn budgets stop runaways. The [Phase 0.5 benchmark](docs/benchmarks/2026-06-10-gemma4-e4b.md) measured `gemma4:e4b` at 100% well-formed tool calls and 100% byte-exact span reproduction, which is what makes anchored editing viable.
+The model talks to a small set of flat-schema tools: workspace inspection, command execution, anchored file edits, planning, memory, image viewing, and optional web grounding. Small local models make mistakes, so recovery is the main loop, not an edge case: malformed calls get one schema-reminder retry, repeated failures trigger the roadblock protocol, and tool/turn budgets stop runaways. The [Phase 0.5 benchmark](docs/benchmarks/2026-06-10-gemma4-e4b.md) measured `gemma4:e4b` at 100% well-formed tool calls and 100% byte-exact span reproduction, which is what makes anchored editing viable.
 
 ## Install
 
@@ -125,7 +149,7 @@ gemma4:e4b · balanced · /help for commands
 | `supervised` | Auto-run read-only tools; ask before every side-effecting tool and every command. |
 | `balanced` (default) | Auto-run read-only tools and low-risk commands (`ls`, `git status`, `pytest`); ask for writes, installs, deletes, network, and anything risky. |
 
-Both profiles ask before every network request (web search, web fetch). High-risk commands (`rm -rf`, `sudo`, force-pushes, credential paths, …) always show a purpose explanation and require typing `run`. Explicitly blocked commands are rejected outright in both profiles.
+Both profiles ask before every network request (web search, web fetch). High-risk commands (`rm -rf`, `sudo`, force-pushes, credential paths, …) always show a deterministic purpose explanation and require typing `run`. Explicitly blocked commands are rejected outright in both profiles.
 
 ### Configuration
 
@@ -173,7 +197,19 @@ python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 
 ## Roadmap
 
-v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v0.5.0 added opt-in web grounding and image input/attachments. v0.6.0 added Skills v1, `/context`, `/skills`, runtime config editing, plan-state restore on `--resume`, and config-validation hardening. v0.7.0 adds Skills v2: trigger-driven builtin guidance, read-only references/templates, enriched skill/context visibility, and script manifest discovery without execution. v0.7.1 makes high-risk command approvals appear instantly by generating the risk explanation deterministically from the classifier instead of via a blocking model call. v0.8.0 improves web-grounding quality for small local models: the `web-grounding` skill now carries standing fetch-before-answer guidance and discover-first query shaping, the `web_search` tool description is provider-neutral and bridges to `web_fetch`, and a truncated fetch points the model at a more specific source — so the model verifies claims from sources instead of guessing from snippets. v0.8.5 adds a privacy-first search provider: self-hosted [SearXNG](https://docs.searxng.org/) behind a configurable seam, with keyless DuckDuckGo staying the zero-config default. Controlled skill-script execution remains a later release with its own safety design, and richer workflow skills such as debugging, verification, review, and git can follow. A `trusted-local` security profile, heavier capability packs (tools/handlers/permissions), and `/undo` remain future candidates — per section 25.2.
+Recent shipped milestones:
+
+- **v0.5.0:** opt-in web grounding and image input.
+- **v0.6.0:** Skills v1, `/context`, `/skills`, runtime config editing, plan-state restore on `--resume`, and config-validation hardening.
+- **v0.7.0:** Skills v2 with trigger-driven builtin guidance, read-only references/templates, enriched skill/context visibility, and script manifest discovery without execution.
+- **v0.7.1:** instant high-risk approval prompts by generating purpose text deterministically from classifier reasons instead of through a blocking model call.
+- **v0.8.0:** web-grounding quality for small local models. The `web-grounding` skill now carries fetch-before-answer guidance and discover-first query shaping, `web_search` is provider-neutral and points to `web_fetch`, and truncated fetches point the model toward a more specific source.
+
+Next likely release:
+
+- **v0.8.5:** privacy-first search provider support, with self-hosted [SearXNG](https://docs.searxng.org/) behind a configurable seam and keyless DuckDuckGo staying the zero-config default.
+
+Later candidates include controlled skill-script execution with its own safety design, richer workflow skills for debugging/verification/review/git, a `trusted-local` security profile, heavier capability packs, and `/undo`.
 
 ## License
 

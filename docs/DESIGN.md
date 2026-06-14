@@ -1,12 +1,12 @@
 # ShellPilot Design
 
-Status: Refined draft (v1 scope settled in design review)
-Date: 2026-06-10
+Status: Current implementation design through v0.8.0, with historical rebuild notes retained
+Date: 2026-06-14
 Repository: `/Users/lavin/Projects/ShellPilot`
 
 ## 1. Purpose
 
-This document defines the target design for rebuilding the current AI CLI assistant from the ground up as a modular, local-first Python AI harness.
+This document defines ShellPilot's design as a modular, local-first Python AI harness. Early sections retain the original rebuild rationale from 2026-06-10; later release-settled sections describe the current implementation through v0.8.0.
 
 The rebuilt project should feel closer to a local coding and shell partner than a menu-driven chatbot. The user should be able to open one CLI conversation, ask questions, ask for project inspection, request command execution, approve plans for complex work, and use a manual shell when they want direct control.
 
@@ -16,9 +16,11 @@ The system remains local-only through Ollama. Gemma 4 is the default and primary
 
 This project is a local developer productivity harness. Security-related features are limited to defensive command review, local audit logs, local privacy controls, and user-approved diagnostics. The project does not include offensive exploitation, credential theft, malware behavior, evasion, persistence, unauthorized scanning, or remote targeting.
 
-## 2. Current Repo Baseline
+## 2. Original Repo Baseline
 
-The current repository already proves several valuable ideas:
+This section is historical context from the initial rebuild plan. The repository has since shipped the rebuilt architecture through v0.8.0, but these observations explain why the current boundaries exist.
+
+The pre-rebuild repository already proved several valuable ideas:
 
 - A local Ollama-backed CLI assistant can work without cloud services.
 - Tool calling is useful for file inspection, shell execution, memory, environment lookup, and system information.
@@ -27,9 +29,9 @@ The current repository already proves several valuable ideas:
 - Security profiles and command approval are necessary because shell automation can be destructive.
 - Local audit logs are useful, but the security model should not add avoidable latency to every action.
 
-The current implementation also has structural problems that the rebuild should address:
+The pre-rebuild implementation also had structural problems that the rebuild needed to address:
 
-- `README.md` and code have drifted. The README documents fields and counts that do not match the implementation.
+- `README.md` and code had drifted. The README documented fields and counts that did not match the implementation.
 - The app is split into separate Chat and Agent modes even though the desired UX is one conversation that can answer or act.
 - Runtime configuration is global mutable state.
 - Ollama, Gemma 4, prompt behavior, and model roles are hard-coded across modules.
@@ -2080,7 +2082,7 @@ The builtin `planning` skill is the canonical first builtin: it is always enable
 
 The other v0.7.0 builtins are:
 - `context-management/` (`ALWAYS_ON`): tiny context hygiene guidance plus discovered-only `references/file-triage.md` and `references/context-budgeting.md`.
-- `web-grounding/` (`WEB_ENABLED`): standing grounding guidance — web tools being available does not mean use web; treat search snippets as leads, not evidence, and fetch the official source with web_fetch before asserting factual/current/numeric claims; decompose multi-entity or comparison questions into separate searches; shape discover-first queries and prefer a specific page over a homepage; cite sources; network calls require approval.
+- `web-grounding/` (`WEB_ENABLED`): standing grounding guidance, expanded in v0.8.0 — web tools being available does not mean use web; treat search snippets as leads, not evidence, and fetch the official source with web_fetch before asserting factual/current/numeric claims; decompose multi-entity or comparison questions into separate searches; shape discover-first queries and prefer a specific page over a homepage; cite sources; network calls require approval.
 - `skill-authoring/` (`ENABLED`): opt-in guidance for creating skills, with discovered-only references (`skill-anatomy.md`, `trigger-writing.md`, `resource-routing.md`) and templates (`SKILL.md`, `skill-eval.md`).
 
 **`/skills` command**
@@ -2640,9 +2642,9 @@ Settled 2026-06-11 (Task A9).
 
 **`/model use <name>`:** after switching the active model via the slash command, `SlashDispatcher` also calls the preload helper so the new model is warm before the next user turn.
 
-## 33. Web Grounding (v0.5.0)
+## 33. Web Grounding (v0.5.0; v0.8.0 Grounding Guidance)
 
-Settled 2026-06-11 (Tasks B1–B6).
+Settled 2026-06-11 (Tasks B1–B6). v0.8.0 keeps the same tools and provider backend, but improves the model-facing guidance: `web_search` is described as provider-neutral leads, `web_fetch` is the grounding step for factual/current claims, and truncated fetches point the model toward a more specific source.
 
 ### 33.1 Scope And Privacy Stance
 
