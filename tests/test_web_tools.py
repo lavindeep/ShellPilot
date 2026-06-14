@@ -87,6 +87,29 @@ def _empty_fetcher() -> _MockPageFetcher:
 
 
 # ---------------------------------------------------------------------------
+# web_search: description is provider-neutral with web_fetch bridge
+# ---------------------------------------------------------------------------
+
+
+def test_web_search_description_is_provider_neutral() -> None:
+    """web_search description must not name DuckDuckGo and must bridge to web_fetch."""
+    provider = _MockSearchProvider([])
+    specs = make_web_tools(provider, _empty_fetcher())
+    search_spec = next(s for s in specs if s.name == "web_search")
+    description = search_spec.definition.description
+
+    assert "DuckDuckGo" not in description, (
+        f"Description must not name DuckDuckGo; got: {description!r}"
+    )
+    assert "web_fetch" in description, (
+        f"Description must reference web_fetch as the follow-up tool; got: {description!r}"
+    )
+    assert "leads" in description, (
+        f"Description must frame results as leads, not evidence; got: {description!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # web_search: result formatting
 # ---------------------------------------------------------------------------
 

@@ -2658,13 +2658,13 @@ The local-first promise in §5.1 and §15 is preserved: the only outbound traffi
 
 Two tools are registered when web grounding is enabled.
 
-**`web_search`** — queries the DuckDuckGo HTML endpoint and returns a numbered list of results. Each result item is three lines: `N. <title>`, `   <url>`, and optionally `   <snippet>`. The `max_results` parameter (default 5) caps how many items are returned. Failed network calls become a failed `ToolResult` (not an exception); the model receives an error string and can report it to the user.
+**`web_search`** — returns a numbered list of results (title, URL, snippet). The tool description is provider-neutral, but the current production backend remains DuckDuckGo (`DuckDuckGoProvider`, see §33.3). Each result item is three lines: `N. <title>`, `   <url>`, and optionally `   <snippet>`. The `max_results` parameter (default 5) caps how many items are returned. Failed network calls become a failed `ToolResult` (not an exception); the model receives an error string and can report it to the user. The description frames results as leads, not evidence, and bridges the model to `web_fetch` for grounding factual or current claims against the actual page.
 
 **`web_fetch`** — fetches a single public http/https URL and returns the page's readable text. Output format: `Title: <title>` (when present), `URL: <final url after redirects>`, blank line, body text. When the body is capped (byte or character limit) a `[content truncated]` line is appended and `ToolResult.truncated` is set. Transport errors and guard failures become failed `ToolResult` values, never exceptions propagated to the caller.
 
 ### 33.3 Provider Seam
 
-`shellpilot/web/search.py` defines a `SearchProvider` `Protocol` with a single `search(query, *, max_results)` method. `DuckDuckGoProvider` is the only production implementation. To use an alternative engine, implement the protocol and pass the instance to `make_web_tools(provider, fetcher)` — the factory is the injection point. There is no plugin registry by design; the concrete type is chosen at construction time (`default_web_tools()` wires the production pair).
+`shellpilot/web/search.py` defines a `SearchProvider` `Protocol` with a single `search(query, *, max_results)` method. `DuckDuckGoProvider` is the only production implementation (the tool description itself is provider-neutral; a configurable provider seam is planned for a later release). To use an alternative engine, implement the protocol and pass the instance to `make_web_tools(provider, fetcher)` — the factory is the injection point. There is no plugin registry by design; the concrete type is chosen at construction time (`default_web_tools()` wires the production pair).
 
 Search quality is a known watch item: DDG HTML results vary by region, UA, and page layout; if quality proves insufficient the provider seam makes a swap straightforward without touching the approval or tool-output layers.
 

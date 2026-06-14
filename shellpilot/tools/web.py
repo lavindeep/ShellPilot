@@ -94,13 +94,15 @@ def make_web_tools(provider: SearchProvider, fetcher: PageFetcher) -> list[ToolS
         definition=ToolDefinition(
             name="web_search",
             description=(
-                "Search the web via DuckDuckGo and return a numbered list of results "
+                "Search the web and return a numbered list of results "
                 "(title, URL, snippet). "
                 "IMPORTANT: this tool contacts the internet — every call requires "
                 "individual user approval before it runs. "
                 "Prefer local project evidence (read_file, search_text) before reaching "
                 "out to the web. "
-                "No API key required; results are from the public DuckDuckGo index."
+                "Results are leads, not evidence: a snippet is a preview, not the source. "
+                "To ground a factual, current, or numeric claim, follow up with web_fetch "
+                "on the most authoritative result and read the page itself."
             ),
             parameters={
                 "query": {
