@@ -2116,7 +2116,7 @@ For filesystem user roots, all discovered resource and script entry paths are re
 
 **Scripts**
 
-`scripts/manifest.json` is parsed with stdlib `json` only. The loader never executes scripts. Manifest entries create `SkillScript` values and must include `name`, `entry`, `description`, `mode`, and `timeout_seconds`. `mode` must be `"read"` or `"write"`, `timeout_seconds` must be a positive integer, and `entry` must be a bare relative filename that exists directly under `scripts/`. Malformed JSON creates one invalid placeholder script for the manifest; malformed entries create invalid scripts with precise errors. Direct script files without a manifest are ignored with a warning. Runtime execution, permission prompts, and script result handling are deferred to v0.8.0.
+`scripts/manifest.json` is parsed with stdlib `json` only. The loader never executes scripts. Manifest entries create `SkillScript` values and must include `name`, `entry`, `description`, `mode`, and `timeout_seconds`. `mode` must be `"read"` or `"write"`, `timeout_seconds` must be a positive integer, and `entry` must be a bare relative filename that exists directly under `scripts/`. Malformed JSON creates one invalid placeholder script for the manifest; malformed entries create invalid scripts with precise errors. Direct script files without a manifest are ignored with a warning. Runtime execution, permission prompts, and script result handling are deferred to a later release with its own safety design.
 
 ### 23.3 Heavier Capability Packs (v3 candidate)
 
@@ -2139,7 +2139,7 @@ Example future packs:
 - `node_project`
 - `git_workflow`
 
-Skills v2 is implemented in v0.7.0 (sections 23.1-23.2): deterministic trigger selection, builtin planning modes, read-only references/templates, and script manifest discovery without execution. Runtime script execution is explicitly deferred to v0.8.0 with its own safety design. Capability loading for heavier packs — tools, handlers, and permissions — is designed but not yet implemented (v3 candidate, 2026-06-11).
+Skills v2 is implemented in v0.7.0 (sections 23.1-23.2): deterministic trigger selection, builtin planning modes, read-only references/templates, and script manifest discovery without execution. Runtime script execution is explicitly deferred to a later release with its own safety design. Capability loading for heavier packs — tools, handlers, and permissions — is designed but not yet implemented (v3 candidate, 2026-06-11).
 
 ## 24. Operational Edge Cases
 
@@ -2276,7 +2276,7 @@ The rebuild should stay light. The goal is a reliable local harness, not a frame
 
 - Do not add a dependency unless it removes meaningful code or risk.
 - Do not add a module until there is a real boundary or file size pressure.
-- Skills v2 (section 23) is the current lightweight extension boundary. Script execution is deferred to v0.8.0, and heavier pack machinery (tools, handlers, permissions) must wait until a concrete heavier capability is being implemented.
+- Skills v2 (section 23) is the current lightweight extension boundary. Script execution is deferred to a later release, and heavier pack machinery (tools, handlers, permissions) must wait until a concrete heavier capability is being implemented.
 - Do not make every nice command a slash command; prefer natural language and keep slash commands for harness controls.
 - Do not add a second model/provider abstraction in v1.
 - Do not make security slower than necessary; deterministic policy comes first.
