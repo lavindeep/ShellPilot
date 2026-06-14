@@ -75,7 +75,7 @@ shellpilot          # start the conversation
 
 ```text
 $ shellpilot
-ShellPilot 0.7.0
+ShellPilot 0.7.1
 gemma4:e4b · balanced · /help for commands
 
 ~/my-project · gemma4:e4b · balanced
@@ -173,7 +173,7 @@ python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 
 ## Roadmap
 
-v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v0.5.0 added opt-in web grounding and image input/attachments. v0.6.0 added Skills v1, `/context`, `/skills`, runtime config editing, plan-state restore on `--resume`, and config-validation hardening. v0.7.0 adds Skills v2: trigger-driven builtin guidance, read-only references/templates, enriched skill/context visibility, and script manifest discovery without execution. v0.8.0 is reserved for controlled script execution with its own safety design; v0.9.0 can add richer workflow skills such as debugging, verification, review, and git. A `trusted-local` security profile, heavier capability packs (tools/handlers/permissions), and `/undo` remain future candidates — per section 25.2.
+v2 shipped across v0.2.0 (terminal UI redesign, [DESIGN.md](docs/DESIGN.md) section 31), v0.3.0 (memory system, session resume/export, selective compaction), and v0.4.0 (boot model picker with tested/untested tags, model preload eliminating cold-start stall, multi-model support for gemma4 + qwen3.5, plan-execution straight-through). v0.5.0 added opt-in web grounding and image input/attachments. v0.6.0 added Skills v1, `/context`, `/skills`, runtime config editing, plan-state restore on `--resume`, and config-validation hardening. v0.7.0 adds Skills v2: trigger-driven builtin guidance, read-only references/templates, enriched skill/context visibility, and script manifest discovery without execution. v0.7.1 makes high-risk command approvals appear instantly by generating the risk explanation deterministically from the classifier instead of via a blocking model call. v0.8.0 is reserved for controlled script execution with its own safety design; v0.9.0 can add richer workflow skills such as debugging, verification, review, and git. A `trusted-local` security profile, heavier capability packs (tools/handlers/permissions), and `/undo` remain future candidates — per section 25.2.
 
 ## License
 
