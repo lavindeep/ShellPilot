@@ -78,7 +78,12 @@ def make_web_tools(provider: SearchProvider, fetcher: PageFetcher) -> list[ToolS
         lines.append("")
         lines.append(page.text)
         if page.truncated:
-            lines.append("\n[content truncated]")
+            lines.append(
+                "\n[content truncated — showing the first part of the page; "
+                "fetch a more specific official URL (such as a releases, docs, "
+                "changelog, pricing, or API reference page) if the needed fact "
+                "is not visible]"
+            )
         content = "\n".join(lines)
         summary = f"fetched {page.url}"
         if page.truncated:

@@ -203,7 +203,7 @@ def test_web_fetch_returns_page_text(tmp_path: Path) -> None:
 
 
 def test_web_fetch_truncation_flagged(tmp_path: Path) -> None:
-    """Truncated pages set result.truncated = True."""
+    """Truncated pages set result.truncated = True and include actionable marker."""
     page = FetchedPage(
         url="https://example.com/long",
         title="Long Page",
@@ -218,6 +218,7 @@ def test_web_fetch_truncation_flagged(tmp_path: Path) -> None:
 
     assert result.success is True
     assert result.truncated is True
+    assert "fetch a more specific official URL" in result.content
 
 
 def test_web_fetch_failure_returns_failed_result(tmp_path: Path) -> None:
