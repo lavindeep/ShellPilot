@@ -40,7 +40,7 @@ ShellPilot is not a cloud coding agent, a general multi-provider SDK, a sandbox,
 - **Local audit log.** Approvals, commands, edits, and config changes are recorded as redacted JSONL.
 - **Manual Shell.** `/shell` opens a clearly-bannered raw shell mode that the model never touches.
 - **Model picker and warmup.** ShellPilot lists installed Ollama models at boot, tags tested families, remembers the workspace choice, and preloads the selected model to avoid the first-turn cold-start stall.
-- **Opt-in web grounding.** `[tools] web = true` registers `web_search` and `web_fetch`, both off by default and always approval-gated. v0.8.0 teaches the model to treat search snippets as leads, fetch the source before factual/current claims, and use a more specific URL when a page is truncated.
+- **Opt-in web grounding.** `[tools] web = true` registers `web_search` and `web_fetch`, both off by default and always approval-gated. v0.8.0 teaches the model to treat search snippets as leads, fetch the source before factual/current claims, and use a more specific URL when a page is truncated; v0.8.1 adds fetch-recovery (re-search rather than guess a URL when a fetch is blocked) and confirming the current generation from the source instead of trusting the version named in the question.
 - **Skills v2.** Triggered markdown skills add only the guidance relevant to the current runtime state. Builtins cover planning, context management, web grounding, and skill authoring; references and templates are read-only resources; scripts are visible but not executed.
 - **Image input.** `/attach <path>` stages png, jpg, gif, or webp images for the next message when the active model supports vision.
 - **Model-free CI.** A fake LLM client exercises the runtime in tests, so CI needs no GPU or Ollama.
@@ -99,7 +99,7 @@ shellpilot          # start the conversation
 
 ```text
 $ shellpilot
-ShellPilot 0.8.0
+ShellPilot 0.8.1
 gemma4:e4b · balanced · /help for commands
 
 ~/my-project · gemma4:e4b · balanced
@@ -204,6 +204,7 @@ Recent shipped milestones:
 - **v0.7.0:** Skills v2 with trigger-driven builtin guidance, read-only references/templates, enriched skill/context visibility, and script manifest discovery without execution.
 - **v0.7.1:** instant high-risk approval prompts by generating purpose text deterministically from classifier reasons instead of through a blocking model call.
 - **v0.8.0:** web-grounding quality for small local models. The `web-grounding` skill now carries fetch-before-answer guidance and discover-first query shaping, `web_search` is provider-neutral and points to `web_fetch`, and truncated fetches point the model toward a more specific source.
+- **v0.8.1:** web-grounding hardening. The skill now tells the model to fetch only URLs that appeared in search results and re-search instead of guessing when a fetch is blocked or fails, and to confirm the current generation from the source rather than trust the version named in the question.
 
 Next likely release:
 
