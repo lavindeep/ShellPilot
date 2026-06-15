@@ -404,7 +404,10 @@ def test_builtin_trigger_map_and_resources_by_folder_name() -> None:
     assert "leads, not evidence" in builtins["web-grounding"].body
     assert "separate search" in builtins["web-grounding"].body
     assert "official" in builtins["web-grounding"].body
-    assert builtins["web-grounding"].est_tokens <= 300
+    assert "fetch only URLs from the search results" in builtins["web-grounding"].body
+    assert "blocked or fails" in builtins["web-grounding"].body
+    assert "don't assume the version" in builtins["web-grounding"].body
+    assert builtins["web-grounding"].est_tokens <= 340
     assert builtins["web-grounding"].references == ()
     assert builtins["web-grounding"].templates == ()
     assert builtins["web-grounding"].scripts == ()

@@ -2082,7 +2082,7 @@ The builtin `planning` skill is the canonical first builtin: it is always enable
 
 The other v0.7.0 builtins are:
 - `context-management/` (`ALWAYS_ON`): tiny context hygiene guidance plus discovered-only `references/file-triage.md` and `references/context-budgeting.md`.
-- `web-grounding/` (`WEB_ENABLED`): standing grounding guidance, expanded in v0.8.0 — web tools being available does not mean use web; treat search snippets as leads, not evidence, and fetch the official source with web_fetch before asserting factual/current/numeric claims; decompose multi-entity or comparison questions into separate searches; shape discover-first queries and prefer a specific page over a homepage; cite sources; network calls require approval.
+- `web-grounding/` (`WEB_ENABLED`): standing grounding guidance, expanded in v0.8.0, hardened in v0.8.1 — web tools being available does not mean use web; treat search snippets as leads, not evidence, and fetch the official source with web_fetch before asserting factual/current/numeric claims; don't assume the version or name in the question is current — confirm the current generation from the source; decompose multi-entity or comparison questions into separate searches; shape discover-first queries and prefer a specific page over a homepage; fetch only URLs from the search results rather than inventing one; if a fetch is blocked or fails (403/404), search again for another authoritative source rather than guessing; cite sources; network calls require approval.
 - `skill-authoring/` (`ENABLED`): opt-in guidance for creating skills, with discovered-only references (`skill-anatomy.md`, `trigger-writing.md`, `resource-routing.md`) and templates (`SKILL.md`, `skill-eval.md`).
 
 **`/skills` command**
@@ -2642,9 +2642,9 @@ Settled 2026-06-11 (Task A9).
 
 **`/model use <name>`:** after switching the active model via the slash command, `SlashDispatcher` also calls the preload helper so the new model is warm before the next user turn.
 
-## 33. Web Grounding (v0.5.0; v0.8.0 Grounding Guidance)
+## 33. Web Grounding (v0.5.0; v0.8.0 Grounding Guidance; v0.8.1 Fetch Recovery)
 
-Settled 2026-06-11 (Tasks B1–B6). v0.8.0 keeps the same tools and provider backend, but improves the model-facing guidance: `web_search` is described as provider-neutral leads, `web_fetch` is the grounding step for factual/current claims, and truncated fetches point the model toward a more specific source.
+Settled 2026-06-11 (Tasks B1–B6). v0.8.0 keeps the same tools and provider backend, but improves the model-facing guidance: `web_search` is described as provider-neutral leads, `web_fetch` is the grounding step for factual/current claims, and truncated fetches point the model toward a more specific source. v0.8.1 adds two standing rules to the `web-grounding` builtin skill: (1) fetch only URLs that appeared in search results rather than inventing a URL, and on a blocked or failed fetch (403/404) search again for another authoritative source instead of guessing; (2) don't trust the version or name in the user's question as current — confirm the current generation from the fetched source.
 
 ### 33.1 Scope And Privacy Stance
 

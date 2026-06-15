@@ -165,3 +165,4 @@ def test_web_grounding_skill_injected_when_web_enabled(tmp_path: Path) -> None:
     system_text = fake.calls[0].messages[0].content
     assert "## Skill: web-grounding" in system_text
     assert "leads, not evidence" in system_text
+    assert "fetch only URLs from the search results" in system_text
