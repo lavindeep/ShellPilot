@@ -42,13 +42,22 @@ from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_
 from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
 from shellpilot.config.model import Settings
 from shellpilot.llm.ollama import OllamaClient, OllamaError
-from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
+from shellpilot.memory.agents_md import (
+    BehaviorInstructions,
+    load_behavior_instructions,
+    project_agents_md_digest,
+)
 from shellpilot.memory.redaction import redact_structure
 from shellpilot.memory.store import MemoryFormatError, MemoryStore, MemoryStores, project_id_for
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.paths import AppPaths, project_state_dir
 from shellpilot.persistence.sessions import SessionStore
-from shellpilot.persistence.workspace_state import load_last_model, save_last_model
+from shellpilot.persistence.workspace_state import (
+    load_last_model,
+    load_trusted_agents_digest,
+    save_last_model,
+    save_trusted_agents_digest,
+)
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -64,6 +73,43 @@ def should_discard_interrupt(
     just-finished turn only when it arrives almost immediately after the
     prompt starts reading; a later interrupt is the user's own."""
     return turn_just_ran and elapsed_seconds < window_seconds
+
+
+def _resolve_project_agents_trust(console: Console, workspace: Path, *, tty: bool) -> bool:
+    """Trust-on-first-use gate for the project ``<workspace>/AGENTS.md``.
+
+    The project AGENTS.md is injected as standing instructions with the same
+    authority as ShellPilot's own prompt, so a cloned/untrusted repo could
+    silently steer the assistant. Load it only when its current digest matches
+    a previously accepted one, or after the user accepts it this session.
+    A non-TTY session fails closed (not loaded). Global config-dir AGENTS.md is
+    unaffected — it is always trusted. (Design section 16.)
+    """
+    digest = project_agents_md_digest(workspace)
+    if digest is None:
+        return True  # no project AGENTS.md to gate
+    trusted = load_trusted_agents_digest(workspace)
+    if digest == trusted:
+        return True
+    if not tty:
+        console.print("[sp.dim]Project AGENTS.md not loaded (non-interactive; untrusted).[/sp.dim]")
+        return False
+    note = "changed since you last trusted it" if trusted is not None else "new"
+    console.print(
+        f"[yellow]Project AGENTS.md[/yellow] at "
+        f"[sp.faint]{escape(str(workspace / 'AGENTS.md'))}[/sp.faint] is {note}.\n"
+        "[sp.dim]It would be loaded as standing instructions with the same "
+        "authority as ShellPilot's own prompt.[/sp.dim]"
+    )
+    try:
+        answer = console.input("  Trust and load it? [sp.dim]\\[y/N][/sp.dim] ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        save_trusted_agents_digest(workspace, digest)
+        return True
+    console.print("[sp.dim]Project AGENTS.md not loaded (declined).[/sp.dim]")
+    return False
 
 
 class TerminalUI:
@@ -281,7 +327,10 @@ def run_interactive(
     ctx = detected or 8192
     if settings.instructions.load_agents_md:
         cap = min(1500, ctx // 10)
-        behavior = load_behavior_instructions(paths.config_dir, workspace, max_tokens=cap)
+        project_trusted = _resolve_project_agents_trust(console, workspace, tty=tty)
+        behavior = load_behavior_instructions(
+            paths.config_dir, workspace, max_tokens=cap, project_trusted=project_trusted
+        )
     else:
         behavior = BehaviorInstructions(global_text=None, project_text=None)
 

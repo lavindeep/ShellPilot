@@ -1334,6 +1334,17 @@ Human-editable files:
 <project>/AGENTS.md
 ```
 
+#### 16.2.1 Project AGENTS.md trust-on-first-use
+
+The project `<workspace>/AGENTS.md` is injected as standing "Project instructions" with the same authority as ShellPilot's own system prompt. Cloning or running inside an untrusted repository would otherwise silently load attacker-authored standing instructions (and, under opt-in cloud, egress them). The project file is therefore trust-on-first-use (TOFU):
+
+- The **global** `<config-dir>/AGENTS.md` is always trusted and loaded — it is the user's own file.
+- The **project** `<workspace>/AGENTS.md` is loaded only after the user accepts it. Acceptance is recorded in `.shellpilot/state.json` as the `trusted_agents_md` SHA-256 digest of the file's raw bytes.
+- On boot, the current digest is compared to the recorded one. If they match, the file loads without prompting. If it is new or its content has changed since it was last trusted (any byte change flips the digest), the user is re-prompted (default No) and the file is loaded only on acceptance.
+- A **non-TTY** session fails closed: the project file is not loaded (no way to obtain consent).
+
+Storing the digest never clobbers the recorded last-selected model; both keys coexist in `state.json` via read-merge-write.
+
 Structured memory:
 
 ```json

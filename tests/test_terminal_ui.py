@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from shellpilot.cli.terminal import TerminalUI, should_discard_interrupt
+from shellpilot.cli.terminal import (
+    TerminalUI,
+    _resolve_project_agents_trust,
+    should_discard_interrupt,
+)
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS
 from shellpilot.memory.redaction import REDACTED
 from shellpilot.policy.approvals import ApprovalRequest
@@ -335,3 +339,83 @@ def test_custom_window_seconds() -> None:
         should_discard_interrupt(turn_just_ran=True, elapsed_seconds=0.06, window_seconds=0.05)
         is False
     )
+
+
+def make_trust_console(answers: list[str]) -> Console:
+    console = make_console()
+    answer_iter: Iterator[str] = iter(answers)
+
+    def fake_input(prompt: str = "", **kwargs: object) -> str:
+        console.print(prompt, end="")
+        return next(answer_iter)
+
+    console.input = fake_input  # type: ignore[method-assign]
+    return console
+
+
+def test_trust_no_project_agents_md_returns_true(tmp_path: Path) -> None:
+    console = make_console()
+    assert _resolve_project_agents_trust(console, tmp_path, tty=True) is True
+
+
+def test_trust_already_trusted_digest_no_prompt(tmp_path: Path) -> None:
+    from shellpilot.memory.agents_md import project_agents_md_digest
+    from shellpilot.persistence.workspace_state import save_trusted_agents_digest
+
+    (tmp_path / "AGENTS.md").write_text("Project rules.", encoding="utf-8")
+    digest = project_agents_md_digest(tmp_path)
+    assert digest is not None
+    save_trusted_agents_digest(tmp_path, digest)
+    # No input wired: if it tried to prompt, this would raise StopIteration.
+    console = make_trust_console([])
+    assert _resolve_project_agents_trust(console, tmp_path, tty=True) is True
+
+
+def test_trust_non_tty_fails_closed(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("Project rules.", encoding="utf-8")
+    console = make_console()
+    assert _resolve_project_agents_trust(console, tmp_path, tty=False) is False
+    assert "not loaded" in console.export_text()
+
+
+def test_trust_accept_records_digest(tmp_path: Path) -> None:
+    from shellpilot.memory.agents_md import project_agents_md_digest
+    from shellpilot.persistence.workspace_state import load_trusted_agents_digest
+
+    (tmp_path / "AGENTS.md").write_text("Project rules.", encoding="utf-8")
+    console = make_trust_console(["y"])
+    assert _resolve_project_agents_trust(console, tmp_path, tty=True) is True
+    assert load_trusted_agents_digest(tmp_path) == project_agents_md_digest(tmp_path)
+
+
+def test_trust_decline_does_not_record(tmp_path: Path) -> None:
+    from shellpilot.persistence.workspace_state import load_trusted_agents_digest
+
+    (tmp_path / "AGENTS.md").write_text("Project rules.", encoding="utf-8")
+    console = make_trust_console(["n"])
+    assert _resolve_project_agents_trust(console, tmp_path, tty=True) is False
+    assert load_trusted_agents_digest(tmp_path) is None
+
+
+def test_trust_changed_content_reprompts(tmp_path: Path) -> None:
+    from shellpilot.memory.agents_md import project_agents_md_digest
+    from shellpilot.persistence.workspace_state import save_trusted_agents_digest
+
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("Original rules.", encoding="utf-8")
+    save_trusted_agents_digest(tmp_path, project_agents_md_digest(tmp_path) or "")
+    agents.write_text("Tampered rules.", encoding="utf-8")
+    console = make_trust_console(["n"])
+    assert _resolve_project_agents_trust(console, tmp_path, tty=True) is False
+    assert "changed since" in console.export_text()
+
+
+def test_trust_eof_declines(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("Project rules.", encoding="utf-8")
+    console = make_console()
+
+    def raise_eof(prompt: str = "", **kwargs: object) -> str:
+        raise EOFError
+
+    console.input = raise_eof  # type: ignore[method-assign]
+    assert _resolve_project_agents_trust(console, tmp_path, tty=True) is False
