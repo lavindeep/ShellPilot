@@ -91,6 +91,22 @@ def test_python_script_with_version_argument_requires_approval() -> None:
     assert result.risk == RiskLevel.MEDIUM
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["grep", "pattern", "."], RiskLevel.LOW),
+        (["./grep", "pattern", "."], RiskLevel.MEDIUM),
+        (["/usr/bin/ls"], RiskLevel.MEDIUM),
+        (["/bin/rm", "-rf", "x"], RiskLevel.HIGH),
+        (["/usr/bin/sudo"], RiskLevel.HIGH),
+        (["/bin/cat", "/etc/passwd"], RiskLevel.HIGH),
+    ],
+)
+def test_path_qualified_executable_has_medium_floor(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
 @pytest.mark.parametrize(("argv", "expected"), GIT_PRE_VERB_CASES, ids=lambda case: str(case))
 def test_git_pre_verb_global_classification(argv: list[str], expected: RiskLevel) -> None:
     result = classify_command(argv, workspace=WS)

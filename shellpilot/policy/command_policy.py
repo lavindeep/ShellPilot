@@ -244,6 +244,12 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
         return CommandRisk(RiskLevel.BLOCKED, ("empty command",))
 
     executable = Path(argv[0]).name
+    if argv[0] != executable:
+        risk = classify_command([executable, *argv[1:]], workspace=workspace)
+        if risk.risk == RiskLevel.LOW:
+            return CommandRisk(RiskLevel.MEDIUM, ("path-qualified executable",))
+        return risk
+
     secret = _touches_secret_path(argv)
 
     if executable in HIGH_COMMANDS:
