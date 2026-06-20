@@ -169,6 +169,11 @@ class ConversationRuntime:
 
             for spec in default_web_tools():
                 self._registry.register(spec)
+        if settings.skills.enabled:
+            from shellpilot.tools.skill_tools import make_skill_read_tool
+
+            valid_skills = tuple(s for s in self._skills if s.valid)
+            self._registry.register(make_skill_read_tool(valid_skills))
         self.budget = self._resolve_budget()
         self._assembler = ContextAssembler()
 

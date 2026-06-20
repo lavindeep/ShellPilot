@@ -1076,3 +1076,39 @@ def test_discover_manifest_entry_count_capped_at_max_resources_per_kind(tmp_path
 
     assert len(skill.scripts) == loader.MAX_RESOURCES_PER_KIND
     assert all(s.valid for s in skill.scripts)
+
+
+# ---------------------------------------------------------------------------
+# is_on_demand predicate (section 23.4)
+# ---------------------------------------------------------------------------
+
+
+def test_is_on_demand_true_when_trigger_is_none() -> None:
+    """A SkillResource with trigger=None is on_demand."""
+    from shellpilot.skills.model import SkillResource, is_on_demand
+
+    resource = SkillResource(
+        kind="reference",
+        name="guide",
+        rel_path="references/guide.md",
+        text="Some guide text.",
+        est_tokens=3,
+        trigger=None,
+    )
+    assert is_on_demand(resource) is True
+
+
+def test_is_on_demand_false_when_trigger_is_set() -> None:
+    """A SkillResource with a trigger is not on_demand."""
+    from shellpilot.skills.model import SkillResource, SkillTrigger, is_on_demand
+
+    for trigger in SkillTrigger:
+        resource = SkillResource(
+            kind="template",
+            name="tmpl",
+            rel_path="templates/tmpl.md",
+            text="text",
+            est_tokens=1,
+            trigger=trigger,
+        )
+        assert is_on_demand(resource) is False, f"Expected False for trigger={trigger}"

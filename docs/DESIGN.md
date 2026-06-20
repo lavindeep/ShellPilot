@@ -2161,6 +2161,20 @@ Example future packs:
 
 Skills v2 is implemented in v0.7.0 (sections 23.1-23.2): deterministic trigger selection, builtin planning modes, read-only references/templates, and script manifest discovery without execution. Runtime script execution is explicitly deferred to a later release with its own safety design. Capability loading for heavier packs — tools, handlers, and permissions — is designed but not yet implemented (v3 candidate, 2026-06-11).
 
+### 23.4 Skills v3 — Progressive Disclosure (v0.9.0)
+
+Progressive disclosure lets the model read a skill's deeper docs on demand rather than force-injecting them into every prompt. A resource is **on-demand** when its `trigger` field is `None`; triggered resources remain injected as before. No data-model or loader change is required — `SkillResource.trigger` was already nullable.
+
+**Predicate.** `is_on_demand(resource: SkillResource) -> bool` returns `True` when `resource.trigger is None`. The explicit `disclosure` dial for per-model profiles will replace this predicate when that consumer ships (planned for v0.10.x).
+
+**`skill_read` tool.** A `make_skill_read_tool(skills)` factory builds a `ToolSpec` named `skill_read` closed over the discovered skills; the handler resolves only **valid** ones (see Registration). The model calls it with two required string args: `skill` (skill name) and `resource` (document name). Resolution is pure exact-string matching against in-memory `Skill` objects — no filesystem access, no path interpretation. A `resource` value that looks like a path (e.g. `"../secret"` or `"references/foo.md"`) simply matches nothing and returns a clean failure. The handler searches `skill.references + skill.templates` in that order. On failure it lists the available names so the model can correct itself. `resource.text` is already byte/token-bounded at load, so no additional truncation is applied.
+
+**Policy.** `SideEffect.NONE`, `RiskLevel.LOW` — the tool reads only in-memory text copied from the already-loaded skill objects, so no approval gate fires.
+
+**Registration.** `skill_read` is registered in the runtime only when `settings.skills.enabled` is non-empty. A default session (empty `enabled`) gets no `skill_read` tool, leaving the baseline unchanged. `discover_skills` returns valid *and* invalid skills, so the runtime filters to valid skills before building the tool **and** the handler independently skips any non-valid skill (omitting it from the available-names listing). Invalid and reserved skills are therefore unreadable through `skill_read` — closing the only path that could otherwise expose them, since the injection/assembler path is valid-skills-only. The tool reads **any valid skill by name**, not only the `enabled`-named ones, so the model can consult any active skill's docs; this scope is intentional — all such resources are local, non-secret skill content.
+
+**Advertisement.** The `Readable:` menu that advertises on-demand resource names to the model is added in Task 2 of v0.9.0 and is not part of this section.
+
 ## 24. Operational Edge Cases
 
 These edge cases should be accounted for in design and tests. They do not all need elaborate v1 implementations, but the runtime should fail clearly and avoid unsafe behavior.
