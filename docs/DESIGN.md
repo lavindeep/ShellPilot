@@ -2101,7 +2101,7 @@ The builtin `planning` skill is the canonical first builtin: it is always enable
 The other v0.7.0 builtins are:
 - `context-management/` (`ALWAYS_ON`): tiny context hygiene guidance plus discovered-only `references/file-triage.md` and `references/context-budgeting.md`.
 - `web-grounding/` (`WEB_ENABLED`): standing grounding guidance, expanded in v0.8.0, hardened in v0.8.1 — web tools being available does not mean use web; treat search snippets as leads, not evidence, and fetch the official source with web_fetch before asserting factual/current/numeric claims; don't assume the version or name in the question is current — confirm the current generation from the source; decompose multi-entity or comparison questions into separate searches; shape discover-first queries and prefer a specific page over a homepage; fetch only URLs from the search results rather than inventing one; if a fetch is blocked or fails (403/404), search again for another authoritative source rather than guessing; cite sources; network calls require approval.
-- `skill-authoring/` (`ENABLED`): opt-in guidance for creating skills, with discovered-only references (`skill-anatomy.md`, `trigger-writing.md`, `resource-routing.md`) and templates (`SKILL.md`, `skill-eval.md`).
+- `skill-authoring/` (`ENABLED`): opt-in guidance for creating skills. Its references (`skill-anatomy.md`, `trigger-writing.md`, `resource-routing.md`) are fleshed-out, trigger-less authoring docs — on-demand-readable via `skill_read`, not injected — and templates (`SKILL.md`, `skill-eval.md`). The `SKILL.md` body is the canonical progressive-disclosure example: a lean body that routes to each reference by name with when-to-read guidance rather than inlining the depth.
 
 **`/skills` command**
 
