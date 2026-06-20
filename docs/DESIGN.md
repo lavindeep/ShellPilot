@@ -2101,7 +2101,7 @@ The builtin `planning` skill is the canonical first builtin: it is always enable
 The other v0.7.0 builtins are:
 - `context-management/` (`ALWAYS_ON`): tiny context hygiene guidance plus discovered-only `references/file-triage.md` and `references/context-budgeting.md`.
 - `web-grounding/` (`WEB_ENABLED`): standing grounding guidance, expanded in v0.8.0, hardened in v0.8.1 — web tools being available does not mean use web; treat search snippets as leads, not evidence, and fetch the official source with web_fetch before asserting factual/current/numeric claims; don't assume the version or name in the question is current — confirm the current generation from the source; decompose multi-entity or comparison questions into separate searches; shape discover-first queries and prefer a specific page over a homepage; fetch only URLs from the search results rather than inventing one; if a fetch is blocked or fails (403/404), search again for another authoritative source rather than guessing; cite sources; network calls require approval.
-- `skill-authoring/` (`ENABLED`): opt-in guidance for creating skills, with discovered-only references (`skill-anatomy.md`, `trigger-writing.md`, `resource-routing.md`) and templates (`SKILL.md`, `skill-eval.md`).
+- `skill-authoring/` (`ENABLED`): opt-in guidance for creating skills. Its references (`skill-anatomy.md`, `trigger-writing.md`, `resource-routing.md`) are fleshed-out, trigger-less authoring docs — on-demand-readable via `skill_read`, not injected — and templates (`SKILL.md`, `skill-eval.md`). The `SKILL.md` body is the canonical progressive-disclosure example: a lean body that routes to each reference by name with when-to-read guidance rather than inlining the depth.
 
 **`/skills` command**
 
@@ -2160,6 +2160,20 @@ Example future packs:
 - `git_workflow`
 
 Skills v2 is implemented in v0.7.0 (sections 23.1-23.2): deterministic trigger selection, builtin planning modes, read-only references/templates, and script manifest discovery without execution. Runtime script execution is explicitly deferred to a later release with its own safety design. Capability loading for heavier packs — tools, handlers, and permissions — is designed but not yet implemented (v3 candidate, 2026-06-11).
+
+### 23.4 Skills v3 — Progressive Disclosure (v0.9.0)
+
+Progressive disclosure lets the model read a skill's deeper docs on demand rather than force-injecting them into every prompt. A resource is **on-demand** when its `trigger` field is `None`; triggered resources remain injected as before. No data-model or loader change is required — `SkillResource.trigger` was already nullable.
+
+**Predicate.** `is_on_demand(resource: SkillResource) -> bool` returns `True` when `resource.trigger is None`. The explicit `disclosure` dial for per-model profiles will replace this predicate when that consumer ships (planned for v0.10.x).
+
+**`skill_read` tool.** A `make_skill_read_tool(skills)` factory builds a `ToolSpec` named `skill_read` closed over the discovered skills; the handler resolves only **valid** ones (see Registration). The model calls it with two required string args: `skill` (skill name) and `resource` (document name). Resolution is pure exact-string matching against in-memory `Skill` objects — no filesystem access, no path interpretation. A `resource` value that looks like a path (e.g. `"../secret"` or `"references/foo.md"`) simply matches nothing and returns a clean failure. The handler searches `skill.references + skill.templates` in that order. On failure it lists the available names so the model can correct itself. `resource.text` is already byte/token-bounded at load, so no additional truncation is applied.
+
+**Policy.** `SideEffect.NONE`, `RiskLevel.LOW` — the tool reads only in-memory text copied from the already-loaded skill objects, so no approval gate fires.
+
+**Registration.** `skill_read` is registered in the runtime only when `settings.skills.enabled` is non-empty. A default session (empty `enabled`) gets no `skill_read` tool, leaving the baseline unchanged. `discover_skills` returns valid *and* invalid skills, so the runtime filters to valid skills before building the tool **and** the handler independently skips any non-valid skill (omitting it from the available-names listing). Invalid and reserved skills are therefore unreadable through `skill_read` — closing the only path that could otherwise expose them, since the injection/assembler path is valid-skills-only. The tool reads **any valid skill by name**, not only the `enabled`-named ones, so the model can consult any active skill's docs; this scope is intentional — all such resources are local, non-secret skill content.
+
+**`Readable:` menu.** After the skills-index block, the assembler injects a one-line `"skills readable"` block advertising the on-demand docs of every injected skill: `Readable docs (open with skill_read): <skill>: <name>, <name>; <skill>: <name>`. Only skills with ≥1 on-demand resource appear; names are references before templates, deduped per skill. The block is injected only when `trigger_ctx.enabled` is non-empty (mirroring the `skill_read` registration gate exactly — see Registration above), so a default session with no opted-in skills sees no menu and the baseline system text is unchanged. The block is not budget-counted; it is a bounded single line, not skill body content.
 
 ## 24. Operational Edge Cases
 

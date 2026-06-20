@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from shellpilot.runtime.budget import estimate_tokens
-from shellpilot.skills.model import Skill, SkillResource, SkillTrigger
+from shellpilot.skills.model import Skill, SkillResource, SkillTrigger, is_on_demand
 from shellpilot.skills.triggers import TriggerContext, any_fires, fires
 
 
@@ -162,6 +162,7 @@ class ContextAssembler:
         all_skills = list(skills)
         skill_blocks: list[ContextBlock] = []
         injected_names: list[str] = []
+        readable: list[tuple[str, list[str]]] = []  # (skill_name, [on-demand resource names])
         decisions_by_id: dict[int, SkillDecision] = {}
         cumulative = 0
         budget_blown = False
@@ -250,6 +251,15 @@ class ContextAssembler:
                         injected=True,
                     )
                 )
+            # Collect on-demand resource names (refs before templates; dedupe per-skill).
+            seen: set[str] = set()
+            on_demand_names: list[str] = []
+            for resource in skill.references + skill.templates:
+                if is_on_demand(resource) and resource.name not in seen:
+                    seen.add(resource.name)
+                    on_demand_names.append(resource.name)
+            if on_demand_names:
+                readable.append((skill.name, on_demand_names))
             decisions_by_id[id(skill)] = SkillDecision(
                 skill=skill.name,
                 root=skill.root,
@@ -271,7 +281,20 @@ class ContextAssembler:
             reason="" if index_injected else "no skill bodies injected",
         )
 
-        blocks = (
+        # Build the readable menu: one line advertising on-demand docs for injected skills.
+        # Gate mirrors skill_read registration: present only when enabled is non-empty.
+        # ponytail: not budget-counted — it's a bounded single line, not skill content.
+        readable_block: ContextBlock | None = None
+        if trigger_ctx.enabled and readable:
+            parts = "; ".join(f"{name}: {', '.join(names)}" for name, names in readable)
+            readable_block = ContextBlock(
+                name="skills readable",
+                source="skills",
+                text=f"Readable docs (open with skill_read): {parts}",
+                injected=True,
+            )
+
+        blocks_list: list[ContextBlock] = [
             ContextBlock(
                 name="base prompt",
                 source="system",
@@ -291,13 +314,18 @@ class ContextAssembler:
                 injected=bool(memory_block),
             ),
             index_block,
-            *skill_blocks,
+        ]
+        if readable_block is not None:
+            blocks_list.append(readable_block)
+        blocks_list.extend(skill_blocks)
+        blocks_list.append(
             ContextBlock(
                 name="plan state",
                 source="plan",
                 text=plan_state,
                 injected=bool(plan_state),
-            ),
+            )
         )
+        blocks = tuple(blocks_list)
         decisions = tuple(decisions_by_id[id(skill)] for skill in all_skills)
         return ContextSnapshot(blocks=blocks, decisions=decisions)

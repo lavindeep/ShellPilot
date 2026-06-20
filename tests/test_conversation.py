@@ -825,3 +825,23 @@ def test_runtime_forwards_model_options_to_chat(tmp_path: Path) -> None:
     runtime.run_turn("hello")
 
     assert fake.calls[0].options == {"repeat_penalty": 1.3}
+
+
+# ---------------------------------------------------------------------------
+# skill_read registration gating (section 23.4)
+# ---------------------------------------------------------------------------
+
+
+def test_skill_read_absent_when_skills_disabled(tmp_path: Path) -> None:
+    """Default settings (skills.enabled=()) → skill_read not registered."""
+    fake = FakeLLM(script=[])
+    runtime = make_runtime(fake, FakeUI(), tmp_path, settings=Settings())
+    assert runtime.registry.get("skill_read") is None
+
+
+def test_skill_read_registered_when_skills_enabled(tmp_path: Path) -> None:
+    """Non-empty skills.enabled → skill_read registered in the runtime."""
+    fake = FakeLLM(script=[])
+    settings = Settings(skills=SkillSettings(enabled=("skill-authoring",)))
+    runtime = make_runtime(fake, FakeUI(), tmp_path, settings=settings)
+    assert runtime.registry.get("skill_read") is not None

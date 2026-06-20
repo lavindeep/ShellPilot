@@ -70,3 +70,9 @@ class Skill:
             raise TypeError("Skill.triggers must contain SkillTrigger values")
         if self.est_tokens < 0:
             raise ValueError("Skill.est_tokens must be non-negative")
+
+
+def is_on_demand(resource: SkillResource) -> bool:
+    # ponytail: on_demand == no trigger today; the explicit `disclosure` dial
+    # for per-model profiles replaces this when that consumer ships (v0.10.x).
+    return resource.trigger is None
