@@ -18,8 +18,7 @@ CASES: list[tuple[list[str], RiskLevel]] = [
     (["git", "diff", "--stat"], RiskLevel.LOW),
     (["git", "log", "--oneline"], RiskLevel.LOW),
     (["grep", "-R", "foo", "."], RiskLevel.LOW),
-    (["python", "-m", "pytest"], RiskLevel.LOW),
-    (["pytest", "-q"], RiskLevel.LOW),
+    (["python", "--version"], RiskLevel.LOW),
     (["uname", "-a"], RiskLevel.LOW),
     # Medium: workspace writes, packages, network, commits
     (["rm", "file.txt"], RiskLevel.MEDIUM),
@@ -79,6 +78,17 @@ GIT_PRE_VERB_CASES: list[tuple[list[str], RiskLevel]] = [
 def test_classification_table(argv: list[str], expected: RiskLevel) -> None:
     result = classify_command(argv, workspace=WS)
     assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+@pytest.mark.parametrize("argv", [["pytest", "-q"], ["python", "-m", "pytest"]])
+def test_pytest_requires_approval(argv: list[str]) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+
+
+def test_python_script_with_version_argument_requires_approval() -> None:
+    result = classify_command(["python", "script.py", "--version"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
 
 
 @pytest.mark.parametrize(("argv", "expected"), GIT_PRE_VERB_CASES, ids=lambda case: str(case))

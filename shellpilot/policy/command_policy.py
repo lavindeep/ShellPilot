@@ -34,7 +34,6 @@ LOW_EXECUTABLES: Final = frozenset(
         "rg",
         "fgrep",
         "egrep",
-        "pytest",
         "true",
         "false",
         "ps",
@@ -283,7 +282,7 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
     if executable == "kill":
         return CommandRisk(RiskLevel.MEDIUM, ("signals a process",))
     if executable in ("python", "python3"):
-        if argv[1:3] == ["-m", "pytest"] or "--version" in argv:
+        if argv[1:] == ["--version"]:
             return CommandRisk(RiskLevel.LOW, ())
         return CommandRisk(RiskLevel.MEDIUM, ("runs arbitrary python code",))
     if executable in READER_EXECUTABLES:
