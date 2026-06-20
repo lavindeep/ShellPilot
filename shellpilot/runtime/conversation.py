@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import dataclasses
+import ipaddress
 import json
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from shellpilot.config.model import Settings
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
 from shellpilot.llm.ollama import encode_tool
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.memory.redaction import redact_secrets, redact_structure
 from shellpilot.memory.store import MemoryStores
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.sessions import SessionStore
@@ -124,12 +128,17 @@ class ConversationRuntime:
         session: SessionStore | None = None,
         memory: MemoryStores | None = None,
         skills: Sequence[Skill] | None = None,
+        base_url: str = "http://localhost:11434",
     ) -> None:
         self._audit = audit
         self._session = session
         self._memory = memory
         self._llm = llm
         self._settings = settings
+        # The model endpoint URL — the egress-locality signal. The default is
+        # loopback, so every existing caller and test (FakeLLM) is non-egressing
+        # and behaviour is byte-identical.
+        self._base_url = base_url
         self._workspace = workspace
         self._behavior = behavior
         self._ui = ui
@@ -266,6 +275,65 @@ class ConversationRuntime:
     def update_settings(self, settings: Settings) -> None:
         self._settings = settings
         self.budget = self._resolve_budget()
+
+    def _endpoint_host(self) -> str:
+        """Host of the model endpoint (for audit); empty when unparseable."""
+        return (urlsplit(self._base_url).hostname or "").rstrip(".")
+
+    def _endpoint_is_loopback(self) -> bool:
+        """True when the model endpoint is on this box (loopback = local).
+
+        Mirrors the spirit of web/fetch.py's host checks: an empty host,
+        ``localhost`` / ``*.localhost``, ``0.0.0.0``, and any loopback IP
+        (127.0.0.0/8, ::1) are local. Anything else is off-box.
+        """
+        host = self._endpoint_host()
+        if not host:
+            return True
+        if host == "localhost" or host.endswith(".localhost") or host == "0.0.0.0":
+            return True
+        ip_str = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+        return addr.is_loopback or addr.is_unspecified
+
+    def _is_egressing(self) -> bool:
+        """True when a model request leaves this device.
+
+        For now only a non-loopback base_url egresses. Part 2 (cloud models)
+        will extend this to ``... or is_cloud_model(self._model)`` — a cloud
+        model name egresses even through a localhost Ollama proxy.
+        """
+        return not self._endpoint_is_loopback()
+
+    def _redacted_for_egress(self, messages: list[Message]) -> list[Message]:
+        """Best-effort redacted COPY of *messages* for a remote send.
+
+        Defence-in-depth, NOT a guarantee: regex redaction misses novel secret
+        formats, and image/base64 data is left as-is (not redactable here — this
+        is disclosed, not protected). Never mutates ``self._history``: each
+        Message is rebuilt via dataclasses.replace with its content run through
+        redact_secrets and any tool-call arguments through redact_structure.
+        """
+        out: list[Message] = []
+        for message in messages:
+            redacted_calls = tuple(
+                dataclasses.replace(
+                    call,
+                    arguments=redact_structure(call.arguments),  # type: ignore[arg-type]
+                )
+                for call in message.tool_calls
+            )
+            out.append(
+                dataclasses.replace(
+                    message,
+                    content=redact_secrets(message.content),
+                    tool_calls=redacted_calls,
+                )
+            )
+        return out
 
     def clear_history(self) -> None:
         self._history.clear()
@@ -507,11 +575,31 @@ class ConversationRuntime:
                 Message(role="system", content=self._system_message_text()),
                 *self._history,
             ]
+            egressing = self._is_egressing()
+            if egressing and self._audit is not None:
+                # Egress visibility (F10/F12): record THAT a request left the
+                # device, to where, and how much — counts and host/model only,
+                # never message bodies. AuditLogger stamps workspace/session/ts.
+                self._audit.write(
+                    "model_request",
+                    host=self._endpoint_host(),
+                    model=self._model,
+                    locality="remote",
+                    message_count=len(messages),
+                    approx_bytes=sum(len(m.content or "") for m in messages),
+                    image_count=sum(len(m.images) for m in messages if m.images),
+                )
+            # Outbound redaction (F3) — best-effort DiD applied ONLY to remote
+            # turns: a loopback send is passed byte-identical (no copy). Images
+            # and novel-format secrets are NOT redactable here and still egress.
+            send_messages = messages
+            if egressing and self._settings.privacy.redact_secrets:
+                send_messages = self._redacted_for_egress(messages)
             self._ui.begin_response()
             try:
                 reply = self._llm.chat(
                     self._model,
-                    messages,
+                    send_messages,
                     tools=tools,
                     num_ctx=self.budget.model_context_tokens,
                     options=self._settings.model.options,

@@ -179,6 +179,14 @@ class ToolExecutor:
                     result=ToolResult(success=False, summary="declined by user", content=""),
                 )
 
+        # Egress visibility (F12): a NETWORK-side-effect tool sends a query/url
+        # off-box regardless of model locality. Record it here — after every
+        # gate has passed, immediately before the call actually leaves the box —
+        # so a blocked/declined call (which never ran) produces no egress
+        # record. The AuditLogger redacts the args (e.g. a secret in a URL).
+        if spec.side_effect is SideEffect.NETWORK and self._audit is not None:
+            self._audit.write("web_egress", tool=call.name, args=dict(call.arguments))
+
         try:
             result = spec.handler(context, call.arguments)
         except ToolError as exc:

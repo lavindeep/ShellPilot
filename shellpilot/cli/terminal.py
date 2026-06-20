@@ -403,6 +403,7 @@ def run_interactive(
         session=session,
         memory=memory,
         skills=discovered_skills,
+        base_url=settings.model.base_url,
     )
     if restored is not None:
         runtime.restore_history(restored.messages)

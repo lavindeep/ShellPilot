@@ -3,7 +3,13 @@
 import json
 from pathlib import Path
 
-from shellpilot.config.model import ContextSettings, Settings, SkillSettings, ToolSettings
+from shellpilot.config.model import (
+    ContextSettings,
+    PrivacySettings,
+    Settings,
+    SkillSettings,
+    ToolSettings,
+)
 from shellpilot.llm.messages import Message
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
@@ -845,3 +851,178 @@ def test_skill_read_registered_when_skills_enabled(tmp_path: Path) -> None:
     settings = Settings(skills=SkillSettings(enabled=("skill-authoring",)))
     runtime = make_runtime(fake, FakeUI(), tmp_path, settings=settings)
     assert runtime.registry.get("skill_read") is not None
+
+
+# ---------------------------------------------------------------------------
+# Group E: egress chokepoint (locality signal, outbound redaction, model_request)
+# ---------------------------------------------------------------------------
+
+
+def _make_runtime_with_base_url(
+    fake: FakeLLM,
+    ui: FakeUI,
+    tmp_path: Path,
+    base_url: str,
+    *,
+    audit: AuditLogger | None = None,
+    settings: Settings | None = None,
+) -> ConversationRuntime:
+    return ConversationRuntime(
+        llm=fake,
+        settings=settings or Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=ui,
+        base_url=base_url,
+        audit=audit,
+    )
+
+
+def test_endpoint_loopback_detection_local(tmp_path: Path) -> None:
+    """localhost / 127.x / ::1 / 0.0.0.0 / empty host are loopback (not egressing)."""
+    for url in (
+        "http://localhost:11434",
+        "http://127.0.0.1:11434",
+        "http://127.5.6.7:11434",
+        "http://[::1]:11434",
+        "http://0.0.0.0:11434",
+        "http://foo.localhost:11434",
+    ):
+        runtime = _make_runtime_with_base_url(FakeLLM(script=[]), FakeUI(), tmp_path, url)
+        assert runtime._endpoint_is_loopback() is True, url
+        assert runtime._is_egressing() is False, url
+
+
+def test_endpoint_loopback_detection_remote(tmp_path: Path) -> None:
+    """A non-loopback host is remote → egressing."""
+    for url in (
+        "https://ollama.com",
+        "https://api.example.com:443",
+        "http://10.0.0.5:11434",  # private but not loopback → still off this box
+    ):
+        runtime = _make_runtime_with_base_url(FakeLLM(script=[]), FakeUI(), tmp_path, url)
+        assert runtime._endpoint_is_loopback() is False, url
+        assert runtime._is_egressing() is True, url
+
+
+def test_default_base_url_is_loopback(tmp_path: Path) -> None:
+    """The default constructor (no base_url) is loopback — zero behaviour change."""
+    runtime = make_runtime(FakeLLM(script=[]), FakeUI(), tmp_path)
+    assert runtime._is_egressing() is False
+
+
+def test_outbound_redaction_on_remote_turn(tmp_path: Path) -> None:
+    """A secret in history is redacted in the messages handed to chat() on a remote turn."""
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    fake = FakeLLM(script=[answer("done")])
+    runtime = _make_runtime_with_base_url(fake, FakeUI(), tmp_path, "https://ollama.com")
+    # Seed history with a tool result carrying a secret.
+    from shellpilot.llm.messages import tool_result
+
+    runtime._history.append(tool_result(f"key is {secret}"))
+
+    runtime.run_turn("summarize")
+
+    sent = fake.calls[0].messages
+    joined = "\n".join(m.content for m in sent)
+    assert secret not in joined
+    assert "[REDACTED]" in joined
+    # History itself is never mutated.
+    assert any(secret in m.content for m in runtime._history)
+
+
+def test_loopback_turn_messages_byte_identical(tmp_path: Path) -> None:
+    """On a loopback turn the messages are passed unchanged — redaction is never invoked."""
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    fake = FakeLLM(script=[answer("done")])
+    runtime = make_runtime(fake, FakeUI(), tmp_path)
+    from shellpilot.llm.messages import tool_result
+
+    runtime._history.append(tool_result(f"key is {secret}"))
+
+    # Positively pin the no-copy path: the egress redaction helper must not run
+    # on a loopback turn (the remote test proves it DOES run when egressing).
+    called = False
+    original = runtime._redacted_for_egress
+
+    def _spy(messages):
+        nonlocal called
+        called = True
+        return original(messages)
+
+    runtime._redacted_for_egress = _spy
+
+    runtime.run_turn("summarize")
+
+    assert called is False  # loopback never invokes outbound redaction
+    sent = fake.calls[0].messages
+    joined = "\n".join(m.content for m in sent)
+    assert secret in joined  # not redacted — byte-identical
+    assert any(secret in m.content for m in runtime._history)
+
+
+def test_outbound_redaction_disabled_when_privacy_off(tmp_path: Path) -> None:
+    """redact_secrets=False → even remote turns are not redacted."""
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    fake = FakeLLM(script=[answer("done")])
+    settings = Settings(privacy=PrivacySettings(redact_secrets=False))
+    runtime = _make_runtime_with_base_url(
+        fake, FakeUI(), tmp_path, "https://ollama.com", settings=settings
+    )
+    from shellpilot.llm.messages import tool_result
+
+    runtime._history.append(tool_result(f"key is {secret}"))
+
+    runtime.run_turn("summarize")
+
+    joined = "\n".join(m.content for m in fake.calls[0].messages)
+    assert secret in joined
+
+
+def test_model_request_audit_on_remote_turn(tmp_path: Path) -> None:
+    """A remote turn writes a model_request event with host/model/counts and NO body."""
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-egress",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    fake = FakeLLM(script=[answer("done")])
+    runtime = _make_runtime_with_base_url(
+        fake, FakeUI(), tmp_path, "https://ollama.com", audit=audit
+    )
+    from shellpilot.llm.messages import tool_result
+
+    runtime._history.append(tool_result("some prompt body text here"))
+
+    runtime.run_turn("hello")
+
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    reqs = [e for e in events if e["event"] == "model_request"]
+    assert len(reqs) == 1
+    ev = reqs[0]
+    assert ev["host"] == "ollama.com"
+    assert ev["model"] == "gemma4:e4b"
+    assert ev["locality"] == "remote"
+    assert ev["message_count"] >= 1
+    assert ev["approx_bytes"] > 0
+    assert ev["image_count"] == 0
+    # No message body is recorded under any field.
+    assert "some prompt body text here" not in json.dumps(ev)
+    assert "hello" not in json.dumps(ev)
+
+
+def test_no_model_request_audit_on_loopback_turn(tmp_path: Path) -> None:
+    """A loopback turn writes no model_request event."""
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-local",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    fake = FakeLLM(script=[answer("done")])
+    runtime = _make_runtime_with_audit(fake, FakeUI(), tmp_path, audit)
+    runtime.run_turn("hello")
+
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert not any(e["event"] == "model_request" for e in events)

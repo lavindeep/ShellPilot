@@ -1289,6 +1289,13 @@ Reads of these are gated deterministically, never by model judgement. The `read_
 
 `search_text` applies the same gate to directory traversal: files whose path components name a secret are skipped (their contents are never read) unless `allow_sensitive_reads = "always"`, and the tool result appends a deterministic note naming up to three skipped files and pointing at `read_file` or the `"always"` setting. An explicit sensitive path passed as the search root is gated by the classifier exactly like `read_file`; once that gate authorizes it (auto under `"always"`, on approval under `"ask"`, never under `"never"`), the approved sensitive root is searched in full — the traversal skip applies only to sensitive files encountered incidentally under a non-sensitive root. Listing directory names (`list_dir`) is not a content read and is never gated.
 
+### 15.1 Egress Chokepoint (v0.10.0)
+
+When the model endpoint is **remote**, the entire prompt (system prompt, AGENTS.md, memory, file contents, command output) leaves the device — the prompt itself is an exfiltration channel that no per-action approval gate intercepts. The runtime owns a single locality signal (`_is_egressing()`, true when the model `base_url` is not loopback; the v0.10.0 cloud-model work extends it to cloud model names) and applies two controls at the one chokepoint where every model request passes (`conversation.py` tool loop):
+
+- **Outbound redaction (best-effort defence-in-depth, not a guarantee).** On an egressing turn, when `privacy.redact_secrets` is on, a **redacted copy** of the outbound messages is sent (`redact_secrets` on content, `redact_structure` on tool-call arguments) — the in-memory history is never mutated. A **loopback turn is sent byte-identical** (no copy, zero behaviour change). This is regex-based and conservative: **novel secret formats are missed**, and **image/base64 data is not redactable here and egresses unredacted**. It reduces accidental credential leakage to a provider; it is not a confidentiality guarantee. Local-first remains the only full privacy posture.
+- **Egress visibility (audit).** Every egressing model request emits a `model_request` audit event (host/model/counts only — never message bodies; section 22), and every `SideEffect.NETWORK` tool call that actually runs emits a `web_egress` event. Together these record *what left the device* without recording its contents.
+
 ## 16. Memory System (v2)
 
 Implemented in v0.3.0 (settled 2026-06-11) following this section's design, with these implementation notes:
@@ -2025,6 +2032,8 @@ Events:
 - (v2) Memory update.
 - Config change.
 - Error.
+- **`model_request`** (v0.10.0) — emitted only on an **egressing** turn (a non-loopback model endpoint). Records *that* a prompt left the device and to where, with **counts only, never message bodies**: `host`, `model`, `locality` ("remote"), `message_count`, `approx_bytes`, `image_count`. A loopback (local Ollama) turn emits nothing. This is the egress-visibility record (F10/F12) for what leaves the box.
+- **`web_egress`** (v0.10.0) — emitted by the executor when a `SideEffect.NETWORK` tool (`web_search`/`web_fetch`) actually runs (after every gate passes, immediately before the call leaves the box). Records `tool` and the redacted `args` (the AuditLogger redacts a secret in a query/URL). A blocked or user-declined call never ran and emits nothing.
 
 Log entry shape:
 

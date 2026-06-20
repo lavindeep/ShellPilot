@@ -549,3 +549,130 @@ def test_enum_violation_increments_malformed_counter_and_sends_schema_reminder(
     # Schema reminder must have been sent.
     tool_messages = [m for m in fake.calls[-1].messages if m.role == "tool"]
     assert any("patch_file(" in m.content or "write_file(" in m.content for m in tool_messages)
+
+
+# ---------------------------------------------------------------------------
+# Group E (E4): web_egress audit for NETWORK-side-effect tools
+# ---------------------------------------------------------------------------
+
+
+def test_network_tool_writes_web_egress_audit(tmp_path: Path) -> None:
+    """A NETWORK-side-effect tool that runs writes a web_egress audit event
+    recording the tool and its (redacted) args, but no off-box fallback."""
+    import json
+
+    from shellpilot.persistence.audit_store import AuditLogger
+
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-web",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+
+    net_spec = ToolSpec(
+        definition=ToolDefinition(
+            name="web_search",
+            description="net tool",
+            parameters={"query": {"type": "string"}},
+            required=("query",),
+        ),
+        side_effect=SideEffect.NETWORK,
+        default_risk=RiskLevel.MEDIUM,
+        allowed_profiles=frozenset({"supervised", "balanced"}),
+        handler=lambda ctx, args: ToolResult(success=True, summary="ok", content="results"),
+    )
+    registry = ToolRegistry()
+    registry.register(net_spec)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="balanced",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+        ask_approval=lambda req: True,  # approve so the tool runs
+        audit=audit,
+    )
+
+    executor.execute(ToolCall(name="web_search", arguments={"query": "python release"}))
+
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    egress = [e for e in events if e["event"] == "web_egress"]
+    assert len(egress) == 1
+    assert egress[0]["tool"] == "web_search"
+    assert "python release" in json.dumps(egress[0])
+
+
+def test_no_web_egress_for_non_network_tool(tmp_path: Path) -> None:
+    """A NONE-side-effect tool writes no web_egress event."""
+    import json
+
+    from shellpilot.persistence.audit_store import AuditLogger
+
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-local-tool",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    spec = _make_spec()
+    registry = ToolRegistry()
+    registry.register(spec)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="balanced",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+        audit=audit,
+    )
+
+    executor.execute(ToolCall(name="dummy", arguments={"x": "hello"}))
+
+    text = (tmp_path / "audit.jsonl").read_text() if (tmp_path / "audit.jsonl").is_file() else ""
+    events = [json.loads(line) for line in text.splitlines()] if text else []
+    assert not any(e["event"] == "web_egress" for e in events)
+
+
+def test_no_web_egress_when_network_tool_declined(tmp_path: Path) -> None:
+    """A declined NETWORK tool never ran → no web_egress event (egress recorded
+    only when the call actually leaves the box)."""
+    import json
+
+    from shellpilot.persistence.audit_store import AuditLogger
+
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-declined",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    net_spec = ToolSpec(
+        definition=ToolDefinition(
+            name="web_fetch",
+            description="net tool",
+            parameters={"url": {"type": "string"}},
+            required=("url",),
+        ),
+        side_effect=SideEffect.NETWORK,
+        default_risk=RiskLevel.MEDIUM,
+        allowed_profiles=frozenset({"supervised", "balanced"}),
+        handler=lambda ctx, args: ToolResult(success=True, summary="ok", content="page"),
+    )
+    registry = ToolRegistry()
+    registry.register(net_spec)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="balanced",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+        ask_approval=lambda req: False,  # decline
+        audit=audit,
+    )
+
+    executor.execute(ToolCall(name="web_fetch", arguments={"url": "https://example.com"}))
+
+    text = (tmp_path / "audit.jsonl").read_text() if (tmp_path / "audit.jsonl").is_file() else ""
+    events = [json.loads(line) for line in text.splitlines()] if text else []
+    assert not any(e["event"] == "web_egress" for e in events)
