@@ -200,19 +200,41 @@ def _scan_git_verb(argv: list[str]) -> tuple[str, list[str], bool]:
     return "", [], conservative_global
 
 
+def _is_git_branch_delete_flag(flag: str) -> bool:
+    if flag.startswith("--"):
+        option = flag.partition("=")[0]
+        return len(option) >= len("--dele") and "--delete".startswith(option)
+    return flag.startswith("-") and any(option in "dD" for option in flag[1:])
+
+
+def _is_git_force_with_lease_flag(flag: str) -> bool:
+    option = flag.partition("=")[0]
+    return len(option) >= len("--force-w") and "--force-with-lease".startswith(option)
+
+
+def _is_git_push_short_force_flag(flag: str) -> bool:
+    if flag.startswith("--"):
+        return False
+    for option in flag[1:]:
+        if option == "f":
+            return True
+        if option == "o":
+            return False
+    return False
+
+
 def _classify_git(argv: list[str]) -> CommandRisk:
     verb, verb_args, conservative_global = _scan_git_verb(argv)
     flags = [token for token in argv[1:] if token.startswith("-")]
     if verb in GIT_HIGH:
         return CommandRisk(RiskLevel.HIGH, (f"git {verb} can destroy local changes",))
-    if verb == "branch" and ("-D" in flags or "--delete" in flags):
+    if verb == "branch" and any(_is_git_branch_delete_flag(flag) for flag in flags):
         return CommandRisk(RiskLevel.HIGH, ("git branch deletion",))
     if verb == "push":
         if (
             "--force" in flags
-            or any("f" in flag[1:] for flag in flags if not flag.startswith("--"))
-            or "--force-with-lease" in flags
-            or any(flag.startswith("--force-with-lease=") for flag in flags)
+            or any(_is_git_push_short_force_flag(flag) for flag in flags)
+            or any(_is_git_force_with_lease_flag(flag) for flag in flags)
             or any(arg.startswith("+") for arg in verb_args)
         ):
             return CommandRisk(RiskLevel.HIGH, ("force push rewrites remote history",))

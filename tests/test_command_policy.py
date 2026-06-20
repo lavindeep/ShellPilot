@@ -118,6 +118,22 @@ def test_git_benign_global_does_not_hide_destructive_verb() -> None:
     assert result.risk == RiskLevel.HIGH
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["git", "branch", "-d", "topic"], RiskLevel.HIGH),
+        (["git", "branch", "-dr", "topic"], RiskLevel.HIGH),
+        (["git", "branch", "-rd", "topic"], RiskLevel.HIGH),
+        (["git", "branch", "--dele", "topic"], RiskLevel.HIGH),
+        (["git", "branch", "-r"], RiskLevel.LOW),
+        (["git", "branch", "--list", "topic"], RiskLevel.LOW),
+    ],
+)
+def test_git_branch_delete_forms_are_high(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
 def test_git_bare_exec_path_does_not_treat_later_token_as_verb() -> None:
     result = classify_command(["git", "--exec-path", "reset", "log"], workspace=WS)
     assert result.risk == RiskLevel.MEDIUM
@@ -140,7 +156,11 @@ def test_git_benign_global_preserves_readonly_stash(argv: list[str]) -> None:
     "argv",
     [
         ["git", "push", "--force-with-lease=main:deadbeef"],
+        ["git", "push", "--force-w"],
+        ["git", "push", "--force-with-l"],
+        ["git", "push", "--force-with-l=main:deadbeef"],
         ["git", "push", "origin", "+main"],
+        ["git", "push", "-f"],
         ["git", "push", "-uf"],
         ["git", "push", "-fu"],
     ],
@@ -148,6 +168,11 @@ def test_git_benign_global_preserves_readonly_stash(argv: list[str]) -> None:
 def test_git_force_push_forms_are_high(argv: list[str]) -> None:
     result = classify_command(argv, workspace=WS)
     assert result.risk == RiskLevel.HIGH
+
+
+def test_git_push_option_value_containing_f_is_not_force() -> None:
+    result = classify_command(["git", "push", "-ofoo"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
 
 
 def test_write_outside_workspace_is_high() -> None:
