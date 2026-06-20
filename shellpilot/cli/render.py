@@ -70,8 +70,8 @@ def context_line(
 def tool_call(name: str, args_summary: str, glyphs: Glyphs) -> Text:
     return Text.assemble(
         (f"{glyphs.bullet} ", ""),
-        (name, "sp.emph"),
-        (f"({args_summary})", "sp.dim"),
+        (_sanitize_line(name), "sp.emph"),
+        (f"({_sanitize_line(args_summary)})", "sp.dim"),
     )
 
 
@@ -80,7 +80,7 @@ def tool_result(success: bool, summary: str, glyphs: Glyphs) -> Text:
     return Text.assemble(
         (f"  {glyphs.elbow} ", "sp.dim"),
         (mark, style),
-        (f" {summary}", "sp.dim"),
+        (f" {_sanitize_line(summary)}", "sp.dim"),
     )
 
 

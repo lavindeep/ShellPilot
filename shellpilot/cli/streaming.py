@@ -20,6 +20,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
+from shellpilot.cli.render import _sanitize_line
 from shellpilot.cli.theme import Glyphs
 
 _PHRASE_SECONDS = 10
@@ -126,10 +127,11 @@ class ResponseStream:
     def _tail_markdown(self) -> Markdown:
         max_lines = max(4, self._console.size.height - 4)
         tail = "\n".join(self._buffer.splitlines()[-max_lines:])
-        return Markdown(tail)
+        return Markdown(_sanitize_line(tail))
 
     def feed(self, token: str) -> None:
         if not self._console.is_terminal:
+            token = _sanitize_line(token)
             self._console.print(token, end="", markup=False, highlight=False, soft_wrap=True)
             self._buffer += token
             return
@@ -165,7 +167,7 @@ class ResponseStream:
             self._live.stop()
             self._live = None
         if self._buffer:
-            self._console.print(Markdown(self._buffer))
+            self._console.print(Markdown(_sanitize_line(self._buffer)))
         self._buffer = ""
 
 

@@ -19,6 +19,7 @@ from shellpilot.cli.input import PromptContext, make_input
 from shellpilot.cli.manual_shell import manual_shell_loop
 from shellpilot.cli.model_picker import choose_model, resolve_preselect, should_show_picker
 from shellpilot.cli.render import (
+    _sanitize_line,
     approval_cwd,
     approval_info,
     banner,
@@ -99,11 +100,11 @@ class TerminalUI:
         self._stream.feed(token)
 
     def show_status(self, text: str) -> None:
-        self._console.print(f"[sp.dim]{escape(text)}[/sp.dim]")
+        self._console.print(f"[sp.dim]{escape(_sanitize_line(text))}[/sp.dim]")
 
     def show_error(self, text: str) -> None:
         self._spinner.stop()
-        self._console.print(f"[sp.error]{escape(text)}[/sp.error]")
+        self._console.print(f"[sp.error]{escape(_sanitize_line(text))}[/sp.error]")
 
     def show_tool_call(self, name: str, arguments: dict[str, object]) -> None:
         # Redact secrets in the summary line so auto-approved tool calls never
@@ -116,7 +117,7 @@ class TerminalUI:
         if len(summary) > 80:
             summary = summary[:79] + self._glyphs.ellipsis
         self._console.print(render_tool_call(name, summary, self._glyphs))
-        label = Text.assemble(("running ", "sp.dim"), (name, "sp.emph"))
+        label = Text.assemble(("running ", "sp.dim"), (_sanitize_line(name), "sp.emph"))
         self._spinner.start(label=label)
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
@@ -125,7 +126,9 @@ class TerminalUI:
 
     def show_command_output(self, line: str) -> None:
         self._spinner.stop()
-        self._console.print("    " + line, style="sp.dim", markup=False, highlight=False)
+        self._console.print(
+            "    " + _sanitize_line(line), style="sp.dim", markup=False, highlight=False
+        )
 
     def show_plan_progress(self, plan: TaskPlan) -> None:
         self._spinner.stop()

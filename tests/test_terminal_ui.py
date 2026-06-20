@@ -6,6 +6,7 @@ import io
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from shellpilot.cli.terminal import TerminalUI, should_discard_interrupt
@@ -145,6 +146,18 @@ def test_tool_call_and_result_lines() -> None:
     assert f"{GLYPHS.check} 1 addition" in out
 
 
+@pytest.mark.parametrize("method_name", ["show_status", "show_error", "show_command_output"])
+def test_terminal_text_sinks_sanitize_external_text(method_name: str) -> None:
+    console = make_console()
+    ui = make_ui(console, [])
+
+    getattr(ui, method_name)("visible\x1b[2J\x00\ttext\x07\x7f")
+
+    out = console.export_text()
+    assert not any(char in out for char in "\x1b\x00\x07\x7f\t")
+    assert "visible" in out and "text" in out
+
+
 # ---------------------------------------------------------------------------
 # Fix 2: show_tool_call redacts secrets in the summary display line
 # ---------------------------------------------------------------------------
@@ -236,6 +249,15 @@ def test_tool_call_starts_labeled_spinner_and_result_stops_it() -> None:
 
     ui.show_tool_result("patch_file", True, "ok")
     assert spy.stops >= 1
+
+
+def test_tool_call_sanitizes_spinner_label() -> None:
+    console = make_console()
+    ui, spy = _ui_with_recording_spinner(console, [])
+
+    ui.show_tool_call("visible\x1b[2J\x00text\x07", {})
+
+    assert spy.started_labels == ["running visible[2Jtext"]
 
 
 def test_approval_stops_spinner_before_input() -> None:

@@ -83,6 +83,17 @@ def test_tool_result_marks_success_and_failure() -> None:
     assert GLYPHS.cross in bad.plain
 
 
+def test_tool_renderers_sanitize_external_text() -> None:
+    call = tool_call("patch_file\x1b[2J\x00", "path=\tfile.py\x07", GLYPHS)
+    result = tool_result(True, "updated\x0b file.py\x7f", GLYPHS)
+
+    for output in (call.plain, result.plain):
+        assert not any(char in output for char in "\x1b\x00\x07\x0b\x7f\t")
+    assert "patch_file" in call.plain
+    assert "path=" in call.plain and "file.py" in call.plain
+    assert "updated file.py" in result.plain
+
+
 def test_word_highlight_ranges_similar_pair() -> None:
     result = word_highlight_ranges('print("done")', 'print("Goodbye World")')
     assert result is not None

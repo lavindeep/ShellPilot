@@ -6,10 +6,13 @@ import io
 import random
 from pathlib import Path
 
+import pytest
 from rich.cells import cell_len
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.text import Text
 
+import shellpilot.cli.streaming as streaming_mod
 from shellpilot.cli.streaming import (
     FLIGHT_PHASES,
     AviationSpinner,
@@ -61,6 +64,53 @@ def test_response_stream_renders_markdown_on_terminals() -> None:
     out = console.export_text()
     assert "bold" in out and "code" in out
     assert "**bold**" not in out  # markdown was rendered, not echoed
+
+
+def test_response_stream_sanitizes_every_markdown_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources: list[str] = []
+    real_markdown = streaming_mod.Markdown
+
+    def recording_markdown(markup: str) -> Markdown:
+        sources.append(markup)
+        return real_markdown(markup)
+
+    monkeypatch.setattr(streaming_mod, "Markdown", recording_markdown)
+    console = terminal_console()
+    stream = ResponseStream(console)
+    stream.feed("alpha\x1b[2J\x00\n\n**bold**\x07")
+    stream.finish()
+
+    assert len(sources) >= 2
+    assert all(not any(char in source for char in "\x1b\x00\x07") for source in sources)
+    assert "alpha" in sources[-1]
+    assert "\n\n**bold**" in sources[-1]
+
+
+def test_response_stream_sanitizes_plain_passthrough_and_buffer() -> None:
+    console = plain_console()
+    stream = ResponseStream(console)
+    stream.feed("plain\x1b[2J\x00\ttext\x7f\n")
+
+    out = console.export_text()
+    assert not any(char in out for char in "\x1b\x00\x7f\t")
+    assert not any(char in stream._buffer for char in "\x1b\x00\x7f\t")
+    assert "plain" in out and "text" in out
+    assert out.endswith("\n")
+
+
+def test_response_stream_preserves_multiline_fenced_markdown() -> None:
+    content = 'Intro paragraph.\n\n```python\nprint("hello")\n```\n\nFinal **bold** line.\n'
+    streamed_console = terminal_console()
+    stream = ResponseStream(streamed_console)
+    for token in (content[:13], content[13:31], content[31:]):
+        stream.feed(token)
+    stream.finish()
+
+    expected_console = terminal_console()
+    expected_console.print(Markdown(content))
+    assert streamed_console.export_text() == expected_console.export_text()
 
 
 def test_response_stream_final_render_is_complete() -> None:
