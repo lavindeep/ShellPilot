@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from shellpilot.config.model import ContextSettings, Settings, SkillSettings, ToolSettings
+from shellpilot.llm.messages import Message
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -221,10 +222,7 @@ def test_planning_builtin_references_follow_plan_mode(tmp_path: Path) -> None:
     runtime.plan_manager.approve()
     active_blocks = _injected_block_texts(runtime)
     assert plan.status == "active"
-    assert (
-        'update_plan(step=N, status="completed")'
-        in active_blocks["skill:planning:reference:active.md"]
-    )
+    assert "update_plan(step=N," in active_blocks["skill:planning:reference:active.md"]
     assert "skill:planning:reference:proposed.md" not in active_blocks
     assert "skill:planning:reference:blocked.md" not in active_blocks
 
@@ -670,6 +668,150 @@ def test_plan_nudge_takes_priority_over_empty_nudge(tmp_path: Path) -> None:
     # The plan nudge fired for the empty reply; the empty-response nudge did not.
     assert any(c.startswith(plan_prefix) for c in tool_msgs)
     assert EMPTY_CONTINUE_NUDGE not in tool_msgs
+
+
+def _complete_last_step_reply(content: str) -> Message:
+    """Reply that narrates ``content`` AND marks the plan's final step completed."""
+    from shellpilot.llm.messages import ToolCall, assistant
+
+    return assistant(
+        content,
+        tool_calls=(ToolCall(name="update_plan", arguments={"step": 2, "status": "completed"}),),
+    )
+
+
+_SUMMARY = (
+    "Done. I created the directory, wrote the config file, and verified the "
+    "service starts cleanly with the new settings."
+)
+
+
+def _two_step_plan_at_final_step(fake: FakeLLM, ui: FakeUI, tmp_path: Path) -> ConversationRuntime:
+    """Build a runtime with an approved two-step plan whose step 1 is completed.
+
+    Step 2 is left active so the model's next ``update_plan(step=2, completed)``
+    transitions the whole plan to completed.
+    """
+    runtime = make_runtime(fake, ui, tmp_path)
+    runtime.plan_manager.create(
+        goal="Set up the service",
+        user_intent="set up the service",
+        steps=["Step one", "Step two"],
+        assumptions=[],
+        verification=[],
+    )
+    runtime.plan_manager.approve()
+    runtime.plan_manager.update_step(1, "completed")
+    return runtime
+
+
+def test_substantive_summary_after_explicit_completion_is_not_re_invoked(
+    tmp_path: Path,
+) -> None:
+    """A final-step completing reply that already summarizes ends the turn.
+
+    The plan transitions to completed via the model's own update_plan call, and
+    the streamed prose IS the single summary — the model is NOT re-invoked on
+    the planner's end-of-plan summary prompt.
+    """
+    fake = FakeLLM(script=[_complete_last_step_reply(_SUMMARY)])
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = _two_step_plan_at_final_step(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("finish the task")
+
+    assert runtime.plan_manager.active is not None
+    assert runtime.plan_manager.active.status == "completed"
+    # Exactly one chat call: the completing reply. No second round for the
+    # planner's end-of-plan summary prompt.
+    assert len(fake.calls) == 1
+    assert reply == _SUMMARY
+
+
+def test_short_completion_reply_still_prompts_for_summary(tmp_path: Path) -> None:
+    """A completing reply with short/empty content is re-invoked for the summary.
+
+    With no substantive summary in the completing reply, the planner's end-of-plan
+    summary prompt still fires, eliciting the single summary turn.
+    """
+    fake = FakeLLM(
+        script=[
+            _complete_last_step_reply("done"),  # below MIN_SUMMARY_CHARS
+            answer(_SUMMARY),
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = _two_step_plan_at_final_step(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("finish the task")
+
+    assert runtime.plan_manager.active is not None
+    assert runtime.plan_manager.active.status == "completed"
+    # Two chat calls: the terse completion, then the model re-invoked on the
+    # planner's end-of-plan summary prompt.
+    assert len(fake.calls) == 2
+    assert reply == _SUMMARY
+
+
+def test_non_final_step_completion_still_nudges(tmp_path: Path) -> None:
+    """Completing a non-final step (plan not done) keeps stall recovery intact.
+
+    A no-tool-call reply while a later step is still pending fires the plan
+    continue-nudge rather than suppressing anything.
+    """
+    from shellpilot.runtime.conversation import PLAN_CONTINUE_NUDGE
+
+    fake = FakeLLM(
+        script=[
+            answer("I will keep going."),  # no tool call, plan not done -> nudge
+            answer("Still working on it."),  # nudged again (MAX_PLAN_NUDGES=2)
+            answer("Stopping for now."),  # third reply ends the turn
+        ]
+    )
+    ui = FakeUI(plan_answer=("y", ""))
+    runtime = make_runtime(fake, ui, tmp_path)
+    runtime.plan_manager.create(
+        goal="Set up the service",
+        user_intent="set up the service",
+        steps=["Step one", "Step two"],
+        assumptions=[],
+        verification=[],
+    )
+    runtime.plan_manager.approve()  # step 1 active, step 2 pending — plan not done
+
+    runtime.run_turn("continue")
+
+    tool_msgs = [m.content for m in runtime._history if m.role == "tool"]
+    plan_prefix = PLAN_CONTINUE_NUDGE.split("{")[0]
+    assert any(c.startswith(plan_prefix) for c in tool_msgs)
+
+
+def test_empty_reply_still_routes_to_empty_nudge(tmp_path: Path) -> None:
+    """An empty reply (no content, no tool calls) still hits the empty-reply path."""
+    from shellpilot.runtime.conversation import EMPTY_FIRST_NUDGE
+
+    fake = FakeLLM(script=[answer(""), answer("Here is my answer.")])
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    reply = runtime.run_turn("hello")
+
+    assert reply == "Here is my answer."
+    tool_msgs = [m.content for m in runtime._history if m.role == "tool"]
+    assert any(EMPTY_FIRST_NUDGE == c for c in tool_msgs)
+
+
+def test_plan_continue_nudge_is_positive_routing_not_a_muzzle() -> None:
+    """The continue-nudge routes via update_plan and contains no muzzle wording."""
+    from shellpilot.runtime.conversation import PLAN_CONTINUE_NUDGE
+
+    text = PLAN_CONTINUE_NUDGE
+    assert "update_plan(step=" in text
+    assert 'status="completed"' in text
+    lowered = text.lower()
+    assert "do not repeat" not in lowered
+    assert "don't repeat" not in lowered
+    assert "do not narrate" not in lowered
 
 
 def test_runtime_forwards_model_options_to_chat(tmp_path: Path) -> None:

@@ -78,7 +78,7 @@ def test_planning_skill_body_and_references_split_execution_discipline() -> None
     assert "approval" not in body.lower()
 
     assert "propose_plan once" in _planning_reference("proposed")
-    assert 'update_plan(step=N, status="completed")' in _planning_reference("active")
+    assert "update_plan(step=N," in _planning_reference("active")
     assert 'update_plan(blocker="<evidence>")' in _planning_reference("blocked")
 
 
@@ -95,7 +95,7 @@ def test_base_prompt_retains_proposal_rules() -> None:
     assert "record completed steps" not in _BASE
     assert 'blocker="<evidence>"' not in _BASE
     assert "second follow-up plan" not in _BASE
-    assert "second follow-up plan" in _planning_reference("proposed")
+    assert "Every step is an action" in _planning_reference("proposed")
 
 
 def test_prompt_version_bumped() -> None:

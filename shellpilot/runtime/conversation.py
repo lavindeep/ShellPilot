@@ -39,6 +39,10 @@ TOOL_DIGEST_HEAD = 200
 TOOL_DIGEST_TAIL = 200
 MAX_PLAN_NUDGES = 2
 MAX_EMPTY_NUDGES = 2
+# ponytail: tunable ceiling separating a real end-of-plan summary from a terse
+# "done." When a completing reply already carries content this long, the streamed
+# prose IS the single summary and the redundant re-summary round is skipped.
+MIN_SUMMARY_CHARS = 80
 
 EMPTY_CONTINUE_NUDGE = (
     "Your last reply was empty — no text and no tool call. You have already run a "
@@ -53,11 +57,13 @@ EMPTY_FIRST_NUDGE = (
 )
 
 PLAN_CONTINUE_NUDGE = (
-    "The approved plan is not finished (next step {index}: {title}). Do not narrate "
-    "what you will do — call the tool for that step now, in this same turn, and "
-    "record progress with update_plan(step=N, status='completed'). If something is "
-    'blocking you, record it with update_plan(blocker="<evidence>"). Only if you '
-    "need information that the user alone can provide: ask the user plainly and stop."
+    "The approved plan is not finished (next step {index}: {title}). If you have "
+    "completed this step, record it now with update_plan(step={index}, "
+    'status="completed") and continue to the next step in this same turn. If the '
+    "step still needs work, do it now with the appropriate tool, then record "
+    "completion. If something is blocking you, record it with "
+    'update_plan(blocker="<evidence>"). Only if you need information that the user '
+    "alone can provide: ask the user plainly and stop."
 )
 
 
@@ -559,6 +565,15 @@ class ConversationRuntime:
                 tools = []
                 continue
 
+            # Capture completion BEFORE this batch runs so we can tell whether
+            # the model's own update_plan transitioned the plan to completed in
+            # THIS batch (an explicit completion) versus a plan that was already
+            # completed coming in. Never inferred from prose.
+            plan_completed_before = (
+                self.plan_manager.active is not None
+                and self.plan_manager.active.status == "completed"
+            )
+
             for call in reply.tool_calls:
                 self._ui.show_tool_call(call.name, call.arguments)
                 outcome = executor.execute(call)
@@ -617,6 +632,28 @@ class ConversationRuntime:
                         images=refs,
                     )
                 )
+
+            # Suppress the redundant end-of-plan re-summary. When the model's own
+            # update_plan(completed) transitioned the plan to completed in THIS
+            # batch AND the same reply already carries a substantive summary, the
+            # streamed prose IS the single summary — re-invoking the model on the
+            # planner's end-of-plan summary prompt only duplicates
+            # it. Completion is always explicit (the plan went through the normal
+            # _update handler, so on_step_change/UI re-render and bookkeeping have
+            # already run); we skip only the extra model round-trip, never the
+            # completion itself, and never infer completion from prose. A short or
+            # empty completing reply does NOT suppress, so the "summarize" prompt
+            # still fires and elicits the single summary.
+            active = self.plan_manager.active
+            if (
+                active is not None
+                and active.status == "completed"
+                and not plan_completed_before
+                and len(reply.content.strip()) >= MIN_SUMMARY_CHARS
+            ):
+                if self._audit is not None:
+                    self._audit.write("plan_summary_suppressed", summary=reply.content.strip())
+                return reply
 
     def _track_repeated_failure(self, name: str, outcome: ExecutionOutcome) -> None:
         """Same safe recovery failing twice triggers the roadblock protocol (§11.6)."""

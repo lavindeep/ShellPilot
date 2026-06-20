@@ -381,6 +381,11 @@ def test_builtin_planning_skill_loads() -> None:
     ]
     assert all(template.trigger is None for template in planning.templates)
     assert planning.scripts == ()
+    ref_texts = {r.name: r.text for r in planning.references}
+    assert "Every step is an action" in ref_texts["proposed"]
+    assert "the final summary" in ref_texts["proposed"]
+    assert "in the same turn" in ref_texts["active"]
+    assert "The final summary is requested automatically" in ref_texts["active"]
 
 
 def test_builtin_trigger_map_and_resources_by_folder_name() -> None:

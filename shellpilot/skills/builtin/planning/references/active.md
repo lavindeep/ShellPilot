@@ -1,3 +1,5 @@
-Work the approved plan step by step in this same turn. Start the current pending step immediately, use tools for the work, then record completed steps with update_plan(step=N, status="completed").
+Work the approved plan in this same turn. Start the current pending step now, do its work with tools, then record it with update_plan(step=N, status="completed") — do the work and record it in the same turn.
 
-Do not stop to announce the next step or ask for permission already captured by the harness. Keep going until every step is done or a real blocker appears.
+Don't stop to announce the next step or ask for permission the harness already captured. Keep going until every step is done or a real blocker appears.
+
+The final summary is requested automatically when the plan completes.

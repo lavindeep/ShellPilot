@@ -99,7 +99,7 @@ shellpilot          # start the conversation
 
 ```text
 $ shellpilot
-ShellPilot 0.8.1
+ShellPilot 0.8.2
 gemma4:e4b · balanced · /help for commands
 
 ~/my-project · gemma4:e4b · balanced
@@ -205,12 +205,13 @@ Recent shipped milestones:
 - **v0.7.1:** instant high-risk approval prompts by generating purpose text deterministically from classifier reasons instead of through a blocking model call.
 - **v0.8.0:** web-grounding quality for small local models. The `web-grounding` skill now carries fetch-before-answer guidance and discover-first query shaping, `web_search` is provider-neutral and points to `web_fetch`, and truncated fetches point the model toward a more specific source.
 - **v0.8.1:** web-grounding hardening. The skill now tells the model to fetch only URLs that appeared in search results and re-search instead of guessing when a fetch is blocked or fails, and to confirm the current generation from the source rather than trust the version named in the question.
+- **v0.8.2:** planner hardening. A finished plan now emits a single end-of-plan summary instead of repeating it — the redundant summary re-prompt is suppressed once the model has explicitly completed the plan — plus action-only, concrete planning guidance and an idempotent duplicate `propose_plan`.
 
 Next likely release:
 
-- **v0.8.5:** privacy-first search provider support, with self-hosted [SearXNG](https://docs.searxng.org/) behind a configurable seam and keyless DuckDuckGo staying the zero-config default.
+- **v0.9.0:** skill progressive disclosure — let the model read deeper skill docs on demand so richer skills scale without bloating context.
 
-Later candidates include controlled skill-script execution with its own safety design, richer workflow skills for debugging/verification/review/git, a `trusted-local` security profile, heavier capability packs, and `/undo`.
+Later candidates include richer workflow skills for debugging/verification/review/git, controlled skill-script execution with its own safety design, a `trusted-local` security profile, heavier capability packs, and `/undo`. Privacy-first self-hosted search (SearXNG) may land later if it proves the right fit.
 
 ## License
 

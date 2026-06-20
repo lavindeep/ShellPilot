@@ -171,6 +171,7 @@ def test_update_result_pushes_next_step(tmp_path: Path) -> None:
     assert final_result.success
     assert "Continue with the next step now, in this same turn." not in final_result.content
     assert "All steps complete" in final_result.content
+    assert "match its length to the task" in final_result.content
 
 
 def test_blocker_update_does_not_push_continuation(tmp_path: Path) -> None:
@@ -375,6 +376,152 @@ def test_cancel_with_pending_revision_clears_state(tmp_path: Path) -> None:
     # A new task directory was created (total went up by 1)
     new_count = sum(1 for _ in (tmp_path / ".shellpilot" / "tasks").iterdir() if _.is_dir())
     assert new_count == original_task_dir_count + 1
+
+
+# ---------------------------------------------------------------------------
+# Idempotent duplicate propose_plan (Bug 2): a byte-identical re-propose of the
+# already proposed/active plan is a no-op that returns the model to execution,
+# instead of cancelling and re-prompting for approval.
+# ---------------------------------------------------------------------------
+
+
+def _counting_approval_asker(choice: str) -> tuple[Any, list[int]]:
+    """Returns an asker plus a one-element list counting how often it was called."""
+    calls = [0]
+
+    def ask(plan: TaskPlan, path: str) -> tuple[str, str]:
+        calls[0] += 1
+        return (choice, "")
+
+    return ask, calls
+
+
+def test_identical_repropose_is_idempotent_noop(tmp_path: Path) -> None:
+    manager = PlanManager(tmp_path, "balanced")
+    asker, calls = _counting_approval_asker("y")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=asker,
+        get_user_intent=lambda: "user intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+    args = {"goal": "Deploy the app", "steps": ["Build", "Push", "Start service"]}
+
+    result1 = propose.handler(ctx, dict(args))
+    assert result1.success
+    assert manager.active is not None
+    original_task_id = manager.active.task_id
+    assert manager.active.status == "active"  # approved on first call
+
+    result2 = propose.handler(ctx, dict(args))
+
+    # The approval asker fired exactly once (no re-prompt for the duplicate).
+    assert calls[0] == 1
+    # The plan was neither cancelled nor recreated.
+    assert manager.active is not None
+    assert manager.active.task_id == original_task_id
+    assert manager.active.status == "active"
+    # Exactly one task directory on disk.
+    tasks_dir = tmp_path / ".shellpilot" / "tasks"
+    task_dirs = [d for d in tasks_dir.iterdir() if d.is_dir()]
+    assert len(task_dirs) == 1
+    # The no-op result directs the model back to executing the current step.
+    assert result2.success
+    assert "already active" in result2.content
+    assert "executing the current step" in result2.content
+
+
+def test_identical_repropose_while_proposed_is_idempotent_noop(tmp_path: Path) -> None:
+    """A duplicate propose before approval (status 'proposed') also no-ops."""
+    manager = PlanManager(tmp_path, "balanced")
+    asker, calls = _counting_approval_asker("n")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=asker,
+        get_user_intent=lambda: "user intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+    args = {"goal": "Some task", "steps": ["Do X", "Do Y"]}
+
+    # Stage a proposed (not approved) plan by short-circuiting the asker: build
+    # the plan directly, then call propose with an identical payload.
+    manager.create(
+        goal="Some task",
+        user_intent="user intent",
+        steps=["Do X", "Do Y"],
+        assumptions=[],
+        verification=[],
+    )
+    assert manager.active is not None
+    assert manager.active.status == "proposed"
+
+    result = propose.handler(ctx, dict(args))
+
+    assert calls[0] == 0  # never re-asked for the identical proposed plan
+    assert manager.active is not None
+    assert manager.active.status == "proposed"
+    assert result.success
+    assert "executing the current step" in result.content
+
+
+def test_changed_repropose_still_recreates(tmp_path: Path) -> None:
+    """A second propose with different steps must NOT no-op (real revision path)."""
+    manager = PlanManager(tmp_path, "balanced")
+    asker, calls = _counting_approval_asker("y")
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=asker,
+        get_user_intent=lambda: "user intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+
+    propose.handler(ctx, {"goal": "Deploy the app", "steps": ["Build", "Push"]})
+    assert manager.active is not None
+
+    # Different steps -> goes through cancel-and-recreate, asker fires again.
+    result = propose.handler(ctx, {"goal": "Deploy the app", "steps": ["Build", "Push", "Verify"]})
+
+    # The asker fired a second time (the no-op would have skipped it), and the
+    # active plan now reflects the changed step list.
+    assert calls[0] == 2
+    assert "executing the current step" not in result.content
+    assert manager.active is not None
+    assert [s.title for s in manager.active.steps] == ["Build", "Push", "Verify"]
+
+
+def test_identical_repropose_with_pending_revision_uses_revise_branch(tmp_path: Path) -> None:
+    """When a revision is pending, an identical propose revises in place, not no-op."""
+    feedback = "tighten the steps"
+    manager = PlanManager(tmp_path, "balanced")
+    asker = _approval_asker_sequence([("e", feedback), ("y", "")])
+    tools = make_plan_tools(
+        manager,
+        ask_plan_approval=asker,
+        get_user_intent=lambda: "user intent",
+    )
+    propose = next(t for t in tools if t.definition.name == "propose_plan")
+    ctx = _ctx(tmp_path)
+    args = {"goal": "Deploy the app", "steps": ["Build", "Push"]}
+
+    # First propose -> user picks "e", sets pending_revision.
+    propose.handler(ctx, dict(args))
+    assert manager.pending_revision == feedback
+    original_task_id = manager.active.task_id if manager.active else ""
+
+    # Second, identical propose -> must take the revise-in-place branch, NOT the
+    # idempotency no-op (pending_revision is set).
+    result = propose.handler(ctx, dict(args))
+
+    assert "executing the current step" not in result.content
+    assert manager.pending_revision is None
+    assert manager.active is not None
+    assert manager.active.task_id == original_task_id
+    # The revise branch went through approval (asker's second answer "y").
+    assert manager.active.status == "active"
+    assert any(f"revised: {feedback}" in entry for entry in manager.active.progress_log)
 
 
 # ---------------------------------------------------------------------------
