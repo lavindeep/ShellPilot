@@ -135,6 +135,77 @@ def test_ls_with_relative_escape_unchanged() -> None:
 # -- end relative-path boundary tests ------------------------------------------
 
 
+# -- reader-command workspace-boundary checks (F1 fix, v0.10.0) ----------------
+
+
+def test_cat_absolute_outside_is_high() -> None:
+    result = classify_command(["cat", "/etc/passwd"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_tail_relative_escape_is_high() -> None:
+    result = classify_command(["tail", "../sibling"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_grep_recursive_outside_is_high() -> None:
+    result = classify_command(["grep", "-r", "password", "/Users"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_head_absolute_outside_is_high() -> None:
+    result = classify_command(["head", "/tmp/x"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_cat_inside_workspace_stays_low() -> None:
+    result = classify_command(["cat", "./README.md"], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_grep_recursive_inside_stays_low() -> None:
+    result = classify_command(["grep", "-r", "TODO", "."], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_wc_relative_inside_stays_low() -> None:
+    result = classify_command(["wc", "-l", "src/foo.py"], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_bare_ls_no_path_stays_low() -> None:
+    # ls is not a reader executable; no path arg, no boundary check
+    result = classify_command(["ls"], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_cat_secret_marker_still_high() -> None:
+    # regression: marker-bearing reads stay HIGH via _touches_secret_path
+    result = classify_command(["cat", ".env"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+
+
+def test_rm_outside_behavior_unchanged_after_rename() -> None:
+    # regression guard for the _writes_outside_workspace -> _path_arg_outside_workspace rename
+    result = classify_command(["rm", "-rf", "/tmp/x"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert "recursive delete" in result.reasons
+
+
+def test_mv_outside_behavior_unchanged_after_rename() -> None:
+    # regression guard for the rename: WRITE_COMMANDS branch reason unchanged
+    result = classify_command(["mv", "x", "/etc/y"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace boundary" in reason for reason in result.reasons)
+
+
+# -- end reader-command boundary tests ----------------------------------------
+
+
 def test_reasons_are_present_for_risky_commands() -> None:
     result = classify_command(["rm", "-rf", "build"], workspace=WS)
     assert result.reasons

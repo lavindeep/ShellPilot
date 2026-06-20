@@ -40,6 +40,9 @@ LOW_EXECUTABLES: Final = frozenset(
         "ps",
     }
 )
+READER_EXECUTABLES: Final = frozenset(
+    {"cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "file", "stat", "du"}
+)
 GIT_READONLY_VERBS: Final = frozenset(
     {
         "status",
@@ -142,8 +145,8 @@ def sensitive_path_reason(path: Path) -> str | None:
     return None
 
 
-def _writes_outside_workspace(argv: list[str], workspace: Path) -> str | None:
-    """For write-ish commands, flag path arguments that resolve outside the workspace.
+def _path_arg_outside_workspace(argv: list[str], workspace: Path) -> str | None:
+    """Flag path arguments that resolve outside the workspace (reads or writes).
 
     Both absolute and relative tokens are checked. Bare non-path tokens (e.g.
     "git", "status", a commit message) resolve to workspace/<token>, which is
@@ -191,7 +194,7 @@ def _classify_rm(argv: list[str], workspace: Path) -> CommandRisk:
         return CommandRisk(RiskLevel.HIGH, ("recursive delete",))
     if any("*" in token for token in argv[1:]):
         return CommandRisk(RiskLevel.HIGH, ("glob delete",))
-    outside = _writes_outside_workspace(argv, workspace)
+    outside = _path_arg_outside_workspace(argv, workspace)
     if outside:
         return CommandRisk(RiskLevel.HIGH, ("deletes outside the workspace",))
     return CommandRisk(RiskLevel.MEDIUM, ("deletes a file",))
@@ -234,7 +237,7 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
     if executable in NETWORK_COMMANDS:
         return CommandRisk(RiskLevel.MEDIUM, (f"{executable} performs network activity",))
     if executable in WRITE_COMMANDS:
-        outside = _writes_outside_workspace(argv, workspace)
+        outside = _path_arg_outside_workspace(argv, workspace)
         if outside:
             return CommandRisk(RiskLevel.HIGH, (outside,))
         return CommandRisk(RiskLevel.MEDIUM, (f"{executable} writes to the workspace",))
@@ -244,6 +247,19 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
         if argv[1:3] == ["-m", "pytest"] or "--version" in argv:
             return CommandRisk(RiskLevel.LOW, ())
         return CommandRisk(RiskLevel.MEDIUM, ("runs arbitrary python code",))
+    if executable in READER_EXECUTABLES:
+        # Unlike read_file (which honors allow_sensitive_reads via decide()),
+        # classify_command sees only a RiskLevel and run_command is
+        # SideEffect.VARIABLE, so out-of-workspace command reads escalate to
+        # HIGH unconditionally and never AUTO-run. A regex/pattern arg that
+        # looks path-like (e.g. grep "../x") can over-flag to HIGH; that is a
+        # safe over-ask (HIGH -> ASK), shared with the rm/WRITE branches.
+        outside = _path_arg_outside_workspace(argv, workspace)
+        if outside:
+            return CommandRisk(
+                RiskLevel.HIGH, (f"reads outside the workspace boundary: {outside}",)
+            )
+        # in-workspace readers fall through to the LOW return below
     if executable in LOW_EXECUTABLES:
         return CommandRisk(RiskLevel.LOW, ())
 
