@@ -8,9 +8,11 @@ from shellpilot.config.model import Settings, SkillSettings
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.policy.risk import RiskLevel, SideEffect
+from shellpilot.runtime.context import ContextAssembler, ContextSnapshot
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.skills.loader import SKILL_FILENAME, discover_skills
-from shellpilot.skills.model import Skill
+from shellpilot.skills.model import Skill, SkillResource, SkillTrigger
+from shellpilot.skills.triggers import TriggerContext
 from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
 from shellpilot.tools.registry import default_registry
 from tests.fakes.fake_llm import FakeLLM, answer, tool_call
@@ -166,3 +168,122 @@ def test_web_grounding_skill_injected_when_web_enabled(tmp_path: Path) -> None:
     assert "## Skill: web-grounding" in system_text
     assert "leads, not evidence" in system_text
     assert "fetch only URLs from the search results" in system_text
+
+
+# ---------------------------------------------------------------------------
+# Readable menu (skills readable block) — Task 2 of v0.9.0
+# ---------------------------------------------------------------------------
+
+
+def _assembler() -> ContextAssembler:
+    return ContextAssembler()
+
+
+def _on_demand_ref(name: str) -> SkillResource:
+    return SkillResource(
+        kind="reference",
+        name=name,
+        rel_path=f"references/{name}.md",
+        text=f"# {name}",
+        est_tokens=5,
+    )
+
+
+def _triggered_ref(name: str) -> SkillResource:
+    return SkillResource(
+        kind="reference",
+        name=name,
+        rel_path=f"references/{name}.md",
+        text=f"# {name}",
+        est_tokens=5,
+        trigger=SkillTrigger.ALWAYS_ON,
+    )
+
+
+def _on_demand_tmpl(name: str) -> SkillResource:
+    return SkillResource(
+        kind="template",
+        name=name,
+        rel_path=f"templates/{name}.md",
+        text=f"# {name}",
+        est_tokens=5,
+    )
+
+
+def _always_on_skill(
+    name: str,
+    *,
+    references: tuple[SkillResource, ...] = (),
+    templates: tuple[SkillResource, ...] = (),
+) -> Skill:
+    return Skill(
+        name=name,
+        description="test",
+        body="body text",
+        root="user",
+        triggers=(SkillTrigger.ALWAYS_ON,),
+        est_tokens=5,
+        references=references,
+        templates=templates,
+    )
+
+
+def _assemble_bare(skills: list[Skill], *, enabled: tuple[str, ...]) -> ContextSnapshot:
+    ctx = TriggerContext(plan_status=None, web_enabled=False, enabled=enabled)
+    return _assembler().assemble(
+        base_prompt="base",
+        behavior_block="",
+        memory_block="",
+        skills=skills,
+        skill_token_budget=8000,
+        plan_state="",
+        trigger_ctx=ctx,
+    )
+
+
+def test_readable_menu_rendered_when_opted_in() -> None:
+    """Opted-in session: injected skill with on-demand refs → 'skills readable' block injected."""
+    skill = _always_on_skill("my-skill", references=(_on_demand_ref("guide"),))
+    snapshot = _assemble_bare([skill], enabled=("my-skill",))
+    block = next((b for b in snapshot.blocks if b.name == "skills readable"), None)
+    assert block is not None, "expected 'skills readable' block in snapshot"
+    assert block.injected
+    assert "open with skill_read" in block.text
+    assert "my-skill" in block.text
+    assert "guide" in block.text
+
+
+def test_readable_menu_absent_default_session() -> None:
+    """Default session (enabled=()): no 'skills readable' block at all."""
+    # context-management is ALWAYS_ON and has on-demand refs — the gate is enabled, not the skill.
+    skills = _builtin_skills()
+    snapshot = _assemble_bare(list(skills), enabled=())
+    names = [b.name for b in snapshot.blocks]
+    assert "skills readable" not in names
+    # No menu content leaks into the actual prompt on a default session.
+    assert "Readable docs" not in snapshot.system_text()
+
+
+def test_readable_menu_only_on_demand_listed() -> None:
+    """Triggered (injected) refs must NOT appear in the menu; only trigger=None ones do."""
+    skill = _always_on_skill(
+        "mixed-skill",
+        references=(_triggered_ref("always-injected"), _on_demand_ref("on-demand-guide")),
+    )
+    snapshot = _assemble_bare([skill], enabled=("mixed-skill",))
+    block = next((b for b in snapshot.blocks if b.name == "skills readable"), None)
+    assert block is not None
+    assert "on-demand-guide" in block.text
+    assert "always-injected" not in block.text
+
+
+def test_readable_menu_includes_templates() -> None:
+    """trigger=None templates are included in the menu alongside references."""
+    skill = _always_on_skill(
+        "tmpl-skill",
+        templates=(_on_demand_tmpl("my-template"),),
+    )
+    snapshot = _assemble_bare([skill], enabled=("tmpl-skill",))
+    block = next((b for b in snapshot.blocks if b.name == "skills readable"), None)
+    assert block is not None
+    assert "my-template" in block.text
