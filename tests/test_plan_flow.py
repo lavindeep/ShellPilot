@@ -326,7 +326,7 @@ def _nudge_messages(history: Sequence[Message]) -> list[Message]:
         m
         for m in history
         if getattr(m, "role", "") == "tool"
-        and "call the tool for that step now" in getattr(m, "content", "")
+        and "The approved plan is not finished" in getattr(m, "content", "")
     ]
 
 
