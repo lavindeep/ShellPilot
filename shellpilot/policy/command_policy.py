@@ -60,6 +60,19 @@ GIT_READONLY_VERBS: Final = frozenset(
     }
 )
 GIT_HIGH: Final = frozenset({"reset", "clean"})
+GIT_BENIGN_GLOBALS: Final = frozenset({"--no-pager", "--literal-pathspecs"})
+GIT_TERMINAL_GLOBALS: Final = frozenset({"--exec-path"})
+GIT_GLOBALS_WITH_SPLIT_VALUES: Final = frozenset(
+    {
+        "-C",
+        "-c",
+        "--config-env",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
+)
 SHELLS: Final = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh"})
 PACKAGE_MANAGERS: Final = frozenset(
     {
@@ -170,20 +183,46 @@ def _path_arg_outside_workspace(argv: list[str], workspace: Path) -> str | None:
     return None
 
 
+def _scan_git_verb(argv: list[str]) -> tuple[str, list[str], bool]:
+    conservative_global = False
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if not token.startswith("-"):
+            return token, argv[index + 1 :], conservative_global
+        if token not in GIT_BENIGN_GLOBALS:
+            conservative_global = True
+        if token in GIT_TERMINAL_GLOBALS:
+            return "", [], conservative_global
+        if token in GIT_GLOBALS_WITH_SPLIT_VALUES:
+            index += 2
+        else:
+            index += 1
+    return "", [], conservative_global
+
+
 def _classify_git(argv: list[str]) -> CommandRisk:
-    verb = next((token for token in argv[1:] if not token.startswith("-")), "")
+    verb, verb_args, conservative_global = _scan_git_verb(argv)
     flags = [token for token in argv[1:] if token.startswith("-")]
     if verb in GIT_HIGH:
         return CommandRisk(RiskLevel.HIGH, (f"git {verb} can destroy local changes",))
     if verb == "branch" and ("-D" in flags or "--delete" in flags):
         return CommandRisk(RiskLevel.HIGH, ("git branch deletion",))
     if verb == "push":
-        if "--force" in flags or "-f" in flags or "--force-with-lease" in flags:
+        if (
+            "--force" in flags
+            or any("f" in flag[1:] for flag in flags if not flag.startswith("--"))
+            or "--force-with-lease" in flags
+            or any(flag.startswith("--force-with-lease=") for flag in flags)
+            or any(arg.startswith("+") for arg in verb_args)
+        ):
             return CommandRisk(RiskLevel.HIGH, ("force push rewrites remote history",))
         return CommandRisk(RiskLevel.MEDIUM, ("git push publishes commits",))
+    if conservative_global:
+        return CommandRisk(RiskLevel.MEDIUM, ("git uses a non-benign global option",))
     if verb in GIT_READONLY_VERBS and verb != "stash":
         return CommandRisk(RiskLevel.LOW, ())
-    if verb == "stash" and len(argv) > 2 and argv[2] in ("list", "show"):
+    if verb == "stash" and verb_args and verb_args[0] in ("list", "show"):
         return CommandRisk(RiskLevel.LOW, ())
     return CommandRisk(RiskLevel.MEDIUM, (f"git {verb or '?'} changes repository state",))
 

@@ -57,11 +57,71 @@ CASES: list[tuple[list[str], RiskLevel]] = [
     (["cat", ".env"], RiskLevel.HIGH),
 ]
 
+GIT_PRE_VERB_CASES: list[tuple[list[str], RiskLevel]] = [
+    # Benign globals preserve read-only classification.
+    (["git", "--no-pager", "log"], RiskLevel.LOW),
+    (["git", "--literal-pathspecs", "diff"], RiskLevel.LOW),
+    # All other pre-verb globals are conservative, including recognized
+    # value-bearing options whose values must not be mistaken for verbs.
+    (["git", "--git-dir=/tmp/repo", "log"], RiskLevel.MEDIUM),
+    (["git", "--git-dir", "/tmp/repo", "log"], RiskLevel.MEDIUM),
+    (["git", "--work-tree", "../other", "log"], RiskLevel.MEDIUM),
+    (["git", "-C", "../other", "status"], RiskLevel.MEDIUM),
+    (["git", "-c", "core.pager=cat", "log"], RiskLevel.MEDIUM),
+    (["git", "-c=core.pager=cat", "log"], RiskLevel.MEDIUM),
+    (["git", "--future-global", "log"], RiskLevel.MEDIUM),
+    (["git", "--exec-path=/tmp", "log"], RiskLevel.MEDIUM),
+    (["git", "--git-dir", "reset", "log"], RiskLevel.MEDIUM),
+]
+
 
 @pytest.mark.parametrize(("argv", "expected"), CASES, ids=lambda case: str(case))
 def test_classification_table(argv: list[str], expected: RiskLevel) -> None:
     result = classify_command(argv, workspace=WS)
     assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+@pytest.mark.parametrize(("argv", "expected"), GIT_PRE_VERB_CASES, ids=lambda case: str(case))
+def test_git_pre_verb_global_classification(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+def test_git_benign_global_does_not_hide_destructive_verb() -> None:
+    result = classify_command(["git", "--no-pager", "reset"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+
+
+def test_git_bare_exec_path_does_not_treat_later_token_as_verb() -> None:
+    result = classify_command(["git", "--exec-path", "reset", "log"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+    assert result.reasons == ("git uses a non-benign global option",)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["git", "--no-pager", "stash", "list"],
+        ["git", "--literal-pathspecs", "stash", "show"],
+    ],
+)
+def test_git_benign_global_preserves_readonly_stash(argv: list[str]) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["git", "push", "--force-with-lease=main:deadbeef"],
+        ["git", "push", "origin", "+main"],
+        ["git", "push", "-uf"],
+        ["git", "push", "-fu"],
+    ],
+)
+def test_git_force_push_forms_are_high(argv: list[str]) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == RiskLevel.HIGH
 
 
 def test_write_outside_workspace_is_high() -> None:
