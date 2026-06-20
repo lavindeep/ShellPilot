@@ -100,17 +100,36 @@ def test_response_stream_sanitizes_plain_passthrough_and_buffer() -> None:
     assert out.endswith("\n")
 
 
-def test_response_stream_preserves_multiline_fenced_markdown() -> None:
+def test_response_stream_preserves_multiline_fenced_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B1 sanitization must not corrupt legitimate multi-line fenced markdown.
+
+    Asserts on the markup handed to Markdown — not the Live-streamed export_text,
+    which records intermediate frames and so cannot equal a single static print
+    (every other terminal test here uses substring checks for the same reason).
+    """
+    sources: list[str] = []
+    real_markdown = streaming_mod.Markdown
+
+    def recording_markdown(markup: str) -> Markdown:
+        sources.append(markup)
+        return real_markdown(markup)
+
+    monkeypatch.setattr(streaming_mod, "Markdown", recording_markdown)
     content = 'Intro paragraph.\n\n```python\nprint("hello")\n```\n\nFinal **bold** line.\n'
-    streamed_console = terminal_console()
-    stream = ResponseStream(streamed_console)
+    console = terminal_console()
+    stream = ResponseStream(console)
     for token in (content[:13], content[13:31], content[31:]):
         stream.feed(token)
     stream.finish()
 
-    expected_console = terminal_console()
-    expected_console.print(Markdown(content))
-    assert streamed_console.export_text() == expected_console.export_text()
+    # The final flush hands the complete, un-corrupted markdown to Markdown:
+    # the fenced code block and surrounding text survive sanitization intact.
+    assert sources[-1] == content
+    out = console.export_text()
+    assert 'print("hello")' in out  # code-block body rendered
+    assert "Final" in out and "bold" in out  # trailing text + bold rendered
 
 
 def test_response_stream_final_render_is_complete() -> None:
