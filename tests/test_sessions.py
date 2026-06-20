@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 from shellpilot.config.loader import load_config
@@ -428,3 +430,35 @@ def test_export_already_redacted_transcript_is_idempotent(tmp_path: Path) -> Non
     assert "x.py" in text
     # no spurious [REDACTED] markers introduced
     assert "[REDACTED]" not in text
+
+
+# ---------------------------------------------------------------------------
+# F13: at-rest file permissions — session file must be 0600, parent dir 0700
+# ---------------------------------------------------------------------------
+
+
+def test_session_file_created_mode_0600(tmp_path: Path) -> None:
+    """A freshly created session transcript must have mode 0600."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="hello"))
+    file_mode = stat.S_IMODE(os.stat(store.path).st_mode)
+    assert file_mode == 0o600, f"expected 0o600, got {oct(file_mode)}"
+
+
+def test_session_parent_dir_created_mode_0700(tmp_path: Path) -> None:
+    """The sessions directory created by SessionStore._append must have mode 0700."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="hello"))
+    dir_mode = stat.S_IMODE(os.stat(store.path.parent).st_mode)
+    assert dir_mode == 0o700, f"expected 0o700, got {oct(dir_mode)}"
+
+
+def test_session_append_preserves_content_at_0600(tmp_path: Path) -> None:
+    """Multiple appends must accumulate without truncating; file stays 0600."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="first"))
+    store.record_message(Message(role="assistant", content="second"))
+    loaded = SessionStore.load(store.path)
+    assert [m.content for m in loaded.messages] == ["first", "second"]
+    file_mode = stat.S_IMODE(os.stat(store.path).st_mode)
+    assert file_mode == 0o600, f"expected 0o600, got {oct(file_mode)}"
