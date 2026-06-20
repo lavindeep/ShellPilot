@@ -437,6 +437,31 @@ def make_plan_tools(
                 verification=[str(item) for item in arguments.get("verification", [])],
             )
             plan = manager.active
+        elif (
+            manager.pending_revision is None
+            and manager.active is not None
+            and manager.active.status in ("proposed", "active")
+            and manager.active.goal == goal
+            and [step.title for step in manager.active.steps] == steps
+        ):
+            # Idempotent duplicate: the model re-emitted an identical propose_plan
+            # for the already proposed/active plan (a known double-emit). Do NOT
+            # cancel-and-recreate (that would re-prompt for approval of the same
+            # plan); send the model back to executing the current step. Equality
+            # compares the incoming normalized goal/steps against the stored form
+            # (manager.create stores goal as-is and each step verbatim as
+            # PlanStep.title), so a byte-identical re-emit matches while any real
+            # goal/step change falls through to the recreate branch below.
+            # ponytail: a deliberate identical "restart" re-propose is swallowed —
+            # far rarer than the duplicate-emit this prevents.
+            return ToolResult(
+                success=True,
+                summary="plan already active; continue executing",
+                content=(
+                    "This plan is already active — do not re-propose it. "
+                    "Continue executing the current step now, in this same turn."
+                ),
+            )
         else:
             # No pending revision — cancel any stale active plan and create fresh.
             revising = manager.active is not None and manager.active.status in (

@@ -762,6 +762,21 @@ Recommended workflow:
    **in place** — same task ID, same directory. A revision never creates a
    second task directory. ``/clear`` (or any ``cancel()`` call) also clears the
    pending-revision marker so the next ``propose_plan`` starts a fresh task.
+   - **Idempotent duplicate propose (v0.8.2).** Small models sometimes emit
+     ``propose_plan`` twice in one reply batch; run sequentially, the first
+     creates and approves the plan while the second — identical — would otherwise
+     cancel the just-approved plan and re-prompt the user for the same approval.
+     So when there is **no pending revision**, the active plan is already
+     ``proposed`` or ``active``, and the incoming proposal is **identical** to it
+     (the stripped ``goal`` equals the stored goal **and** the normalized
+     ``steps`` list equals the stored ``PlanStep.title`` list — a byte-identical
+     re-emit), ``propose_plan`` is a no-op: it does not re-approve, cancel,
+     recreate, or re-prompt, and instead returns a success result telling the
+     model the plan is already active and to keep executing the current step.
+     Accepted tradeoff: a deliberate identical "restart" re-propose is also
+     swallowed, which is far rarer than the duplicate-emit this prevents. The
+     guard sits after the pending-revision branch, so a genuine revision still
+     revises in place and any changed goal or step list still recreates.
 8. On approval, the `propose_plan` tool result instructs the model to continue in the same
    turn: it must call the tool for step 1 immediately, then record progress with
    `update_plan`, and keep executing steps without asking the user again. The user
