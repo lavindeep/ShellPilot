@@ -51,6 +51,24 @@ def _error_transport() -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+def _patch_getaddrinfo(monkeypatch: pytest.MonkeyPatch, fetch_mod: object, *addresses: str) -> None:
+    """Patch socket.getaddrinfo (as imported by fetch) to resolve to *addresses*.
+
+    Each address is returned as one getaddrinfo entry whose sockaddr[0] is the
+    IP string, matching the (family, type, proto, canonname, sockaddr) tuple
+    shape the resolver returns.  Pass no addresses to simulate an unresolvable
+    name (raises socket.gaierror).
+    """
+    import socket
+
+    def fake_getaddrinfo(host: str, *args: object, **kwargs: object) -> list[tuple[object, ...]]:
+        if not addresses:
+            raise socket.gaierror("name resolution failed")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addr, 0)) for addr in addresses]
+
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo", fake_getaddrinfo)
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -257,9 +275,12 @@ def test_rejects_numeric_alternate_encodings() -> None:
     assert calls == [], f"Transport was called for blocked URLs: {[r.url for r in calls]}"
 
 
-def test_allows_normal_public_hosts() -> None:
-    """Public hostnames must pass the URL guard (no network involved)."""
+def test_allows_normal_public_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Public hostnames must pass the URL guard when they resolve to public IPs."""
+    from shellpilot.web import fetch as fetch_mod
     from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "93.184.216.34")
 
     # These must not raise
     _check_url("https://example.com/")
@@ -365,9 +386,12 @@ def test_rejects_multi_trailing_dots() -> None:
         _check_url("http://localhost../")
 
 
-def test_allows_public_domain_with_trailing_dot() -> None:
+def test_allows_public_domain_with_trailing_dot(monkeypatch: pytest.MonkeyPatch) -> None:
     """http://example.com./ (FQDN with trailing dot) must still be allowed."""
+    from shellpilot.web import fetch as fetch_mod
     from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "93.184.216.34")
 
     # Must not raise — public domain, trailing dot is a valid DNS encoding
     _check_url("http://example.com./")
@@ -392,3 +416,192 @@ def test_existing_blocks_unaffected_by_trailing_dot_change() -> None:
     for url in blocked:
         with pytest.raises(WebFetchError):
             _check_url(url)
+
+
+# ---------------------------------------------------------------------------
+# DNS resolve-and-validate (F11 — DNS-rebinding SSRF)
+# ---------------------------------------------------------------------------
+
+
+def test_name_resolving_to_metadata_ip_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A public-looking name resolving to the cloud-metadata IP must be blocked."""
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "169.254.169.254")
+
+    with pytest.raises(WebFetchError, match="non-public address"):
+        _check_url("http://metadata.evil.example/")
+
+
+def test_name_resolving_to_loopback_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A public-looking name resolving to loopback must be blocked."""
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "127.0.0.1")
+
+    with pytest.raises(WebFetchError, match="non-public address"):
+        _check_url("http://rebind.example/")
+
+
+def test_name_resolving_to_private_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A public-looking name resolving to an RFC-1918 private IP must be blocked."""
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "10.0.0.5")
+
+    with pytest.raises(WebFetchError, match="non-public address"):
+        _check_url("http://intranet.example/")
+
+
+def test_name_resolving_to_cgnat_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A name resolving into CGNAT 100.64.0.0/10 (Alibaba/Oracle metadata) must be blocked."""
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "100.100.100.200")
+
+    with pytest.raises(WebFetchError, match="non-public address"):
+        _check_url("http://cloud-meta.example/")
+
+
+def test_name_resolving_to_public_ip_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A name resolving only to a public IP must pass."""
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "93.184.216.34")
+
+    # Must not raise
+    _check_url("https://example.com/")
+
+
+def test_name_with_mixed_addresses_blocked_on_any_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a name resolves to a public AND a private IP, it must still be blocked."""
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "93.184.216.34", "127.0.0.1")
+
+    with pytest.raises(WebFetchError, match="non-public address"):
+        _check_url("http://mixed.example/")
+
+
+def test_unresolvable_name_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unresolvable name must NOT raise from the guard — the fetch fails naturally."""
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod)  # no addresses → gaierror
+
+    # Must not raise — the connection attempt will fail cleanly later.
+    _check_url("http://does-not-exist.invalid/")
+
+
+def test_name_resolving_to_ipv6_loopback_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """IPv6 resolution (4-tuple sockaddr) is validated like IPv4."""
+    import socket
+
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    def fake(host: str, *args: object, **kwargs: object) -> list[tuple[object, ...]]:
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0))]
+
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo", fake)
+    with pytest.raises(WebFetchError, match="non-public address"):
+        _check_url("http://ipv6-rebind.example/")
+
+
+def test_name_resolving_to_ipv6_public_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A name resolving only to a public IPv6 address must pass."""
+    import socket
+
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    pub = "2606:2800:220:1:248:1893:25c8:1946"
+
+    def fake(host: str, *args: object, **kwargs: object) -> list[tuple[object, ...]]:
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (pub, 0, 0, 0))]
+
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo", fake)
+    _check_url("https://ipv6.example/")  # must not raise
+
+
+def test_unencodable_idna_hostname_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An un-encodable IDNA hostname fails closed; no raw UnicodeError escapes."""
+    from shellpilot.web import fetch as fetch_mod
+    from shellpilot.web.fetch import _check_url
+
+    def raise_unicode(host: str, *args: object, **kwargs: object) -> list[tuple[object, ...]]:
+        raise UnicodeError("label too long")
+
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo", raise_unicode)
+    _check_url("http://xn--very-long-label.example/")  # must not raise
+
+
+def test_cgnat_ip_literal_blocked() -> None:
+    """A CGNAT 100.64.0.0/10 literal must be blocked under the is_global switch."""
+    from shellpilot.web.fetch import _check_url
+
+    with pytest.raises(WebFetchError):
+        _check_url("http://100.64.0.1/")
+
+
+def test_public_ip_literal_allowed() -> None:
+    """A public IP literal must pass without any DNS resolution."""
+    from shellpilot.web.fetch import _check_url
+
+    # Must not raise (no getaddrinfo patch needed — it's a literal, not a name).
+    _check_url("http://93.184.216.34/")
+
+
+def test_redirect_to_private_resolving_name_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A redirect to a public-looking name that resolves private must be blocked at the hop."""
+    from shellpilot.web import fetch as fetch_mod
+
+    _patch_getaddrinfo(monkeypatch, fetch_mod, "127.0.0.1")
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        # First hop redirects to a public-looking name that resolves to loopback.
+        return httpx.Response(
+            302,
+            headers={
+                "location": "http://rebind.example/secret",
+                "content-type": "text/html",
+            },
+            content=b"",
+        )
+
+    # The initial host must resolve public so the first hop is permitted.
+    fetcher = PageFetcher(transport=httpx.MockTransport(handler))
+
+    # The first request needs a public-resolving host; patch the initial host too
+    # by giving getaddrinfo a public IP for it but private for the redirect host.
+    import socket
+
+    def selective_getaddrinfo(
+        host: str, *args: object, **kwargs: object
+    ) -> list[tuple[object, ...]]:
+        ip = "127.0.0.1" if host == "rebind.example" else "93.184.216.34"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    monkeypatch.setattr(fetch_mod.socket, "getaddrinfo", selective_getaddrinfo)
+
+    with pytest.raises(WebFetchError, match="non-public address"):
+        fetcher.fetch("http://start.example/a")
+
+    # Only the first request should have been made; the rebind hop is blocked.
+    assert len(calls) == 1, (
+        f"Expected exactly 1 transport call, got {len(calls)}: {[str(r.url) for r in calls]}"
+    )

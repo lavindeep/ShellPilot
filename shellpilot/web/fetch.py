@@ -11,14 +11,19 @@ redirect destination is passed through :func:`_check_url` before the next
 request is issued, so a public URL that 302s to a private IP is blocked at
 the second hop before any connection is made.
 
-Known limitation — DNS-based private-IP bypass
-----------------------------------------------
-Guards are applied to the URL hostname before any network request.  If a
-public-looking DNS name resolves to a private/loopback IP (DNS rebinding), the
-fetcher will not catch it.  DNS pinning or post-connect IP inspection is not
-implemented; the guards here cover the common/accidental cases, not adversarial
-ones.  Users who need stronger SSRF protection should layer this behind a
-network-level egress filter or a dedicated DNS-pinning proxy.
+DNS resolution
+--------------
+Guards are applied before any request is issued.  IP literals are validated
+directly; DNS names are resolved (``getaddrinfo``) and every resulting address
+is validated, so a public-looking name that resolves to a private/loopback/
+metadata IP (DNS rebinding) is blocked pre-request.
+
+Accepted residual — the connection is not pinned to the resolved IP (that would
+break TLS SNI/cert verification for arbitrary HTTPS), so a name that resolves
+public during the guard but private on the subsequent connect (the narrow
+resolve→reconnect rebind window) is not caught.  On a single-user box where
+``web_fetch`` is opt-in and approval-gated with the hostname shown, this is
+accepted; stronger protection belongs in a network-level egress filter.
 """
 
 from __future__ import annotations
@@ -55,14 +60,27 @@ class FetchedPage:
     truncated: bool  # True when either byte cap or char cap was hit
 
 
+def _ip_blocked(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True for any non-public address.
+
+    ``is_global`` is False for loopback, private (RFC-1918), link-local,
+    reserved, unspecified, and shared CGNAT (100.64.0.0/10) ranges — a single
+    check covering every range a fetch must never reach.
+    """
+    return not addr.is_global
+
+
 def _check_url(url: str) -> None:
     """Raise :class:`WebFetchError` if *url* fails pre-request guards.
 
     Checks (in order):
     1. Scheme must be ``http`` or ``https``.
     2. Hostname must not be empty.
-    3. Literal IP addresses must not be loopback / private / link-local /
-       reserved.  The hostname ``localhost`` and ``0.0.0.0`` are also blocked.
+    3. Literal IP addresses must be public (not loopback / private / link-local
+       / reserved / CGNAT).  The hostname ``localhost`` and ``0.0.0.0`` are also
+       blocked.
+    4. DNS names are resolved and every resulting address must be public, so a
+       public-looking name that resolves to a non-public IP is blocked here.
     """
     parts = urlsplit(url)
 
@@ -96,16 +114,42 @@ def _check_url(url: str) -> None:
                 packed = socket.inet_aton(ip_str)
                 addr = ipaddress.IPv4Address(int.from_bytes(packed, "big"))
             except OSError:
-                # Not parseable by inet_aton either — treat as DNS name.
+                # Not parseable by inet_aton either — treat as a DNS name.
+                _check_resolved(hostname)
                 return
         else:
-            # DNS name; DNS resolution is NOT checked here.
+            # DNS name — resolve and validate every address it points to.
+            _check_resolved(hostname)
             return
 
-    if addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_reserved:
+    if _ip_blocked(addr):
         raise WebFetchError(
-            f"Fetching IP address {addr!s} is not allowed (loopback/private/link-local/reserved)."
+            f"Fetching IP address {addr!s} is not allowed (loopback/private/link-local/CGNAT)."
         )
+
+
+def _check_resolved(hostname: str) -> None:
+    """Resolve *hostname* and raise if any address it points to is non-public.
+
+    An unresolvable name does not raise here — the subsequent connection attempt
+    will fail cleanly, and there is nothing to validate.  The connection is not
+    pinned to the resolved IP, so the narrow resolve→reconnect rebind window is
+    an accepted residual (see the module docstring).
+    """
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except (socket.gaierror, UnicodeError):
+        # Unresolvable, or an un-encodable IDNA hostname: nothing to validate and
+        # no IP was reached. Fail closed — the connection attempt fails cleanly,
+        # and a raw UnicodeError never escapes the WebFetchError contract.
+        return
+    for info in infos:
+        sockaddr = info[4]
+        resolved = ipaddress.ip_address(sockaddr[0])
+        if _ip_blocked(resolved):
+            raise WebFetchError(
+                f"{hostname!r} resolves to a non-public address ({resolved!s}); blocked."
+            )
 
 
 def _content_type_accepted(content_type: str) -> bool:
