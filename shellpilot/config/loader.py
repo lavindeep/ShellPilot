@@ -49,13 +49,14 @@ SECTIONS: dict[str, type] = {
 }
 
 ENV_MAP: dict[str, str] = {
-    "SHELLPILOT_OLLAMA_BASE_URL": "model.base_url",
     "SHELLPILOT_MODEL": "model.default",
-    "SHELLPILOT_PROFILE": "runtime.security_profile",
     "SHELLPILOT_NO_COLOR": "ui.no_color",
     "SHELLPILOT_UI_GLYPHS": "ui.glyphs",
-    # tools.web is deliberately absent: enabling network egress must be an
-    # explicit config-file act, not an ambient environment variable.
+    # Egress and security-posture keys (tools.web, model.base_url,
+    # runtime.security_profile) are deliberately absent: enabling network
+    # egress, redirecting the Ollama endpoint, or downgrading the security
+    # profile must be an explicit config-file act, not an ambient environment
+    # variable. See CONFIG_FILE_ONLY_KEYS.
 }
 
 ALLOWED_VALUES: dict[str, tuple[str, ...]] = {
@@ -89,11 +90,25 @@ BOOT_ONLY_KEYS: frozenset[str] = frozenset(
         "model.default",
         "instructions.load_agents_md",
         "privacy.redact_secrets",
+        "runtime.security_profile",
         "ui.theme",
         "ui.no_color",
         "ui.glyphs",
         "ui.spinner",
         "tools.web",
+    }
+)
+
+# Network egress and the security posture must be explicit config.toml acts —
+# never settable via env vars, the program-managed overrides.json, or
+# /config set. (model.options/skills.enabled were already config-file-only.)
+CONFIG_FILE_ONLY_KEYS: frozenset[str] = frozenset(
+    {
+        "model.options",
+        "skills.enabled",
+        "tools.web",
+        "model.base_url",
+        "runtime.security_profile",
     }
 )
 
@@ -299,16 +314,10 @@ def load_config(
             hint = f"; did you mean {close[0]!r}?" if close else ""
             warnings.append(f"overrides: unknown key {key!r}{hint} — entry ignored")
             continue
-        if key == "model.options":
+        if key in CONFIG_FILE_ONLY_KEYS:
             warnings.append(
-                "overrides: model.options is config-file only and cannot be set "
-                "via overrides — entry ignored"
-            )
-            continue
-        if key == "skills.enabled":
-            warnings.append(
-                "overrides: skills.enabled is config-file only and cannot be set "
-                "via overrides — entry ignored"
+                f"overrides: {key} is config-file only and cannot be set "
+                f"via overrides — entry ignored"
             )
             continue
         try:
@@ -364,7 +373,7 @@ def validate_override(key: str, value: Any) -> Any:
 
     Raises :class:`ConfigError` for:
     - unknown keys (with a close-match hint when one exists)
-    - ``model.options`` (config-file only)
+    - config-file-only keys (see :data:`CONFIG_FILE_ONLY_KEYS`)
     - values that fail type/range/enum validation
     """
     if key not in _SCHEMA:
@@ -372,10 +381,8 @@ def validate_override(key: str, value: Any) -> Any:
         if close:
             raise ConfigError(f"unknown config key: {key!r}; did you mean {close[0]!r}?")
         raise ConfigError(f"unknown config key: {key!r}")
-    if key == "model.options":
-        raise ConfigError("model.options is config-file only and cannot be set via /config set")
-    if key == "skills.enabled":
-        raise ConfigError("skills.enabled is config-file only and cannot be set via /config set")
+    if key in CONFIG_FILE_ONLY_KEYS:
+        raise ConfigError(f"{key} is config-file only and cannot be set via /config set")
     # Coerce strings exactly as env-var parsing does.
     if isinstance(value, str):
         annotation = _SCHEMA[key]

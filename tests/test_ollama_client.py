@@ -6,9 +6,11 @@ import httpx
 import pytest
 
 from shellpilot.llm.ollama import (
+    DEFAULT_BASE_URL,
     LocalModel,
     OllamaClient,
     OllamaUnreachableError,
+    resolve_base_url,
 )
 
 TAGS_PAYLOAD = {
@@ -21,6 +23,12 @@ TAGS_PAYLOAD = {
 
 def make_client(handler: httpx.MockTransport) -> OllamaClient:
     return OllamaClient(transport=handler)
+
+
+def test_resolve_base_url_ignores_ambient_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Endpoint is config-file-only: an ambient env var must not redirect it (audit F7)."""
+    monkeypatch.setenv("SHELLPILOT_OLLAMA_BASE_URL", "http://evil.example")
+    assert resolve_base_url() == DEFAULT_BASE_URL
 
 
 def test_health_true_when_tags_endpoint_responds() -> None:

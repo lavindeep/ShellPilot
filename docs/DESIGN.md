@@ -1531,12 +1531,26 @@ This is the opposite of `config.toml` handling: hand-edited TOML is
 user-owned and fails loudly with `ConfigError` exactly as today.  The
 harness never writes TOML (`tomllib` is read-only by design).
 
-**`model.options` exclusion**
+**Config-file-only keys (egress / security invariant)**
 
-`model.options` cannot be set via the overrides layer.  It is config-file only
-(same rationale as `tools.web` — a sampling change must be an explicit config
-act).  An entry for `model.options` in `overrides.json` is silently skipped
-with a warning.
+A fixed set of keys (`CONFIG_FILE_ONLY_KEYS`) can only be set in `config.toml`
+(the user or project layer) — never via an environment variable, the
+program-managed `overrides.json`, or `/config set`:
+
+- `model.options` — a sampling change must be an explicit config act.
+- `skills.enabled` — the active skill set must be an explicit config act.
+- `tools.web` — enabling network egress must be an explicit config act.
+- `model.base_url` — redirecting the Ollama endpoint must be an explicit
+  config act (an ambient env var or tampered `overrides.json` must not point
+  the harness at a different host).
+- `runtime.security_profile` — downgrading the security posture (e.g.
+  `supervised` → `balanced`) must be an explicit config act, and never
+  hot-reloads mid-session (it is also boot-only).
+
+An entry for any of these in `overrides.json` is silently skipped with a
+warning; `/config set` rejects it with a `ConfigError`; none of them have an
+env-var mapping.  `/profile use` remains an in-session, non-persisted runtime
+switch among the valid profiles and is unaffected by this rule.
 
 **Slash commands**
 
@@ -1670,15 +1684,19 @@ web = false
 Recommended environment variables:
 
 ```text
-SHELLPILOT_OLLAMA_BASE_URL
 SHELLPILOT_MODEL
-SHELLPILOT_PROFILE
 SHELLPILOT_CONFIG
 SHELLPILOT_NO_COLOR
 SHELLPILOT_UI_GLYPHS
 ```
 
 Do not require environment variables for normal use.
+
+There is deliberately **no** environment variable for the egress / security
+keys (`model.base_url`, `runtime.security_profile`, `tools.web`).  An ambient
+env var (e.g. an inherited `.envrc`) must not be able to redirect the Ollama
+endpoint, downgrade the security profile, or enable network egress — those are
+config-file-only acts (see the config-file-only keys above).
 
 #### `--model` flag
 

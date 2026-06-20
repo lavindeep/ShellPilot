@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -15,7 +14,6 @@ from shellpilot.llm.messages import Message, ToolCall, ToolDefinition
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_GENERATE_TIMEOUT_SECONDS = 300.0
-BASE_URL_ENV_VAR = "SHELLPILOT_OLLAMA_BASE_URL"
 
 
 class OllamaError(Exception):
@@ -39,7 +37,11 @@ class LocalModel:
 
 
 def resolve_base_url() -> str:
-    return os.environ.get(BASE_URL_ENV_VAR, DEFAULT_BASE_URL)
+    # The Ollama endpoint is a config-file-only setting (model.base_url); it is
+    # deliberately NOT read from an ambient env var, so a malicious environment
+    # cannot redirect where prompts are sent (audit F7). Clients constructed
+    # without an explicit base_url (e.g. doctor) fall back to the local default.
+    return DEFAULT_BASE_URL
 
 
 class OllamaClient:

@@ -639,6 +639,46 @@ def test_config_set_model_options_rejected(tmp_path: Path) -> None:
     assert not (tmp_path / "overrides.json").exists()
 
 
+def test_config_set_security_profile_rejected(tmp_path: Path) -> None:
+    """/config set runtime.security_profile is rejected (config-file only).
+
+    Changing the security posture must be an explicit config.toml act, never a
+    persisted /config set override.
+    """
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set runtime.security_profile supervised")
+    out = harness.output()
+    assert "config-file only" in out.lower()
+    # Nothing persisted; the active profile is unchanged.
+    assert not (tmp_path / "overrides.json").exists()
+    assert harness.runtime.settings.runtime.security_profile == "balanced"
+
+
+def test_config_set_tools_web_rejected(tmp_path: Path) -> None:
+    """/config set tools.web is rejected (config-file only).
+
+    Enabling network egress must be an explicit config.toml act.
+    """
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set tools.web true")
+    out = harness.output()
+    assert "config-file only" in out.lower()
+    assert not (tmp_path / "overrides.json").exists()
+    assert harness.runtime.settings.tools.web is False
+
+
+def test_config_set_base_url_rejected(tmp_path: Path) -> None:
+    """/config set model.base_url is rejected (config-file only).
+
+    Redirecting the Ollama endpoint must be an explicit config.toml act.
+    """
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config set model.base_url http://evil.example")
+    out = harness.output()
+    assert "config-file only" in out.lower()
+    assert not (tmp_path / "overrides.json").exists()
+
+
 def test_config_unset_existing_reverts(tmp_path: Path) -> None:
     """/config unset removes the override and shows the reverted source."""
     import json
