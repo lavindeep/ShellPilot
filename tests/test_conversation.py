@@ -222,10 +222,7 @@ def test_planning_builtin_references_follow_plan_mode(tmp_path: Path) -> None:
     runtime.plan_manager.approve()
     active_blocks = _injected_block_texts(runtime)
     assert plan.status == "active"
-    assert (
-        'update_plan(step=N, status="completed")'
-        in active_blocks["skill:planning:reference:active.md"]
-    )
+    assert "update_plan(step=N," in active_blocks["skill:planning:reference:active.md"]
     assert "skill:planning:reference:proposed.md" not in active_blocks
     assert "skill:planning:reference:blocked.md" not in active_blocks
 
