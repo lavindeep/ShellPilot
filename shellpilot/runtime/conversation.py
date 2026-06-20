@@ -637,7 +637,7 @@ class ConversationRuntime:
             # update_plan(completed) transitioned the plan to completed in THIS
             # batch AND the same reply already carries a substantive summary, the
             # streamed prose IS the single summary — re-invoking the model on the
-            # planner's "Summarize the task outcome" tool result only duplicates
+            # planner's end-of-plan summary prompt only duplicates
             # it. Completion is always explicit (the plan went through the normal
             # _update handler, so on_step_change/UI re-render and bookkeeping have
             # already run); we skip only the extra model round-trip, never the

@@ -553,7 +553,12 @@ def make_plan_tools(
             success=True,
             summary="; ".join(messages) or "plan unchanged",
             content=(
-                "All steps complete. Summarize the task outcome for the user."
+                (
+                    "All steps complete. Give the user your final summary now — "
+                    "match its length to the task: a brief confirmation for simple "
+                    "work, a fuller summary when there are substantive findings "
+                    "worth reporting."
+                )
                 if done
                 else (
                     f"Plan updated. Current state:\n{compact_plan_state(plan)}\n"

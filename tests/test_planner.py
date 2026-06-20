@@ -171,6 +171,7 @@ def test_update_result_pushes_next_step(tmp_path: Path) -> None:
     assert final_result.success
     assert "Continue with the next step now, in this same turn." not in final_result.content
     assert "All steps complete" in final_result.content
+    assert "match its length to the task" in final_result.content
 
 
 def test_blocker_update_does_not_push_continuation(tmp_path: Path) -> None:

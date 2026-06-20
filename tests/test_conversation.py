@@ -712,7 +712,7 @@ def test_substantive_summary_after_explicit_completion_is_not_re_invoked(
 
     The plan transitions to completed via the model's own update_plan call, and
     the streamed prose IS the single summary — the model is NOT re-invoked on
-    the "Summarize the task outcome" tool result.
+    the planner's end-of-plan summary prompt.
     """
     fake = FakeLLM(script=[_complete_last_step_reply(_SUMMARY)])
     ui = FakeUI(plan_answer=("y", ""))
@@ -723,7 +723,7 @@ def test_substantive_summary_after_explicit_completion_is_not_re_invoked(
     assert runtime.plan_manager.active is not None
     assert runtime.plan_manager.active.status == "completed"
     # Exactly one chat call: the completing reply. No second round for the
-    # "Summarize the task outcome" tool result.
+    # planner's end-of-plan summary prompt.
     assert len(fake.calls) == 1
     assert reply == _SUMMARY
 
@@ -731,8 +731,8 @@ def test_substantive_summary_after_explicit_completion_is_not_re_invoked(
 def test_short_completion_reply_still_prompts_for_summary(tmp_path: Path) -> None:
     """A completing reply with short/empty content is re-invoked for the summary.
 
-    With no substantive summary in the completing reply, the planner's "Summarize
-    the task outcome" tool result still fires, eliciting the single summary turn.
+    With no substantive summary in the completing reply, the planner's end-of-plan
+    summary prompt still fires, eliciting the single summary turn.
     """
     fake = FakeLLM(
         script=[
@@ -748,7 +748,7 @@ def test_short_completion_reply_still_prompts_for_summary(tmp_path: Path) -> Non
     assert runtime.plan_manager.active is not None
     assert runtime.plan_manager.active.status == "completed"
     # Two chat calls: the terse completion, then the model re-invoked on the
-    # "Summarize the task outcome" result.
+    # planner's end-of-plan summary prompt.
     assert len(fake.calls) == 2
     assert reply == _SUMMARY
 
