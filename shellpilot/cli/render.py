@@ -276,21 +276,22 @@ def approval_block(request: ApprovalRequest, glyphs: Glyphs, *, plain_badge: boo
 
 
 def plan_step_line(index: int, step: PlanStep, glyphs: Glyphs) -> Text:
+    title = _sanitize_line(step.title)
     if step.status == "completed":
         return Text.assemble(
             (f"{glyphs.check} {index}", "sp.success"),
-            (f"  {step.title}", "sp.dim"),
+            (f"  {title}", "sp.dim"),
         )
     if step.status == "active":
-        return Text(f"{glyphs.current} {index}  {step.title}", style="sp.emph")
+        return Text(f"{glyphs.current} {index}  {title}", style="sp.emph")
     if step.status == "skipped":
-        return Text(f"{glyphs.skip} {index}  {step.title}", style="sp.dim")
-    return Text(f"{glyphs.todo} {index}  {step.title}", style="sp.dim")
+        return Text(f"{glyphs.skip} {index}  {title}", style="sp.dim")
+    return Text(f"{glyphs.todo} {index}  {title}", style="sp.dim")
 
 
 def plan_panel(plan: TaskPlan, glyphs: Glyphs) -> Panel:
     rows: list[Text] = [
-        Text.assemble(("Goal: ", "sp.dim"), (plan.goal, "")),
+        Text.assemble(("Goal: ", "sp.dim"), (_sanitize_line(plan.goal), "")),
         Text(""),
     ]
     rows.extend(plan_step_line(i, step, glyphs) for i, step in enumerate(plan.steps, 1))

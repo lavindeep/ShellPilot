@@ -195,3 +195,62 @@ def test_turn_stats_formats_and_warns() -> None:
 
 def test_output_truncation_marker() -> None:
     assert "+214 lines" in output_truncation(214, GLYPHS).plain
+
+
+def test_plan_panel_sanitizes_goal() -> None:
+    """plan.goal is model-controlled; raw control chars must not reach the terminal."""
+    plan = TaskPlan(
+        task_id="20260611-031500-sec-test",
+        goal="Safe goal\x1b[2Jforged\x00",
+        user_intent="test",
+        workspace=Path("/tmp/ws"),
+        profile="balanced",
+        steps=[PlanStep(title="Only step")],
+    )
+    out = rendered(plan_panel(plan, GLYPHS))
+    assert "\x1b" not in out
+    assert "\x00" not in out
+    assert "Safe goal" in out
+    assert "forged" in out  # visible text preserved, only escape stripped
+
+
+def test_plan_step_line_sanitizes_title() -> None:
+    """step.title is model-controlled; raw escape sequences must not reach the terminal."""
+    step = PlanStep(title="Compile\x1b[2Jspoof\x00", status="active")
+    line = plan_step_line(1, step, GLYPHS)
+    assert "\x1b" not in line.plain
+    assert "\x00" not in line.plain
+    assert "Compile" in line.plain
+    assert "spoof" in line.plain  # visible text preserved
+
+
+def test_plan_step_line_sanitizes_all_statuses() -> None:
+    """Sanitization must fire for every branch in plan_step_line (completed/active/skipped/todo)."""
+    poison = "\x1b[2Jx\x00"
+    for status in ("completed", "active", "skipped", "pending"):
+        step = PlanStep(title=f"Step{poison}", status=status if status != "pending" else "pending")
+        line = plan_step_line(1, step, GLYPHS)
+        assert "\x1b" not in line.plain, f"escape leaked for status={status!r}"
+        assert "\x00" not in line.plain, f"null leaked for status={status!r}"
+        assert "Step" in line.plain, f"visible text lost for status={status!r}"
+
+
+def test_plan_panel_normal_goal_unchanged() -> None:
+    """Sanitization must not alter clean goal text."""
+    plan = TaskPlan(
+        task_id="20260611-031500-normal",
+        goal="Do the demo",
+        user_intent="demo",
+        workspace=Path("/tmp/ws"),
+        profile="balanced",
+        steps=[PlanStep(title="Only step")],
+    )
+    out = rendered(plan_panel(plan, GLYPHS))
+    assert "Goal: Do the demo" in out
+
+
+def test_plan_step_line_normal_title_unchanged() -> None:
+    """Sanitization must not alter clean step title text."""
+    step = PlanStep(title="Run the tests", status="active")
+    line = plan_step_line(1, step, GLYPHS)
+    assert "Run the tests" in line.plain
