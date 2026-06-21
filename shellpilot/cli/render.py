@@ -346,17 +346,5 @@ def plan_panel(plan: TaskPlan, glyphs: Glyphs) -> Panel:
     )
 
 
-def _format_tokens(tokens: int) -> str:
-    return f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
-
-
-def turn_stats(elapsed_s: float, tokens: int, ctx_pct: int, *, warn: bool) -> Text:
-    stats = f"  {elapsed_s:.1f}s · {_format_tokens(tokens)} tokens · "
-    return Text.assemble(
-        (stats, "sp.faint"),
-        (f"ctx {ctx_pct}%", "sp.warn" if warn else "sp.faint"),
-    )
-
-
 def output_truncation(hidden_lines: int, glyphs: Glyphs) -> Text:
     return Text(f"    {glyphs.ellipsis} +{hidden_lines} lines", style="sp.faint")

@@ -38,10 +38,8 @@ from shellpilot.cli.render import (
 from shellpilot.cli.render import (
     tool_result as render_tool_result,
 )
-from shellpilot.cli.render import (
-    turn_stats as render_turn_stats,
-)
 from shellpilot.cli.slash import SlashAction, SlashDispatcher, command_words
+from shellpilot.cli.status_bar import ctx_percent
 from shellpilot.cli.streaming import AviationSpinner, DiffReveal, ResponseStream
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
 from shellpilot.config.loader import HIGH_STAKES_KEYS, ConfigError, LoadedConfig, load_config
@@ -206,11 +204,10 @@ class TerminalUI:
         self._stream.finish()
 
     def turn_finished(self, stats: TurnStats) -> None:
-        self._console.print(
-            render_turn_stats(
-                stats.elapsed_s, stats.context_tokens, stats.context_pct, warn=stats.warn
-            )
-        )
+        # Context utilization now lives in the always-on bottom status bar
+        # (design section 32), so the turn no longer prints a per-response line.
+        # The method stays on the RuntimeUI protocol for the runtime to call.
+        return
 
     def stream_token(self, token: str) -> None:
         self._spinner.stop()
@@ -650,20 +647,19 @@ def run_interactive(
 
     while True:
         status = runtime.status()
-        context = PromptContext(
-            workspace=status.workspace, model=status.model, profile=status.profile
-        )
-        # Persistent, unspoofable active-cloud indicator (design section 15.2).
+        # Persistent, unspoofable active-cloud indicator (design section 15.2),
+        # now folded into the always-on status bar rather than a separate header.
         # Derived from the harness egress signal on the LIVE model, so a
         # mid-session /model use to a cloud model turns it on and switching back
-        # turns it off. A default local session prints nothing.
-        if is_egressing(runtime.model, settings.model.base_url):
-            console.print(
-                Text(
-                    "☁ CLOUD MODEL ACTIVE — this session's content leaves your device",
-                    style="bold sp.warn",
-                )
-            )
+        # turns it off. ctx% is the same calculation the runtime reports.
+        egressing_now = is_egressing(runtime.model, settings.model.base_url)
+        context = PromptContext(
+            workspace=status.workspace,
+            model=status.model,
+            profile=status.profile,
+            is_cloud=egressing_now,
+            ctx_pct=ctx_percent(status.estimated_prompt_tokens, status.budget.model_context_tokens),
+        )
         console.print()
         read_started = time.monotonic()
         try:

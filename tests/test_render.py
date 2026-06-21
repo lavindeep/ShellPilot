@@ -18,7 +18,6 @@ from shellpilot.cli.render import (
     render_diff,
     tool_call,
     tool_result,
-    turn_stats,
     word_highlight_ranges,
 )
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS
@@ -257,16 +256,6 @@ def test_plan_panel_gate_and_step_lines() -> None:
 
     line = plan_step_line(2, PlanStep(title="Second", status="active"), GLYPHS)
     assert f"{GLYPHS.current} 2" in line.plain and "Second" in line.plain
-
-
-def test_turn_stats_formats_and_warns() -> None:
-    calm = turn_stats(2.13, 1_400, 18, warn=False)
-    assert "2.1s · 1.4k tokens · ctx 18%" in calm.plain
-    assert not any(span.style == "sp.warn" for span in calm.spans)
-
-    hot = turn_stats(0.5, 812, 84, warn=True)
-    assert "812 tokens" in hot.plain
-    assert any(span.style == "sp.warn" for span in hot.spans)
 
 
 def test_output_truncation_marker() -> None:

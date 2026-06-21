@@ -22,23 +22,37 @@ from prompt_toolkit.styles import Style
 from rich.console import Console
 
 from shellpilot.cli.render import context_line
+from shellpilot.cli.status_bar import COLOR_ACCENT, COLOR_WARN, status_bar
 from shellpilot.cli.theme import Glyphs
 
 PT_STYLE = Style.from_dict(
     {
         "context": "#6b6b6b",
-        "chevron": "#98c379 bold",
+        "chevron": f"{COLOR_ACCENT} bold",
+        "chevron.cloud": f"{COLOR_WARN} bold",
+        # The status bar supplies its own per-fragment colors, so clear
+        # prompt_toolkit's default reverse-video bottom-toolbar styling and let
+        # the bar render on the terminal background (instrument-minimal, §31).
+        "bottom-toolbar": "noreverse",
+        "bottom-toolbar.text": "noreverse",
     }
 )
 
 
 @dataclass(frozen=True)
 class PromptContext:
-    """What the dim context line shows above the chevron."""
+    """What the persistent status bar shows below the chevron.
+
+    The locality fields (``is_cloud`` from the real ``is_egressing`` signal,
+    plus context utilization) feed the unspoofable active-cloud indicator and
+    the always-on context readout (design section 15.2 / 32).
+    """
 
     workspace: Path
     model: str
     profile: str
+    is_cloud: bool = False
+    ctx_pct: int = 0
 
 
 class InputProvider(Protocol):
@@ -78,14 +92,19 @@ class PtkInput:
         )
 
     def read(self, context: PromptContext) -> str:
-        ctx = context_line(context.workspace, context.model, context.profile).plain
-        prompt = FormattedText(
-            [
-                ("class:context", ctx + "\n"),
-                ("class:chevron", f"{self._glyphs.chevron} "),
-            ]
+        # The persistent status bar (dir · model · profile · locality + ctx%)
+        # rides the bottom toolbar so it stays pinned and refreshes each render.
+        # The chevron goes amber when egressing — a second at-a-glance cloud cue.
+        chevron_class = "class:chevron.cloud" if context.is_cloud else "class:chevron"
+        prompt = FormattedText([(chevron_class, f"{self._glyphs.chevron} ")])
+        bar = status_bar(
+            workspace=context.workspace,
+            model=context.model,
+            profile=context.profile,
+            is_cloud=context.is_cloud,
+            ctx_pct=context.ctx_pct,
         )
-        return self._session.prompt(prompt).strip()
+        return self._session.prompt(prompt, bottom_toolbar=bar).strip()
 
 
 class PlainInput:

@@ -1329,10 +1329,10 @@ Three layered controls form the consent boundary:
 **Active-cloud indicator (unspoofable).** Three UI surfaces show the locality, all derived from `is_egressing` on the *live* model — never from model output, so the model cannot fake or hide it:
 
 - **Boot banner** (§31.10) styles the model name amber when the boot session egresses.
-- **Persistent header bar.** Each REPL iteration recomputes `is_egressing(runtime.model, base_url)` and, when true, prints a bold-amber line above the prompt — `☁ CLOUD MODEL ACTIVE — this session's content leaves your device`. Because it reads the live model, a mid-session `/model use <cloud>` turns it on and switching back to a local model turns it off. A default local session prints nothing (visually unchanged).
+- **Persistent status bar** (§31.11). The always-on bar above the prompt carries the locality segment: `☁ CLOUD` (amber, bold) with an amber emphasis across the whole bar when egressing, `● local` (green) otherwise. Each REPL iteration recomputes `is_egressing(runtime.model, base_url)` on the live model and feeds it as the bar's `is_cloud`, so a mid-session `/model use <cloud>` turns it on and switching back to a local model turns it off. The bar's `dir`/`model`/`profile`/`ctx%` come from `runtime.status()`, never from model output, and the user-controlled workspace path is sanitized (§36.2) before render. The chevron also turns amber when egressing. (This replaced an earlier separate bold-amber header line; the indicator now lives in one place — the bar.)
 - **`/status` locality line.** After Model/Profile, `/status` shows `Locality: REMOTE — <host>` in amber when egressing (the non-loopback host, or `cloud` for a cloud-tagged model on a loopback endpoint) or `Locality: local` in dim otherwise.
 
-The colored chip is deliberately **not** threaded into the prompt_toolkit context line: that input path renders the context line as plain text (color stripped), so a chip there would degrade and duplicate the header bar.
+The status bar is rendered as the input's `bottom_toolbar` with explicit per-fragment colors (prompt_toolkit's default reverse-video toolbar styling is cleared), so the locality segment renders in color in the live terminal. The non-TTY `PlainInput` path has no bar — it cannot egress (consent fails closed off a TTY), so there is nothing to indicate there.
 
 **Audit.** When the AuditLogger is constructed (after the gate, by which point consent has already been granted), an egressing session records a single `cloud_consent_granted` event (`model`, endpoint `host`) — the consent record alongside the per-turn `model_request` egress-visibility events.
 
@@ -2714,14 +2714,14 @@ Colors are truecolor values; rich downgrades automatically on 256/16-color termi
 
 ### 31.2 Prompt
 
-Two-line prompt replacing `[AI] >`:
+A bold accent-green `❯` over a persistent status bar (§31.11):
 
 ```text
-~/Projects/test_project · gemma4:e4b · balanced
+~/Projects · gemma4:e4b · balanced · ● local      12% ctx
 ❯
 ```
 
-Line one is dim ambient context (workspace with `~` abbreviation and middle truncation for long paths, then model, then profile). Line two is a bold accent-green `❯`. Input is provided by `prompt_toolkit`: persistent up-arrow history (state dir `history` file) and tab-completion for slash commands. Plain `input()` fallback when stdin is not a TTY.
+Input is provided by `prompt_toolkit`: persistent up-arrow history (state dir `history` file), tab-completion for slash commands, and the always-on status bar rendered as the session's `bottom_toolbar`. The chevron is accent-green for a local session and turns **amber** when egressing (a second at-a-glance cloud cue alongside the bar's locality segment). The non-TTY `PlainInput` fallback (pipes, tests) prints the dim `context_line` (`~/Projects · model · profile`) above a plain `input()` — the bar is a TTY feature, and a non-TTY session cannot egress (cloud consent fails closed off a TTY, §15.2).
 
 ### 31.3 Activity lines
 
@@ -2766,7 +2766,7 @@ Model responses render as rich Markdown, updated live while tokens stream (`rich
 
   Rationale: random pick within an ordered, never-regressing phase progression — coherent story within a turn, variety across turns; no approach/landing phrases because completion time is unknowable.
 
-- After each turn: a faint stats line — `2.1s · 1.4k tokens · ctx 18%`. The ctx percentage turns amber once estimated usage crosses `compact_at_tokens` (section 10.5).
+- Context utilization is no longer printed after each turn. It lives in the always-on status bar (§31.11), color-coded as it fills, so the reading is visible at the prompt at all times rather than only on the turn it was emitted. `turn_finished` stays on the `RuntimeUI` protocol (the runtime still computes `TurnStats`) but the terminal UI no longer prints a per-response line.
 
 **Labeled spinner states (A10, settled 2026-06-11):** `AviationSpinner.start(label=...)` accepts an optional label (plain `str` or rich `Text`). When set, every frame renders a breathing-beacon glyph (`·` / `✧` / `✦` cycling) in `sp.accent` followed by the label with its rich styling preserved (no longer flattened to plain text), then the dim elapsed suffix. Two specific labels are used:
 
@@ -2791,6 +2791,20 @@ The model name is styled **green** for a local session and **amber** for an egre
 **Jet symmetry:** the jet is rendered as one fixed-width (28-cell) left-aligned `Text` block and centered as a unit via `Align.center(..., width=28)` — never per line with `justify="center"`, which Rich would skew because it strips trailing whitespace, leaving narrow jet rows lopsided in a live terminal. A regression test pins per-row left/right symmetry.
 
 This sectioned layout replaced the earlier two-column command-only banner.
+
+### 31.11 Persistent status bar
+
+A one-line status bar is pinned at the input as `prompt_toolkit`'s `bottom_toolbar`, so it stays static and refreshes on every render (the Claude-Code feel). It is the at-a-glance complement to `/status` (§15.2 detailed readout). Layout:
+
+```text
+~/Projects · gemma4:e4b · balanced · ● local      12% ctx
+```
+
+- **Left:** `<dir> · <model> · <profile> · <locality>`, joined by faint `·` separators. `dir` is the workspace, home-abbreviated. `model` is **green** local / **amber** egressing. `locality` is `● local` (green) or `☁ CLOUD` (amber, bold).
+- **Right:** `<pct>% ctx` — context utilization, color-coded **green** (`< 50`) → **amber** (`50–79`) → **red** (`>= 80`).
+- **Cloud emphasis:** when egressing, the bar's separators carry a faint amber tint (the prototype's amber "wash" adapted to the terminal) so the whole line reads as cloud at a glance, distinct from a local (faint-grey) bar — alongside the amber model name, the `☁ CLOUD` locality, and the amber chevron.
+
+`status_bar(...)` (`cli/status_bar.py`) is a **pure** builder mirroring `cli/banner.py`: it takes `workspace`/`model`/`profile`/`is_cloud`/`ctx_pct` and returns a `prompt_toolkit` `FormattedText`, with no I/O. Every field is sourced from runtime/session state (`runtime.status()`), never from model output. The `is_cloud` field is the caller's real `is_egressing(runtime.model, base_url)` value (recomputed each REPL iteration on the live model), keeping the active-cloud indicator unspoofable and harness-rendered (§15.2). `ctx_pct` reuses the runtime's own utilization formula via `ctx_percent(used, total)`. The workspace path is user-controlled, so it is run through the shared `_sanitize_line` control/ANSI strip before render (§36.2) — a crafted directory name cannot repaint the bar. The bar consolidates two readouts that previously printed separately each loop: the cloud indicator (was a bold-amber header line) and context utilization (was a per-turn stats line, §31.8).
 
 ## 32. Model Selection And Preload
 
@@ -2998,7 +3012,7 @@ The two highest-value at-rest artifacts — session transcripts and the audit lo
 
 ### 36.8 Cloud Consent Triad
 
-The opt-in cloud feature (section 15.2) rests on four enforced controls, summarized here as the security spine: (1) `[model] allow_cloud` defaults to **`false`** and can be enabled only by a deliberate act — a `config.toml` edit or a confirm-gated `/config set`, never an ambient env var (section 36.3); (2) a **fail-closed per-session consent gate** (`_resolve_cloud_consent`) runs at boot strictly before any prompt-bearing call and declines on a non-TTY, EOF, Enter, or anything but an explicit yes — so a decline egresses no prompt data; (3) an **unspoofable active-cloud indicator** (boot banner, persistent header bar, `/status` locality) derived from `is_egressing` on the live model, never from model output; and (4) a `cloud_consent_granted` audit event recording the consent. Consent is *the* boundary: once granted, the prompt egresses, with the best-effort redaction above layered behind it. Local-first remains the only full-privacy posture.
+The opt-in cloud feature (section 15.2) rests on four enforced controls, summarized here as the security spine: (1) `[model] allow_cloud` defaults to **`false`** and can be enabled only by a deliberate act — a `config.toml` edit or a confirm-gated `/config set`, never an ambient env var (section 36.3); (2) a **fail-closed per-session consent gate** (`_resolve_cloud_consent`) runs at boot strictly before any prompt-bearing call and declines on a non-TTY, EOF, Enter, or anything but an explicit yes — so a decline egresses no prompt data; (3) an **unspoofable active-cloud indicator** (boot banner, persistent bottom status bar [§31.11], `/status` locality) derived from `is_egressing` on the live model, never from model output, with the bar's user-controlled workspace path sanitized at the render sink (§36.2); and (4) a `cloud_consent_granted` audit event recording the consent. Consent is *the* boundary: once granted, the prompt egresses, with the best-effort redaction above layered behind it. Local-first remains the only full-privacy posture.
 
 ### 36.9 Approval-Path Display Integrity
 
