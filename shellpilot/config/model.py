@@ -18,21 +18,28 @@ def is_tested_model(name: str) -> bool:
 
 
 def is_cloud_model(name: str) -> bool:
-    """True for an Ollama cloud model (the ``-cloud`` tag suffix).
+    """True for an Ollama cloud model (the cloud tag, ``:cloud`` or ``<size>-cloud``).
 
     Ollama proxies these through the local daemon, so the endpoint base_url
     stays loopback while the prompt itself egresses to the provider. This is the
     cloud-egress signal independent of base_url (design section 15.2).
+
+    Ollama tags cloud models two ways: un-sized as ``model:cloud`` and sized
+    variants as ``model:<size>-cloud`` (e.g. ``gemma4:31b-cloud``). Both are
+    matched on the tag (the segment after the final ``:``); missing either form
+    would class an egressing model as local, i.e. a silent egress, so detection
+    deliberately fails toward cloud.
     """
-    return name.endswith("-cloud")
+    tag = name.rsplit(":", 1)[-1]
+    return tag == "cloud" or tag.endswith("-cloud")
 
 
 def is_egressing(model: str, base_url: str) -> bool:
     """True when a request for *model* on *base_url* leaves this device.
 
     A request egresses when the endpoint base_url is non-loopback OR the model
-    is a cloud model (a ``-cloud`` name egresses to the provider even through a
-    localhost Ollama proxy). The single source of truth for the cloud/remote
+    is a cloud model (an Ollama ``cloud``-tagged name egresses to the provider
+    even through a localhost Ollama proxy). The single source of truth for the cloud/remote
     locality signal, shared by the boot consent gate, the runtime egress
     chokepoint, and the active-cloud UI indicator (design section 15.2).
     """

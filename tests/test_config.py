@@ -1038,15 +1038,18 @@ def test_allow_cloud_is_boot_only(tmp_path: Path) -> None:
 
 
 def test_is_cloud_model_classification() -> None:
-    """is_cloud_model recognises the Ollama '-cloud' tag suffix only."""
+    """is_cloud_model recognises the Ollama cloud tag: ':cloud' and '<variant>-cloud'."""
     from shellpilot.config.model import is_cloud_model
 
-    assert is_cloud_model("nemotron-3-nano:30b-cloud") is True
+    # Ollama tags cloud models two ways; missing either form would be a silent
+    # egress (the model leaves the device while classed as local).
+    assert is_cloud_model("nemotron-3-super:cloud") is True  # un-sized ':cloud'
+    assert is_cloud_model("nemotron-3-nano:30b-cloud") is True  # sized '<size>-cloud'
     assert is_cloud_model("gpt-oss:120b-cloud") is True
     assert is_cloud_model("gemma4:e4b") is False
     assert is_cloud_model("qwen3.5:4b-mlx") is False
     assert is_cloud_model("") is False
-    # The suffix must be exact: a substring elsewhere is not a cloud model.
+    # The cloud marker is the TAG, not the model name: 'cloud-runner' is local.
     assert is_cloud_model("cloud-runner:7b") is False
 
 
