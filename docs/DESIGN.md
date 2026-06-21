@@ -1259,6 +1259,18 @@ The boundary must be clear in the UI. Relative paths are resolved against the wo
 
 **Display-integrity invariant (v0.10.0).** Every user-facing path display — the tool-call line, the approval-panel head, and the write/patch diff-panel title — is derived from the *same* `resolve_in_workspace` result the tool acts on, never from the raw model argument. A spoofing path (`..` segments, `./x/../y`, symlink, trailing junk) is shown as its resolved, workspace-relative target, so the file the user approves is always the file actually touched; a path that escapes the boundary renders an honest `<outside workspace>` marker rather than a fabricated-looking in-workspace path. The single helper `workspace_display(workspace, raw_path)` (`tools/base.py`) is the one display formatter, layered over the canonical resolver — there is no second, divergent resolution. This is a display-only change: the boundary checks and the resolution the action uses are unchanged.
 
+### 14.6 Approval Outcomes And Reject-And-Steer
+
+An approval prompt has three outcomes, not two — `[y]es / [e]dit / [n]o` (`ApprovalReply`, `policy/approvals.py`):
+
+- **`[y]es`** — approve and run the action.
+- **`[n]o`** (or Enter) — plain decline; the action does not run and the model is told not to retry it.
+- **`[e]dit` — reject-and-steer.** The proposed action is **rejected and never runs**; the user types one line of free-text guidance ("Tell the model what to do instead:") which is fed back to the model as the declined tool call's result ("the user declined this action and asks you to do this instead: `<guidance>`. Propose a corrected action."). The model then proposes a **corrected** action, which re-enters the normal `classify → decide → gate` flow like any other tool call.
+
+This is *reject-and-steer*, not inline-edit-and-run: the user never edits a command that then executes under the badge it was approved under. **Safety is automatic** because the un-approved action is dropped and the correction is a fresh tool call that is independently classified and re-gated — steering can never smuggle a higher-risk action past the prompt. The outcome is uniform across every approval-gated tool (commands and file writes alike); no per-tool editing logic exists because nothing is edited in place.
+
+**The HIGH-risk typed-`run` confirm is unchanged.** A HIGH-risk command still requires typing the literal `run` to execute; `[e]` is an additional option at that same prompt that steers without running, and Enter still cancels. Empty guidance after `[e]` is treated as a plain decline (nothing runs). A steered approval is audited as `decision="steered"` on the `approval` event (alongside `approved`/`rejected`).
+
 ## 15. Privacy
 
 The product must stay local by default.
@@ -2729,7 +2741,7 @@ Badge blocks: an inverse chip anchors the request, followed by the dim reason or
 - ` HIGH ` — white on red `#c14949`; keeps the typed-`run` flow, with `"run"` in red.
 - ` BLOCKED ` — black on amber; used by the roadblock protocol (section 11.6).
 
-The yes/no question is `Approve? [y/n]` — uniform lowercase. It accepts `y`/`yes`/`n`/`no` case-insensitively and **Enter means no**; default-deny semantics are unchanged, only the shouty capital is gone. When color is unavailable, chips degrade to plain `[MEDIUM]` text.
+The approval question is `Approve? [y]es / [e]dit / [n]o` — uniform lowercase. It accepts `y`/`yes`/`n`/`no` case-insensitively and **Enter means no**; default-deny semantics are unchanged. `[e]dit` rejects-and-steers: it does not run the action but prompts `Tell the model what to do instead:` for one line of guidance fed back to the model (section 14.6); empty guidance is a plain decline. A HIGH-risk command keeps its typed-`run` gate, with `[e]dit` offered alongside (`Type "run" to execute, [e]dit to steer, or press Enter to cancel`). When color is unavailable, chips degrade to plain `[MEDIUM]` text.
 
 ### 31.6 Plans
 

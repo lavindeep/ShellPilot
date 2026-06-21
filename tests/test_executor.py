@@ -9,7 +9,7 @@ from shellpilot.config.model import RuntimeSettings, Settings
 from shellpilot.llm.messages import ToolCall, ToolDefinition
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.snapshots import SnapshotStore
-from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.policy.approvals import APPROVE, DECLINE, ApprovalReply, ApprovalRequest
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.executor import ToolExecutor
@@ -190,7 +190,7 @@ def test_precheck_failure_returns_failed_result_without_approval(tmp_path: Path)
     asker must never be invoked."""
     approval_called = False
 
-    def _never_ask(request: Any) -> bool:
+    def _never_ask(request: Any) -> Any:
         nonlocal approval_called
         approval_called = True
         pytest.fail("approval asker must not be called when precheck fails")
@@ -592,7 +592,7 @@ def test_network_tool_writes_web_egress_audit(tmp_path: Path) -> None:
         profile="balanced",
         max_result_tokens=2000,
         max_total_tokens=10_000,
-        ask_approval=lambda req: True,  # approve so the tool runs
+        ask_approval=lambda req: APPROVE,  # approve so the tool runs
         audit=audit,
     )
 
@@ -669,7 +669,7 @@ def test_no_web_egress_when_network_tool_declined(tmp_path: Path) -> None:
         profile="balanced",
         max_result_tokens=2000,
         max_total_tokens=10_000,
-        ask_approval=lambda req: False,  # decline
+        ask_approval=lambda req: DECLINE,  # decline
         audit=audit,
     )
 
@@ -678,6 +678,115 @@ def test_no_web_egress_when_network_tool_declined(tmp_path: Path) -> None:
     text = (tmp_path / "audit.jsonl").read_text() if (tmp_path / "audit.jsonl").is_file() else ""
     events = [json.loads(line) for line in text.splitlines()] if text else []
     assert not any(e["event"] == "web_egress" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Reject-and-steer (design section 14): the [e]dit approval outcome rejects the
+# proposed action (NEVER runs it) and feeds the user's guidance back to the
+# model so it re-proposes a corrected call through the normal gate.
+# ---------------------------------------------------------------------------
+
+
+def _side_effect_spec(name: str = "writer") -> tuple[ToolSpec, list[bool]]:
+    """A side-effecting spec plus a list that records whether its handler ran."""
+    ran: list[bool] = []
+
+    def _handler(ctx: Any, args: Any) -> ToolResult:
+        ran.append(True)
+        return ToolResult(success=True, summary="wrote", content="")
+
+    spec = ToolSpec(
+        definition=ToolDefinition(
+            name=name,
+            description="side-effecting tool",
+            parameters={"x": {"type": "string"}},
+            required=("x",),
+        ),
+        side_effect=SideEffect.WORKSPACE_WRITE,
+        default_risk=RiskLevel.MEDIUM,
+        allowed_profiles=frozenset({"supervised", "balanced"}),
+        handler=_handler,
+    )
+    return spec, ran
+
+
+def test_steer_does_not_run_the_action(tmp_path: Path) -> None:
+    """[e]dit/STEER rejects the proposed action: the handler NEVER runs."""
+    spec, ran = _side_effect_spec()
+    executor = _make_executor(
+        spec,
+        tmp_path,
+        ask_approval=lambda req: ApprovalReply(approved=False, steer_text="do X instead"),
+    )
+
+    outcome = executor.execute(ToolCall(name="writer", arguments={"x": "v"}))
+
+    assert ran == []  # handler never invoked
+    assert outcome.result is not None
+    assert not outcome.result.success
+
+
+def test_steer_guidance_reaches_the_model(tmp_path: Path) -> None:
+    """The user's guidance text is carried in the model-facing outcome."""
+    spec, _ = _side_effect_spec()
+    executor = _make_executor(
+        spec,
+        tmp_path,
+        ask_approval=lambda req: ApprovalReply(
+            approved=False, steer_text="the dir is 'build' not 'bulid', use git clean"
+        ),
+    )
+
+    outcome = executor.execute(ToolCall(name="writer", arguments={"x": "v"}))
+
+    assert "the dir is 'build' not 'bulid', use git clean" in outcome.model_text
+    # The model is told to propose a corrected action (not "do not retry").
+    assert "Do not retry" not in outcome.model_text
+
+
+def test_plain_decline_unchanged_with_new_reply_type(tmp_path: Path) -> None:
+    """A plain decline (no steer text) keeps the existing do-not-retry feedback."""
+    spec, ran = _side_effect_spec()
+    executor = _make_executor(spec, tmp_path, ask_approval=lambda req: DECLINE)
+
+    outcome = executor.execute(ToolCall(name="writer", arguments={"x": "v"}))
+
+    assert ran == []
+    assert "declined" in outcome.model_text
+    assert "Do not retry" in outcome.model_text
+
+
+def test_steer_audit_decision_is_steered(tmp_path: Path) -> None:
+    """A steered approval is audited with decision=steered."""
+    import json
+
+    from shellpilot.persistence.audit_store import AuditLogger
+
+    audit = AuditLogger(
+        path=tmp_path / "audit.jsonl",
+        session_id="sess-steer",
+        workspace=tmp_path,
+        profile="supervised",
+    )
+    spec, _ = _side_effect_spec()
+    registry = ToolRegistry()
+    registry.register(spec)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+        ask_approval=lambda req: ApprovalReply(approved=False, steer_text="do X instead"),
+        audit=audit,
+    )
+
+    executor.execute(ToolCall(name="writer", arguments={"x": "v"}))
+
+    events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    approvals = [e for e in events if e["event"] == "approval"]
+    assert len(approvals) == 1
+    assert approvals[0]["decision"] == "steered"
 
 
 # ---------------------------------------------------------------------------
@@ -690,9 +799,9 @@ def _capture_request(spec: ToolSpec, tmp_path: Path, call: ToolCall) -> Approval
     """Run a call through the executor and return the ApprovalRequest it built."""
     captured: list[ApprovalRequest] = []
 
-    def _ask(request: ApprovalRequest) -> bool:
+    def _ask(request: ApprovalRequest) -> ApprovalReply:
         captured.append(request)
-        return False  # decline; we only want the request
+        return DECLINE  # decline; we only want the request
 
     registry = ToolRegistry()
     registry.register(spec)

@@ -74,32 +74,65 @@ def high_request() -> ApprovalRequest:
 
 def test_medium_approval_accepts_yes_case_insensitively() -> None:
     console = make_console()
-    assert make_ui(console, ["Y"]).ask_approval(medium_request()) is True
+    reply = make_ui(console, ["Y"]).ask_approval(medium_request())
+    assert reply.approved is True
+    assert reply.steer_text is None
     out = console.export_text()
     assert " MEDIUM " in out
-    assert "[y/n]" in out
-    assert "[y/N]" not in out
+    assert "[y]es / [e]dit / [n]o" in out
 
 
 def test_medium_approval_enter_defaults_to_no() -> None:
     console = make_console()
-    assert make_ui(console, [""]).ask_approval(medium_request()) is False
+    reply = make_ui(console, [""]).ask_approval(medium_request())
+    assert reply.approved is False
+    assert reply.steer_text is None
 
 
 def test_high_approval_requires_typed_run() -> None:
     console = make_console()
-    assert make_ui(console, ["y"]).ask_approval(high_request()) is False
+    assert make_ui(console, ["y"]).ask_approval(high_request()).approved is False
     console2 = make_console()
-    assert make_ui(console2, ["run"]).ask_approval(high_request()) is True
+    reply = make_ui(console2, ["run"]).ask_approval(high_request())
+    assert reply.approved is True
+    assert reply.steer_text is None
     out = console2.export_text()
     assert " HIGH " in out
     assert "Removes stale build output." in out
 
 
+def test_medium_approval_edit_collects_steer_guidance() -> None:
+    """[e]dit at a normal prompt rejects-and-steers: not approved, guidance captured."""
+    console = make_console()
+    reply = make_ui(console, ["e", "use patch_file instead"]).ask_approval(medium_request())
+    assert reply.approved is False
+    assert reply.steer_text == "use patch_file instead"
+    out = console.export_text()
+    assert "Tell the model what to do instead:" in out
+
+
+def test_high_approval_edit_steers_without_running() -> None:
+    """[e]dit at a HIGH-risk command prompt steers (no run, no typed-'run')."""
+    console = make_console()
+    reply = make_ui(console, ["e", "the dir is 'build' not 'bulid', use git clean"]).ask_approval(
+        high_request()
+    )
+    assert reply.approved is False
+    assert reply.steer_text == "the dir is 'build' not 'bulid', use git clean"
+
+
+def test_edit_empty_guidance_is_plain_decline() -> None:
+    """Empty guidance on [e]dit is treated as a plain decline (runs nothing)."""
+    console = make_console()
+    reply = make_ui(console, ["e", "   "]).ask_approval(medium_request())
+    assert reply.approved is False
+    assert reply.steer_text is None
+
+
 def test_approval_renders_diff_panel() -> None:
     diff = '--- a/hello.py\n+++ b/hello.py\n@@ -1 +1 @@\n-print("done")\n+print("Goodbye World")\n'
     console = make_console()
-    make_ui(console, ["y"]).ask_approval(medium_request(diff=diff))
+    assert make_ui(console, ["y"]).ask_approval(medium_request(diff=diff)).approved is True
     out = console.export_text()
     assert "hello.py" in out
     assert '+ print("Goodbye World")' in out

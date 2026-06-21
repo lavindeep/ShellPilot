@@ -64,7 +64,7 @@ from shellpilot.persistence.workspace_state import (
     save_last_model,
     save_trusted_agents_digest,
 )
-from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.policy.approvals import ApprovalReply, ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import TurnStats
@@ -268,8 +268,15 @@ class TerminalUI:
     def _plain_badges(self) -> bool:
         return self._console.no_color or not self._console.is_terminal
 
-    def ask_approval(self, request: ApprovalRequest) -> bool:
+    def ask_approval(self, request: ApprovalRequest) -> ApprovalReply:
         """Badge-block approval (section 31.5); high risk requires typing 'run'.
+
+        Three-way outcome (section 14.6): [y]es runs, [n]o declines, [e]dit
+        rejects-and-steers — the proposed action is NOT run; the user types
+        guidance that is fed back to the model, which re-proposes a corrected
+        action through the normal gate. Empty guidance is treated as a plain
+        decline (nothing runs). The HIGH-risk typed-"run" confirm is unchanged:
+        only the literal "run" executes; [e] steers without running.
 
         No head line here: the tool-call line printed just before the approval
         already names the action, so repeating it would duplicate output.
@@ -297,17 +304,34 @@ class TerminalUI:
         try:
             # The typed-"run" gate guards HIGH-risk *commands* only. A HIGH-risk
             # tool is a sensitive-path read (design section 15): it gets the
-            # standard y/n prompt, with the classifier reason already shown above.
+            # standard prompt, with the classifier reason already shown above.
             if request.risk is RiskLevel.HIGH and request.kind == "command":
                 answer = self._console.input(
                     '  Type [sp.risk.high]"run"[/sp.risk.high] to execute, '
-                    "or press Enter to cancel: "
-                )
-                return answer.strip().lower() == "run"
-            answer = self._console.input("  Approve? [sp.dim]\\[y/n][/sp.dim] ")
-            return answer.strip().lower() in ("y", "yes")
+                    "[sp.dim]\\[e]dit[/sp.dim] to steer, or press Enter to cancel: "
+                ).strip()
+                if answer.lower() == "run":
+                    return ApprovalReply(approved=True)
+                if answer.lower() in ("e", "edit"):
+                    return self._read_steer()
+                return ApprovalReply(approved=False)
+            answer = (
+                self._console.input("  Approve? [sp.dim]\\[y]es / \\[e]dit / \\[n]o[/sp.dim] ")
+                .strip()
+                .lower()
+            )
+            if answer in ("y", "yes"):
+                return ApprovalReply(approved=True)
+            if answer in ("e", "edit"):
+                return self._read_steer()
+            return ApprovalReply(approved=False)
         except (EOFError, KeyboardInterrupt):
-            return False
+            return ApprovalReply(approved=False)
+
+    def _read_steer(self) -> ApprovalReply:
+        """Read one line of steering guidance; empty input = plain decline."""
+        guidance = self._console.input("  Tell the model what to do instead:\n  > ").strip()
+        return ApprovalReply(approved=False, steer_text=guidance or None)
 
     def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
         self._spinner.stop()

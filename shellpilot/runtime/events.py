@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from shellpilot.policy.approvals import ApprovalRequest
+    from shellpilot.policy.approvals import ApprovalReply, ApprovalRequest
     from shellpilot.runtime.planner import TaskPlan
 
 
@@ -45,7 +45,7 @@ class RuntimeUI(Protocol):
 
     def show_command_output(self, line: str) -> None: ...
 
-    def ask_approval(self, request: ApprovalRequest) -> bool: ...
+    def ask_approval(self, request: ApprovalRequest) -> ApprovalReply: ...
 
     def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
         """Returns (choice, revision_text); choice is 'y', 'e', or 'n'."""

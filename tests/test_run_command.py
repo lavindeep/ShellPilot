@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import patch
 
 from shellpilot.llm.messages import ToolCall
+from shellpilot.policy.approvals import APPROVE, DECLINE, ApprovalReply
 from shellpilot.runtime.executor import ToolExecutor
 from shellpilot.tools.base import ToolContext
 from shellpilot.tools.command import (
@@ -43,9 +44,9 @@ def _approval_spy(approved: bool = True) -> tuple[Any, list[Any]]:
     """Return (asker_fn, calls_list); calls_list records invocations."""
     calls: list[Any] = []
 
-    def _ask(request: Any) -> bool:
+    def _ask(request: Any) -> ApprovalReply:
         calls.append(request)
-        return approved
+        return APPROVE if approved else DECLINE
 
     return _ask, calls
 
@@ -491,7 +492,7 @@ def _make_executor_with_timeout(tmp_path: Path, ceiling: int) -> ToolExecutor:
         max_result_tokens=2000,
         max_total_tokens=10_000,
         command_timeout_seconds=ceiling,
-        ask_approval=lambda req: True,
+        ask_approval=lambda req: APPROVE,
     )
 
 

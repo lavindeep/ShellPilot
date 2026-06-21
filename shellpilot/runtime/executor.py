@@ -15,7 +15,13 @@ from typing import Any
 from shellpilot.llm.messages import ToolCall, ToolDefinition
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.snapshots import SnapshotStore
-from shellpilot.policy.approvals import ApprovalRequest, Decision, decide
+from shellpilot.policy.approvals import (
+    DECLINE,
+    ApprovalReply,
+    ApprovalRequest,
+    Decision,
+    decide,
+)
 from shellpilot.policy.explanations import explain_risk
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.budget import estimate_tokens, truncate_to_tokens
@@ -29,7 +35,7 @@ from shellpilot.tools.base import (
 )
 from shellpilot.tools.registry import ToolRegistry
 
-ApprovalAsker = Callable[[ApprovalRequest], bool]
+ApprovalAsker = Callable[[ApprovalRequest], ApprovalReply]
 
 
 @dataclass(frozen=True)
@@ -161,23 +167,39 @@ class ToolExecutor:
                 purpose=purpose,
                 diff=diff,
             )
-            approved = self._ask_approval(request) if self._ask_approval else False
+            reply = self._ask_approval(request) if self._ask_approval else DECLINE
+            steer = reply.steer_text if not reply.approved else None
             self._log(
                 "approval",
                 call,
                 display,
                 classification.risk,
                 explanation=purpose,
-                decision="approved" if approved else "rejected",
+                decision="approved" if reply.approved else ("steered" if steer else "rejected"),
             )
-            if not approved:
-                return ExecutionOutcome(
-                    model_text=(
+            if not reply.approved:
+                # Reject-and-steer: the un-approved action NEVER runs (design
+                # section 14.6). On a plain decline we tell the model not to
+                # retry; on a steer we feed the user's guidance back so the
+                # model re-proposes a corrected action, which re-enters this
+                # same classify->decide->gate flow as any tool call.
+                if steer:
+                    model_text = (
+                        f"tool: {call.name}\nstatus: declined\nsummary: the user declined "
+                        f"this action and asks you to do this instead: {steer}. "
+                        "Propose a corrected action."
+                    )
+                    summary = "steered by user"
+                else:
+                    model_text = (
                         f"tool: {call.name}\nstatus: declined\nsummary: the user declined "
                         "this action. Do not retry it; ask the user how to proceed if needed."
-                    ),
+                    )
+                    summary = "declined by user"
+                return ExecutionOutcome(
+                    model_text=model_text,
                     malformed=False,
-                    result=ToolResult(success=False, summary="declined by user", content=""),
+                    result=ToolResult(success=False, summary=summary, content=""),
                 )
 
         # Egress visibility (F12): a NETWORK-side-effect tool sends a query/url
