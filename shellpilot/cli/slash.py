@@ -71,12 +71,10 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/logs", "Show recent audit events for this session."),
     ("/logs all", "Show recent audit events across all sessions."),
     ("/export <path>", "Export this session's transcript to markdown."),
-    ("/memory show", "Show stored preferences and project facts with ids."),
+    ("/memory show", "Show preferences (scope/source) and facts with ids, plus file paths."),
     ("/memory add <text>", "Add a global behavior preference after confirmation."),
     ("/memory forget <id>", "Remove a memory entry after confirmation."),
     ("/memory compact", "Model-assisted preference cleanup, approved before saving."),
-    ("/prefs show", "Show behavior preferences."),
-    ("/prefs edit", "Show the memory file paths for hand-editing."),
     ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
     ("/attach <path>", "Stage an image to send with your next message (vision models only)."),
     ("/attach", "List currently staged images."),
@@ -190,8 +188,6 @@ class SlashDispatcher:
             self._export(args)
         elif command == "/memory":
             self._memory(args)
-        elif command == "/prefs":
-            self._prefs(args)
         elif command == "/attach":
             self._attach(args)
         elif command == "/skills":
@@ -354,7 +350,7 @@ class SlashDispatcher:
             self._print_config_warnings()
         elif action == "set":
             self._config_set(args[1:])
-        elif action in ("unset", "reset") and len(args) > 1:
+        elif action == "unset" and len(args) > 1:
             self._config_unset(args[1])
         elif action == "reset" and len(args) == 1:
             self._config_reset_all()
@@ -363,7 +359,7 @@ class SlashDispatcher:
                 "Usage: /config show | /config edit | /config reload"
                 " | /config set <key> <value>"
                 " | /config unset <key>"
-                " | /config reset [<key>]"
+                " | /config reset"
             )
 
     def _overrides_path(self) -> Path:
@@ -618,7 +614,7 @@ class SlashDispatcher:
         if action == "show":
             stores.global_store.reload()
             stores.project_store.reload()
-            block = stores.render(max_tokens=4000)
+            block = stores.render(max_tokens=4000, meta=True)
             if block:
                 self._console.print(block, markup=False, highlight=False)
             else:
@@ -747,34 +743,6 @@ class SlashDispatcher:
             store.replace_all(new_preferences, list(store.facts))
         self._audit_memory(f"compact {len(all_preferences)} -> {kept}")
         self._console.print(f"Memory compacted: {len(all_preferences)} -> {kept} preferences.")
-
-    def _prefs(self, args: list[str]) -> None:
-        stores = self._runtime.memory
-        if stores is None:
-            self._console.print("[dim]Memory is not available this session.[/dim]")
-            return
-        action = args[0] if args else "show"
-        if action == "show":
-            preferences = list(stores.global_store.preferences) + list(
-                stores.project_store.preferences
-            )
-            if not preferences:
-                self._console.print("[dim]No behavior preferences stored.[/dim]")
-                return
-            for preference in preferences:
-                self._console.print(
-                    f"[{preference.id}] ({preference.scope}, {preference.source}) "
-                    f"{preference.text}",
-                    markup=False,
-                    highlight=False,
-                )
-            return
-        if action == "edit":
-            self._console.print(f"Global memory: {stores.global_store.path}")
-            self._console.print(f"Project memory: {stores.project_store.path}")
-            self._console.print("Edit by hand, then run /memory show to reload.")
-            return
-        self._console.print("Usage: /prefs show | /prefs edit")
 
     def _tools(self) -> None:
         profile = self._runtime.settings.runtime.security_profile

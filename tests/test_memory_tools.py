@@ -169,13 +169,17 @@ def test_slash_memory_show_add_forget(tmp_path: Path) -> None:
     assert harness.stores.global_store.preferences == ()
 
 
-def test_slash_prefs_show_and_edit(tmp_path: Path) -> None:
+def test_memory_show_folds_in_scope_source_and_prefs_retired(tmp_path: Path) -> None:
+    """/prefs was retired into /memory show (v0.10.0): the preference view now
+    carries the (scope, source) tag /prefs printed, and /prefs is gone."""
     harness = MemoryHarness(tmp_path, [])
     harness.stores.global_store.add_preference("Be concise.", scope="global", source="user")
+    harness.dispatcher.handle("/memory show")
+    out = harness.output()
+    assert "Be concise." in out
+    assert "(global, user)" in out  # folded-in tag, was /prefs show
     harness.dispatcher.handle("/prefs show")
-    assert "Be concise." in harness.output()
-    harness.dispatcher.handle("/prefs edit")
-    assert "memory.json" in harness.output()
+    assert "Unknown command: /prefs" in harness.output()
 
 
 def test_memory_compact_merges_with_model_and_keeps_user_entries(tmp_path: Path) -> None:

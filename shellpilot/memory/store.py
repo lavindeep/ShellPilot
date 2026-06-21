@@ -212,7 +212,10 @@ class MemoryStores:
     global_store: MemoryStore
     project_store: MemoryStore
 
-    def render(self, max_tokens: int) -> str:
+    def render(self, max_tokens: int, *, meta: bool = False) -> str:
+        """Render the memory block. ``meta`` annotates each preference with its
+        (scope, source) for the ``/memory show`` view; the default is the
+        injected prompt format and must stay byte-identical."""
         preferences = list(self.global_store.preferences) + list(self.project_store.preferences)
         facts = list(self.global_store.facts) + list(self.project_store.facts)
         if not preferences and not facts:
@@ -220,7 +223,10 @@ class MemoryStores:
         lines = ["## Memory"]
         if preferences:
             lines.append("Preferences:")
-            lines.extend(f"- [{p.id}] {p.text}" for p in preferences)
+            if meta:
+                lines.extend(f"- [{p.id}] ({p.scope}, {p.source}) {p.text}" for p in preferences)
+            else:
+                lines.extend(f"- [{p.id}] {p.text}" for p in preferences)
         if facts:
             lines.append("Project facts:")
             lines.extend(f"- [{f.id}] ({f.kind}) {f.label}: {f.value}" for f in facts)

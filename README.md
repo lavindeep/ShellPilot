@@ -190,7 +190,6 @@ Inside a session, plain language is the primary interface; slash commands contro
 | `/context` | Per-block context breakdown: each system-prompt block with source, token estimate, and injection state. |
 | `/compact`, `/compact status`, `/compact auto on\|off` | Compact context now; show usage; toggle auto-compaction. |
 | `/memory show`, `/memory add <text>`, `/memory forget <id>`, `/memory compact` | Inspect and curate stored memory. |
-| `/prefs show`, `/prefs edit` | Inspect behavior preferences; show memory file paths. |
 | `/config show`, `/config edit`, `/config reload` | Print resolved config; show the config path; reload from disk. |
 | `/config set <key> <value>`, `/config unset <key>`, `/config reset` | Set, remove, or clear runtime overrides (persisted in `overrides.json`). |
 | `/cwd`, `/cwd set <path>` | Show or change the workspace boundary. |

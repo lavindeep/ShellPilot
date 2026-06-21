@@ -776,13 +776,18 @@ def test_config_unset_absent_key_reports_noop(tmp_path: Path) -> None:
     assert "no override" in out.lower()
 
 
-def test_config_reset_alias_for_unset(tmp_path: Path) -> None:
-    """/config reset <key> is an alias for /config unset <key>."""
+def test_config_reset_key_no_longer_aliases_unset(tmp_path: Path) -> None:
+    """/config reset <key> was demoted (v0.10.0): only /config unset <key>
+    removes one key; /config reset <key> falls to the usage message and changes
+    nothing. /config reset (no key) still clears all."""
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
     assert harness.runtime.settings.runtime.max_tool_turns == 20
     harness.dispatcher.handle("/config reset runtime.max_tool_turns")
-    assert harness.runtime.settings.runtime.max_tool_turns == 40
+    assert harness.runtime.settings.runtime.max_tool_turns == 20  # alias gone — unchanged
+    assert "Usage:" in harness.output()
+    harness.dispatcher.handle("/config unset runtime.max_tool_turns")
+    assert harness.runtime.settings.runtime.max_tool_turns == 40  # unset still works
 
 
 def test_config_reset_all_declined(tmp_path: Path) -> None:

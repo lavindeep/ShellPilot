@@ -1652,7 +1652,7 @@ Three slash commands manage the overrides file at runtime:
 - `/config unset <key>` — remove the override for `<key>`.  If no override
   exists the command is a silent no-op with a message.  After removal the
   value reverts to the next layer down (project, user, or default), and the
-  source is shown.  `/config reset <key>` is an alias.
+  source is shown.
 
 - `/config reset` (no key) — clear **all** overrides after y/N confirmation
   (default No).  Reports `cleared N override(s).`  All values revert to the
@@ -1985,19 +1985,17 @@ Planned commands:
 | `/context` | Show the per-block context breakdown (block name, source, token estimate, injected flag, and skip reason) plus tool schemas, history, and a total against the model context and compact-at thresholds. Reads the same `ContextSnapshot` the live prompt is built from (section 10.5). |
 | `/logs` | Show recent local audit/session events. |
 | `/export <path>` | Export this session's transcript to markdown (default `.shellpilot/exports/<session-id>.md`). |
-| `/memory show` | Show project and behavior memory summaries with entry ids. |
+| `/memory show` | Show project and behavior memory with entry ids; preferences are annotated with their (scope, source) and the store file paths are printed. |
 | `/memory add <text>` | Add a global behavior preference after confirmation. |
 | `/memory forget <id>` | Remove a memory entry after confirmation. |
 | `/memory compact` | Model-assisted preference optimization, approved before saving (section 16.4). |
-| `/prefs show` | Show behavior preferences. |
-| `/prefs edit` | Show the memory file paths for hand-editing; `/memory show` reloads. |
 | `/shell` | Enter Manual Shell mode. |
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
 | `/attach <path>` | Stage an image file to send with the next user message (vision-capable models only). Path is validated eagerly; bytes are re-read at send time. *(v0.5.0)* |
 | `/attach` | List currently staged images, or report "No attachments staged." *(v0.5.0)* |
 | `/skills` | List all discovered skills with root, trigger declarations, enabled/builtin/disabled/invalid status, decision-derived active state, resource/script summaries, skip reasons, and advisory warnings. *(v0.7.0)* |
 
-All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped and appear in the table above.
+All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped. `/prefs` was retired in v0.10.0 — it had converged with `/memory show`, which now lists preferences with their (scope, source) and prints the store paths.
 
 `/context show` (a redacted dump of the assembled prompt) is deliberately deferred. The `/context` status table does not fully solve prompt inspection — it shows per-block sizes, not the prompt's actual text — but a verbatim dump must not leak secrets. When `show` lands it must reuse the v0.5.2 redaction helpers before printing any block content.
 
