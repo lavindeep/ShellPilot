@@ -661,15 +661,22 @@ def _overrides_data(tmp_path: Path) -> dict:
 
 
 def test_config_set_security_profile_confirmed_persists(tmp_path: Path) -> None:
-    """/config set runtime.security_profile is high-stakes: an amber warning +
-    confirm gates it; a yes persists the override (boot-only) and points the
-    user at /profile use for an instant session-only change."""
+    """/config set runtime.security_profile is high-stakes AND live: an amber
+    warning + confirm gates it; a yes persists the override and lowers the
+    profile THIS session (the profile is read per turn, unlike the boot-only
+    egress keys). The warning must not falsely defer a safety downgrade to next
+    session, and points the user at /profile use for an unsaved session-only
+    change."""
     harness = Harness(tmp_path, confirm_answer=True)
     harness.dispatcher.handle("/config set runtime.security_profile supervised")
     out = harness.output()
     assert "lowers the local safety profile" in out
     assert "/profile use" in out
+    # Live: the downgrade applies now, so the warning must NOT claim next session.
+    assert "next session" not in out
     assert _overrides_data(tmp_path).get("runtime.security_profile") == "supervised"
+    # Applied to the running session, not merely persisted for next boot.
+    assert harness.runtime.settings.runtime.security_profile == "supervised"
 
 
 def test_config_set_security_profile_declined_not_persisted(tmp_path: Path) -> None:

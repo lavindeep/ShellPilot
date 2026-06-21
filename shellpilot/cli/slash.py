@@ -393,9 +393,13 @@ class SlashDispatcher:
         if key in HIGH_STAKES_KEYS:
             risk = _HIGH_STAKES_RISK[key]
             self._console.print(Text(f"⚠ {key} {risk}.", style="sp.warn"))
+            # security_profile is read per turn (conversation.py), so a set
+            # applies this session; the egress keys are boot-only. Never defer a
+            # live safety downgrade to "next session".
+            when = "next session" if key in BOOT_ONLY_KEYS else "this session (next turn)"
             self._console.print(
                 Text(
-                    "It takes effect next session and persists in overrides.json "
+                    f"It takes effect {when} and persists in overrides.json "
                     f"until /config unset {key}.",
                     style="sp.warn",
                 )
@@ -403,7 +407,7 @@ class SlashDispatcher:
             if key == "runtime.security_profile":
                 self._console.print(
                     Text(
-                        "Use /profile use <profile> for an instant, session-only change.",
+                        "Use /profile use <profile> for an unsaved, session-only change.",
                         style="sp.warn",
                     )
                 )
@@ -426,7 +430,8 @@ class SlashDispatcher:
         self._runtime.update_settings(self._loaded.settings)
         new_value = self._resolve_setting_value(self._loaded, key)
         self._console.print(f"{key}: {old_value!r} → {new_value!r}")
-        if key in BOOT_ONLY_KEYS:
+        # High-stakes keys already printed their own when/persist note above.
+        if key in BOOT_ONLY_KEYS and key not in HIGH_STAKES_KEYS:
             note = "(saved — takes effect next session)"
             if key == "model.default":
                 note += " — use /model use <name> to switch now"

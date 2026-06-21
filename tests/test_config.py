@@ -1054,14 +1054,19 @@ def test_high_stakes_keys_membership() -> None:
     assert HIGH_STAKES_KEYS.isdisjoint(CONFIG_FILE_ONLY_KEYS)
 
 
-def test_high_stakes_keys_are_boot_only_and_absent_from_env() -> None:
-    """Every high-stakes key stays boot-only and absent from ENV_MAP — the env
-    invariant is load-bearing and must survive the /config set relaxation."""
+def test_high_stakes_keys_absent_from_env_and_boot_only_except_live_profile() -> None:
+    """The load-bearing env invariant: every high-stakes key stays absent from
+    ENV_MAP (no ambient var can enable egress / downgrade the profile). The three
+    egress keys are boot-only; runtime.security_profile is the exception — it is
+    read per turn, so /config set lowers it this session (same live effect as
+    /profile use) and it is deliberately NOT in BOOT_ONLY_KEYS."""
     from shellpilot.config.loader import BOOT_ONLY_KEYS, ENV_MAP, HIGH_STAKES_KEYS
 
     for key in HIGH_STAKES_KEYS:
-        assert key in BOOT_ONLY_KEYS, key
         assert key not in ENV_MAP.values(), key
+    assert "runtime.security_profile" not in BOOT_ONLY_KEYS
+    for key in HIGH_STAKES_KEYS - {"runtime.security_profile"}:
+        assert key in BOOT_ONLY_KEYS, key
 
 
 def test_is_cloud_model_classification() -> None:

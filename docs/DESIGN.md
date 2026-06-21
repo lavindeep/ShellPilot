@@ -1608,8 +1608,9 @@ posture. This env-absence claim is load-bearing.
 - `model.allow_cloud` — the master cloud-egress switch (default `false`).
   Enabling cloud/remote models is also boot-only. See §15.2.
 - `runtime.security_profile` — downgrading the security posture (e.g.
-  `supervised` → `balanced`); also boot-only. `/profile use` remains an
-  in-session, non-persisted runtime switch among the valid profiles.
+  `supervised` → `balanced`). Unlike the egress keys this is **live**: the
+  profile is read per turn, so a confirm-gated `/config set` lowers it this
+  session (same effect as `/profile use`, the unsaved session-only switch).
 
 The relaxation rationale: the model can neither type slash commands nor write
 `overrides.json` (it lives in the config dir, outside the workspace), and the
@@ -1637,13 +1638,16 @@ Three slash commands manage the overrides file at runtime:
   Setting a **high-stakes key** (`HIGH_STAKES_KEYS` — `tools.web`,
   `model.base_url`, `runtime.security_profile`, `model.allow_cloud`) first
   prints an amber warning naming the specific risk (cloud egress / changes the
-  model endpoint / lowers the safety profile / enables web egress), that it
-  takes effect next session, and that it persists in `overrides.json` until
-  `/config unset <key>`; it then requires an explicit confirm. A decline saves
-  nothing and prints a dim "unchanged."  For `runtime.security_profile` the
-  warning also points at `/profile use <profile>` for an instant, session-only
-  change. The structural config-file-only keys (`model.options`,
-  `skills.enabled`) are still rejected outright by `validate_override`.
+  model endpoint / lowers the safety profile / enables web egress), when it
+  takes effect (the three egress keys are boot-only → "next session";
+  `runtime.security_profile` is read per turn → "this session (next turn)", so a
+  live safety downgrade is never falsely deferred), and that it persists in
+  `overrides.json` until `/config unset <key>`; it then requires an explicit
+  confirm. A decline saves nothing and prints a dim "unchanged."  For
+  `runtime.security_profile` the warning also points at `/profile use <profile>`
+  for an unsaved, session-only change. The structural config-file-only keys
+  (`model.options`, `skills.enabled`) are still rejected outright by
+  `validate_override`.
 
 - `/config unset <key>` — remove the override for `<key>`.  If no override
   exists the command is a silent no-op with a message.  After removal the
@@ -2938,7 +2942,7 @@ The active-cloud indicator (section 15.2) is only trustworthy if the model — o
 
 Anything that controls whether data leaves the device, or the local approval posture, is a **deliberate** act — never reachable from an **ambient environment variable**. `config/loader.py` defines `HIGH_STAKES_KEYS` = {`tools.web`, `model.base_url`, `runtime.security_profile`, `model.allow_cloud`}: every one is **absent from `ENV_MAP`** (the `SHELLPILOT_OLLAMA_BASE_URL` env redirect was dropped), so no ambient env var can enable egress, redirect the endpoint, or downgrade the profile. This env-absence claim is the load-bearing invariant and holds uniformly across all four keys.
 
-The four keys are settable two deliberate ways: a `config.toml` edit, or a runtime `/config set` gated by an amber warning + explicit confirmation (the `HIGH_STAKES_KEYS` gate in `SlashDispatcher._config_set`). A confirmed `/config set` persists through the program-managed `overrides.json` and applies at the key's reload time (all four are boot-only, so the effect is next launch). This is a deliberate relaxation of the stricter original form (which also forbade `/config set` and the overrides layer) for a reasoned trade-off: the model can neither type slash commands nor write `overrides.json` (it lives in the config dir, outside the workspace), and the per-session cloud-consent gate (§36.8 control 2) still fires regardless of how `allow_cloud` was set — so the relaxation opens no model/injection vector, while the amber confirm preserves the deliberateness the invariant exists to guarantee. The two **structural** config-file-only keys (`CONFIG_FILE_ONLY_KEYS` = {`model.options`, `skills.enabled`}) remain fully config-file-only: rejected by `validate_override`, skipped-with-warning in the overrides loop, and absent from `ENV_MAP`.
+The four keys are settable two deliberate ways: a `config.toml` edit, or a runtime `/config set` gated by an amber warning + explicit confirmation (the `HIGH_STAKES_KEYS` gate in `SlashDispatcher._config_set`). A confirmed `/config set` persists through the program-managed `overrides.json` and applies at the key's reload time (the three egress keys are boot-only, so the effect is next launch; `runtime.security_profile` is read per turn, so it applies this session — the same live effect as `/profile use`). This is a deliberate relaxation of the stricter original form (which also forbade `/config set` and the overrides layer) for a reasoned trade-off: the model can neither type slash commands nor write `overrides.json` (it lives in the config dir, outside the workspace), and the per-session cloud-consent gate (§36.8 control 2) still fires regardless of how `allow_cloud` was set — so the relaxation opens no model/injection vector, while the amber confirm preserves the deliberateness the invariant exists to guarantee. The two **structural** config-file-only keys (`CONFIG_FILE_ONLY_KEYS` = {`model.options`, `skills.enabled`}) remain fully config-file-only: rejected by `validate_override`, skipped-with-warning in the overrides loop, and absent from `ENV_MAP`.
 
 Because a high-stakes override persists in `overrides.json` and silently outranks `config.toml`, a confirmed runtime relax would otherwise quietly stay enabled. As a residual-risk mitigation, the boot path (`run_interactive`, after config load) prints one amber line listing any active high-stakes override — e.g. `⚠ Active overrides: model.allow_cloud=true, tools.web=true — these override config.toml; /config unset <key> to revert.` — built by the pure, testable `high_stakes_override_notice` helper. It gates nothing (the consent gate remains the egress barrier); it ensures a set-and-forget egress override is visible on every launch.
 

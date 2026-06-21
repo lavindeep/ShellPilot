@@ -91,7 +91,6 @@ BOOT_ONLY_KEYS: frozenset[str] = frozenset(
         "model.default",
         "instructions.load_agents_md",
         "privacy.redact_secrets",
-        "runtime.security_profile",
         "ui.theme",
         "ui.no_color",
         "ui.glyphs",
