@@ -200,6 +200,60 @@ def test_config_reload_calls_loader(tmp_path: Path) -> None:
     assert "reloaded" in harness.output().lower()
 
 
+def test_config_edit_creates_starter_when_absent(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    config_file = tmp_path / "config.toml"
+    assert not config_file.exists()
+
+    harness.dispatcher.handle("/config edit")
+
+    # The starter template now exists at the printed path...
+    assert config_file.is_file()
+    out = harness.output()
+    # Rich may wrap the long tmp path across lines; rejoin before matching.
+    flat = "".join(out.split())
+    assert str(config_file) in flat
+    assert "starter" in out.lower()
+    # ...is valid TOML that load_config accepts and resolves to defaults
+    # (every key commented out => no override of the built-in defaults).
+    loaded = load_config(
+        user_config_file=config_file,
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert (
+        loaded.settings
+        == load_config(
+            user_config_file=tmp_path / "missing-user.toml",
+            project_config_file=tmp_path / "missing-project.toml",
+            env={},
+        ).settings
+    )
+
+
+def test_config_edit_starter_has_owner_only_perms(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    config_file = tmp_path / "config.toml"
+    harness.dispatcher.handle("/config edit")
+    assert config_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_config_edit_does_not_overwrite_existing(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    original = '[model]\ndefault = "gemma4:e4b"\n'
+    config_file.write_text(original, encoding="utf-8")
+    before_mtime = config_file.stat().st_mtime_ns
+
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config edit")
+
+    assert config_file.read_text(encoding="utf-8") == original
+    assert config_file.stat().st_mtime_ns == before_mtime
+    out = harness.output()
+    assert str(config_file) in "".join(out.split())
+    assert "starter" not in out.lower()
+
+
 def test_compact_status_shows_thresholds(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/compact status")

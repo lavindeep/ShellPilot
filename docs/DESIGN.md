@@ -1493,6 +1493,26 @@ Project config:<repo>/.<app>/config.toml
 
 On macOS and Windows, use platform-native equivalents via `platformdirs`.
 
+#### Starter config on first edit
+
+`/config edit` prints the user config path. When no user `config.toml` exists
+yet, it first writes a commented **starter template** at that path (creating the
+config directory if needed, owner-only `0600`), so the printed path is real and
+immediately editable instead of pointing at a missing file. Every key in the
+template is commented out, so it is valid TOML that `load_config` accepts and
+that resolves to the built-in defaults — an effectively empty config. The
+template's comments are honest about the egress/safety model: which keys are
+config-file-only (`model.options`, `skills.enabled`) versus high-stakes
+(`tools.web`, `model.base_url`, `model.allow_cloud`, `runtime.security_profile`,
+settable here or via a confirm-gated `/config set`, never via an env var).
+
+When a `config.toml` already exists, `/config edit` only prints the path and
+**never** rewrites or overwrites it — config.toml stays user-owned (only the
+program-managed `overrides.json` is ever written by the program). Writing a
+starter happens solely on the explicit `/config edit` action and only when the
+file is absent (using `O_EXCL`, so a concurrently-created file is never
+clobbered).
+
 #### Workspace harness state
 
 `.shellpilot/state.json` stores harness-internal state for a workspace — it is
@@ -1968,7 +1988,7 @@ Planned commands:
 | `/profile` | Show active security profile. |
 | `/profile use <supervised|balanced>` | Switch security profile for this session only (reverts on restart; set `[runtime] security_profile` in config.toml to make it permanent). `trusted-local` arrives in v2. |
 | `/config show` | Print resolved config with source layers. |
-| `/config edit` | Open or print the user config path for editing. |
+| `/config edit` | Print the user config path for editing; if no `config.toml` exists yet, first write a commented starter template (resolving to defaults) at that path. Never overwrites an existing file (§17.2). |
 | `/config reload` | Reload config from disk. |
 | `/cwd` | Show current workspace boundary and process cwd. |
 | `/cwd set <path>` | Change workspace cwd/boundary after confirmation. |

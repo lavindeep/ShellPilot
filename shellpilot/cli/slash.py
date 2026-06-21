@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
@@ -116,6 +117,51 @@ _HIGH_STAKES_RISK: dict[str, str] = {
     "model.base_url": "changes the model endpoint — requests go to a different host",
     "runtime.security_profile": "lowers the local safety profile — low-risk commands may auto-run",
 }
+
+# Starter config written by `/config edit` ONLY when no config.toml exists yet.
+# Every key is commented out, so the file is valid TOML that load_config accepts
+# and that resolves to the built-in defaults — i.e. an effectively empty config.
+# It is never written over an existing file (config.toml is user-owned; the
+# program never rewrites it). Keep it concise: common keys plus the egress/safety
+# keys, with honest notes on which are config-file-only vs high-stakes.
+_STARTER_CONFIG = """\
+# ShellPilot config — starter template (every key is commented out, so it
+# resolves to the built-in defaults). Uncomment and edit the keys you want.
+# ShellPilot never rewrites this file; it is yours to edit by hand.
+#
+# Boot-only keys (model.*, ui.*, instructions.*, tools.web) take effect next
+# session. Runtime-settable keys can also be changed live with /config set.
+# Egress/safety keys (tools.web, model.base_url, model.allow_cloud,
+# runtime.security_profile) are settable here OR via a confirm-gated /config set,
+# but NEVER via an environment variable. The structural keys model.options and
+# skills.enabled are config-file-only: edit them here, never via /config set.
+
+[model]
+# default = "gemma4:e4b"
+# keep_alive = "5m"               # how long Ollama keeps the model warm
+# base_url = "http://localhost:11434"  # high-stakes: changes the endpoint
+# allow_cloud = false             # high-stakes: master cloud-egress switch
+
+# [model.options]                 # config-file-only: verbatim Ollama options
+# repeat_penalty = 1.3            # num_ctx is reserved and ignored here
+
+[runtime]
+# security_profile = "balanced"   # high-stakes: "balanced" | "supervised"
+# auto_compact = true
+
+[tools]
+# web = false                     # high-stakes: registers web_search + web_fetch
+
+[skills]
+# enabled = ["my-skill"]          # config-file-only: skill folders to activate
+
+[privacy]
+# allow_sensitive_reads = "ask"   # ask | never | always
+
+[ui]
+# theme = "default"
+# glyphs = "auto"                 # auto | unicode | ascii
+"""
 
 
 class SlashDispatcher:
@@ -333,12 +379,7 @@ class SlashDispatcher:
         if action == "show":
             render_config(self._loaded, self._console)
         elif action == "edit":
-            self._console.print(f"User config: {self._user_config_file}")
-            self._console.print("Edit the file, then run /config reload.")
-            self._console.print(
-                "[dim]Tip: use /config set <key> <value> "
-                "to make persistent changes in-program.[/dim]"
-            )
+            self._config_edit()
         elif action == "reload":
             try:
                 self._loaded = self._reload_config()
@@ -361,6 +402,30 @@ class SlashDispatcher:
                 " | /config unset <key>"
                 " | /config reset"
             )
+
+    def _config_edit(self) -> None:
+        path = self._user_config_file
+        created = False
+        if not path.exists():
+            # No user config yet: write a commented starter so the printed path
+            # is real and editable. NEVER touch an existing config.toml — it is
+            # user-owned and the program never rewrites it.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(_STARTER_CONFIG)
+            created = True
+        self._console.print(f"User config: {path}")
+        if created:
+            self._console.print(
+                "[dim]Created a starter config (every key commented out, so it "
+                "resolves to defaults). Uncomment and edit the keys you want.[/dim]"
+            )
+        self._console.print("Edit the file, then run /config reload.")
+        self._console.print(
+            "[dim]Boot-only keys take effect next session; runtime-settable keys "
+            "can also use /config set <key> <value>.[/dim]"
+        )
 
     def _overrides_path(self) -> Path:
         return overrides_path(self._user_config_file.parent)
