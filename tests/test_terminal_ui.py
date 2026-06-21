@@ -542,3 +542,77 @@ def test_consent_remote_base_url_local_model_requires_consent(tmp_path: Path) ->
     console2 = make_trust_console([])
     assert _resolve_cloud_consent(console2, settings_off, "gemma4:e4b", tty=True) is False
     assert "allow_cloud" in console2.export_text()
+
+
+# ---------------------------------------------------------------------------
+# P4-B review nit #9: the streamlined one-key cloud-confirm path MUST reach the
+# cloud consent gate. There is no other end-to-end guard that the picker's
+# Enter-to-fly-the-last-model shortcut routes a cloud model through
+# _resolve_cloud_consent before any model-touching call — a regression a future
+# picker refactor could silently reintroduce. This drives run_interactive
+# through that exact path: a cloud last_model, confirmed via the one-key Enter
+# shortcut, with consent stubbed to refuse, and asserts (a) consent WAS invoked
+# for the chosen cloud model and (b) the run aborts BEFORE client.preload (the
+# first egress point), so nothing touched the model.
+# ---------------------------------------------------------------------------
+
+
+def test_one_key_cloud_confirm_reaches_consent_gate_before_preload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import shellpilot.cli.terminal as terminal_mod
+    from shellpilot.llm.ollama import LocalModel
+
+    cloud_model = "nemotron-3-nano:30b-cloud"
+
+    class _FakeClient:
+        """Minimal OllamaClient double for the boot-path picker/consent seam."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.preload_calls: list[str] = []
+
+        def health(self) -> bool:
+            return True
+
+        def list_models(self) -> list[LocalModel]:
+            # The cloud model appears in /api/tags here so confirm_last_model's
+            # Enter-to-fly path selects it without opening the menu.
+            return [LocalModel(name=cloud_model, size_bytes=1)]
+
+        def preload(self, model: str, *, keep_alive: str = "5m") -> None:
+            self.preload_calls.append(model)
+
+    fake_client = _FakeClient()
+    monkeypatch.setattr(terminal_mod, "OllamaClient", lambda *a, **k: fake_client)
+
+    # Force the picker to show and take the one-key Enter ("fly the last model")
+    # shortcut for the cloud last_model — no menu, single confirm keystroke.
+    monkeypatch.setattr(terminal_mod, "should_show_picker", lambda **kwargs: True)
+    monkeypatch.setattr(terminal_mod, "load_last_model", lambda workspace: cloud_model)
+    monkeypatch.setattr(terminal_mod, "save_last_model", lambda workspace, chosen: None)
+    monkeypatch.setattr(terminal_mod, "confirm_last_model", lambda console, last: True)
+
+    def _fail_choose_model(*args: object, **kwargs: object) -> str:
+        raise AssertionError("the full menu must not open on the one-key Enter path")
+
+    monkeypatch.setattr(terminal_mod, "choose_model", _fail_choose_model)
+
+    # Stub the consent gate to record the model it was asked about and refuse,
+    # so the boot must abort at the consent boundary.
+    consent_calls: list[str] = []
+
+    def _record_consent(console: object, settings: object, chosen: str, *, tty: bool) -> bool:
+        consent_calls.append(chosen)
+        return False
+
+    monkeypatch.setattr(terminal_mod, "_resolve_cloud_consent", _record_consent)
+
+    # Make the boot path believe it is an interactive TTY.
+    monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    rc = terminal_mod.run_interactive(tmp_path)
+
+    assert consent_calls == [cloud_model], "consent gate not reached for the chosen cloud model"
+    assert fake_client.preload_calls == [], "the model was touched despite refused consent"
+    assert rc == 1, "a refused cloud consent must abort the boot"
