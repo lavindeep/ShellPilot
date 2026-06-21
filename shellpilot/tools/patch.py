@@ -20,7 +20,13 @@ from typing import Any
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.persistence.json_store import atomic_write_text
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec, resolve_in_workspace
+from shellpilot.tools.base import (
+    ToolContext,
+    ToolResult,
+    ToolSpec,
+    resolve_in_workspace,
+    workspace_display,
+)
 from shellpilot.tools.filesystem import ALL_PROFILES, is_binary
 
 OPERATIONS = ("replace_exact", "insert_before", "insert_after", "delete_exact")
@@ -98,13 +104,20 @@ def _write_preserving(path: Path, text: str) -> None:
         os.chmod(path, mode)
 
 
-def unified_diff(path: Path, before: str, after: str) -> str:
+def unified_diff(display_path: str, before: str, after: str) -> str:
+    """Render a unified diff whose headers name *display_path*.
+
+    ponytail (display-integrity invariant, design section 14.5): callers pass
+    the workspace-relative form of the SAME ``resolve_in_workspace`` result the
+    edit acts on, so the diff header — and the approval panel title derived from
+    it — always names the file actually written, never the raw model argument.
+    """
     lines = list(
         difflib.unified_diff(
             before.splitlines(keepends=True),
             after.splitlines(keepends=True),
-            fromfile=f"a/{path.name}",
-            tofile=f"b/{path.name}",
+            fromfile=f"a/{display_path}",
+            tofile=f"b/{display_path}",
         )
     )
     if len(lines) > MAX_PREVIEW_LINES:
@@ -127,7 +140,8 @@ def _patch_file(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
     _write_preserving(path, new_text)
     assert context.snapshots is not None
     context.snapshots.record(path, new_text.encode("utf-8"))
-    diff = unified_diff(path, text, new_text)
+    display = workspace_display(context.workspace, str(arguments["path"]))
+    diff = unified_diff(display, text, new_text)
     return ToolResult(
         success=True,
         summary=f"patched {arguments['path']} ({arguments['operation']})",
@@ -150,7 +164,8 @@ def _patch_preview(context: ToolContext, arguments: dict[str, Any]) -> str:
     )
     if new_text is None:
         return f"(cannot preview: {edit_error})"
-    return unified_diff(path, text, new_text)
+    display = workspace_display(context.workspace, str(arguments["path"]))
+    return unified_diff(display, text, new_text)
 
 
 def _write_file(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
@@ -197,7 +212,7 @@ def _write_file(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
     _write_preserving(path, new_text)
     if context.snapshots is not None:
         context.snapshots.record(path, new_text.encode("utf-8"))
-    diff = unified_diff(path, before, new_text)
+    diff = unified_diff(workspace_display(context.workspace, raw_path), before, new_text)
     return ToolResult(
         success=True,
         summary=f"wrote {raw_path} ({mode}, {len(new_text)} chars)",
@@ -222,7 +237,7 @@ def _write_preview(context: ToolContext, arguments: dict[str, Any]) -> str:
     else:
         before = path.read_bytes().decode("utf-8", errors="replace")
         after = before + content if mode == "append" else content
-    return unified_diff(path, before, after)
+    return unified_diff(workspace_display(context.workspace, raw_path), before, after)
 
 
 PATCH_FILE = ToolSpec(

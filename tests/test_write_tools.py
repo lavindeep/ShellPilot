@@ -157,6 +157,46 @@ def test_patch_after_read_succeeds_and_preserves_rest(tmp_path: Path) -> None:
     assert "-b = 2" in result.metadata["diff"]
 
 
+def test_diff_header_shows_resolved_relative_path_not_spoof(tmp_path: Path) -> None:
+    """The diff header (which becomes the approval panel title) names the
+    resolved, workspace-relative target — directory included — for a spoofing
+    path, so the displayed file matches the file actually written."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "f.py").write_text("a = 1\n")
+    spoof = "sub/../sub/f.py"  # resolves to sub/f.py
+    context = read_then_ctx(tmp_path, spoof)
+    result = PATCH_FILE.handler(
+        context, {"path": spoof, "operation": "replace_exact", "old": "a = 1", "new": "a = 2"}
+    )
+    assert result.success
+    diff = result.metadata["diff"]
+    # Full resolved relative path is shown, not just the basename, and never the
+    # raw spoofing string.
+    assert "+++ b/sub/f.py" in diff
+    assert "+++ b/f.py" not in diff
+    assert "sub/../sub" not in diff
+
+
+def test_write_preview_diff_header_uses_resolved_relative_path(tmp_path: Path) -> None:
+    """The write preview shown at the approval gate carries the resolved,
+    workspace-relative path in its diff header.
+
+    The target lives in a subdirectory so the resolved relative path
+    (``sub/new.txt``) differs from its basename (``new.txt``) — this is what
+    makes the test genuinely guard against the old basename-only header.
+    """
+    from shellpilot.tools.patch import WRITE_FILE
+
+    (tmp_path / "sub").mkdir()
+    diff = WRITE_FILE.preview(  # type: ignore[misc]
+        ctx(tmp_path),
+        {"path": "sub/../sub/new.txt", "content": "hello\n", "mode": "create"},
+    )
+    assert "+++ b/sub/new.txt" in diff
+    assert "+++ b/new.txt" not in diff  # would be the old basename-only header
+    assert "sub/../sub/new.txt" not in diff
+
+
 def test_stale_snapshot_rejected(tmp_path: Path) -> None:
     (tmp_path / "f.py").write_text("x = 1\n")
     context = read_then_ctx(tmp_path, "f.py")

@@ -182,12 +182,36 @@ def test_show_tool_call_redacts_secret_in_summary() -> None:
 
 
 def test_show_tool_call_plain_argument_unchanged() -> None:
-    """A non-secret argument must render unchanged."""
+    """A non-path argument must render unchanged."""
     console = make_console()
     ui = make_ui(console, [])
-    ui.show_tool_call("read_file", {"path": "/tmp/notes.txt"})
+    ui.show_tool_call("run_command", {"argv": "echo hi"})
     out = console.export_text()
-    assert "/tmp/notes.txt" in out
+    assert "echo hi" in out
+
+
+def test_show_tool_call_displays_resolved_path_not_spoof(tmp_path: Path) -> None:
+    """The tool-call line shows the resolved, workspace-relative path, not the
+    raw (potentially spoofing) model argument."""
+    console = make_console()
+    ui = TerminalUI(console, glyphs=GLYPHS, spinner=False, workspace=tmp_path)
+    ui.show_tool_call("read_file", {"path": "notes/../secret.txt"})
+    out = console.export_text()
+    assert "notes/../secret.txt" not in out
+    assert "secret.txt" in out
+
+
+def test_show_tool_call_marks_path_escaping_workspace(tmp_path: Path) -> None:
+    """A path that resolves outside the workspace renders an honest marker, not
+    a fabricated-looking in-workspace path."""
+    from shellpilot.tools.base import OUTSIDE_WORKSPACE_DISPLAY
+
+    console = make_console()
+    ui = TerminalUI(console, glyphs=GLYPHS, spinner=False, workspace=tmp_path)
+    ui.show_tool_call("read_file", {"path": "../outside.txt"})
+    out = console.export_text()
+    assert "../outside.txt" not in out
+    assert OUTSIDE_WORKSPACE_DISPLAY in out
 
 
 # ---------------------------------------------------------------------------

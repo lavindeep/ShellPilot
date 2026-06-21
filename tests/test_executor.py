@@ -8,6 +8,8 @@ import pytest
 from shellpilot.config.model import RuntimeSettings, Settings
 from shellpilot.llm.messages import ToolCall, ToolDefinition
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.persistence.snapshots import SnapshotStore
+from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.executor import ToolExecutor
@@ -676,3 +678,72 @@ def test_no_web_egress_when_network_tool_declined(tmp_path: Path) -> None:
     text = (tmp_path / "audit.jsonl").read_text() if (tmp_path / "audit.jsonl").is_file() else ""
     events = [json.loads(line) for line in text.splitlines()] if text else []
     assert not any(e["event"] == "web_egress" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Display integrity: the approval panel shows the RESOLVED action path, never
+# the raw (potentially spoofing) model argument (design sections 14.5, 36).
+# ---------------------------------------------------------------------------
+
+
+def _capture_request(spec: ToolSpec, tmp_path: Path, call: ToolCall) -> ApprovalRequest:
+    """Run a call through the executor and return the ApprovalRequest it built."""
+    captured: list[ApprovalRequest] = []
+
+    def _ask(request: ApprovalRequest) -> bool:
+        captured.append(request)
+        return False  # decline; we only want the request
+
+    registry = ToolRegistry()
+    registry.register(spec)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="supervised",  # ask before every side-effecting tool
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+        ask_approval=_ask,
+        snapshots=SnapshotStore(),
+    )
+    executor.execute(call)
+    assert captured, "expected an approval request"
+    return captured[0]
+
+
+def test_approval_display_shows_resolved_path_not_spoof(tmp_path: Path) -> None:
+    """A spoofing path argument displays as its resolved, workspace-relative
+    target in the approval head, and matches the file actually acted on."""
+    from shellpilot.tools.base import resolve_in_workspace
+    from shellpilot.tools.patch import WRITE_FILE
+
+    spoof = "notes/../secret.txt"
+    request = _capture_request(
+        WRITE_FILE,
+        tmp_path,
+        ToolCall(name="write_file", arguments={"path": spoof, "content": "x", "mode": "create"}),
+    )
+
+    # The raw, misleading argument must NOT appear in the approval display.
+    assert spoof not in request.display
+    # The resolved, workspace-relative target IS shown.
+    assert "secret.txt" in request.display
+    assert "notes/" not in request.display
+    # Display == action: it names the same file resolve_in_workspace targets.
+    acted_on = resolve_in_workspace(tmp_path, spoof)
+    assert acted_on.name in request.display
+
+
+def test_approval_display_marks_path_escaping_workspace(tmp_path: Path) -> None:
+    """A path that resolves outside the workspace renders an honest marker in
+    the display rather than a fabricated-looking path."""
+    from shellpilot.tools.base import OUTSIDE_WORKSPACE_DISPLAY
+    from shellpilot.tools.patch import WRITE_FILE
+
+    escape = "../outside.txt"
+    request = _capture_request(
+        WRITE_FILE,
+        tmp_path,
+        ToolCall(name="write_file", arguments={"path": escape, "content": "x", "mode": "create"}),
+    )
+    assert escape not in request.display
+    assert OUTSIDE_WORKSPACE_DISPLAY in request.display

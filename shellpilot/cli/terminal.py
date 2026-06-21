@@ -70,6 +70,7 @@ from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import TurnStats
 from shellpilot.runtime.planner import TaskPlan
 from shellpilot.skills.loader import discover_skills
+from shellpilot.tools.base import workspace_display
 
 
 def should_discard_interrupt(
@@ -184,9 +185,14 @@ class TerminalUI:
         *,
         glyphs: Glyphs = UNICODE_GLYPHS,
         spinner: bool = True,
+        workspace: Path | None = None,
     ) -> None:
         self._console = console
         self._glyphs = glyphs
+        # Workspace for display-integrity (design section 14.5): when set, a
+        # `path` argument in the tool-call line is shown as its resolved,
+        # workspace-relative target — the SAME resolution the tool acts on.
+        self._workspace = workspace
         self._stream = ResponseStream(console)
         self._spinner = AviationSpinner(console, glyphs, enabled=spinner)
         # The diff-reveal animation rides the same motion toggle as the spinner.
@@ -219,17 +225,29 @@ class TerminalUI:
 
     def show_tool_call(self, name: str, arguments: dict[str, object]) -> None:
         # Redact secrets in the summary line so auto-approved tool calls never
-        # expose credentials in the visible terminal channel.  The approval
-        # panel (ApprovalRequest.display built by executor._display_for) is
-        # intentionally left raw: the user approves exactly what will execute.
+        # expose credentials in the visible terminal channel. A `path` argument
+        # is shown as its resolved, workspace-relative target (the SAME
+        # resolution the tool acts on) so the displayed path cannot be spoofed
+        # and matches the file actually touched (design section 14.5); the
+        # approval panel applies the identical rule via executor._display_for.
         redacted = redact_structure(arguments)
         assert isinstance(redacted, dict)
-        summary = ", ".join(f"{key}={value!r}" for key, value in redacted.items())
+        summary = ", ".join(
+            f"{key}={self._tool_call_value(key, value)}" for key, value in redacted.items()
+        )
         if len(summary) > 80:
             summary = summary[:79] + self._glyphs.ellipsis
         self._console.print(render_tool_call(name, summary, self._glyphs))
         label = Text.assemble(("running ", "sp.dim"), (_sanitize_line(name), "sp.emph"))
         self._spinner.start(label=label)
+
+    def _tool_call_value(self, key: str, value: object) -> str:
+        # A `path` argument is shown as its resolved, workspace-relative target
+        # (display-integrity, design section 14.5). Without a workspace (legacy
+        # callers) the value renders verbatim.
+        if key == "path" and isinstance(value, str) and self._workspace is not None:
+            return repr(workspace_display(self._workspace, value))
+        return repr(value)
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
         self._spinner.stop()
@@ -545,7 +563,7 @@ def run_interactive(
         console.print("[sp.dim]Continuing without stored memory this session.[/sp.dim]")
         memory = None
 
-    ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner)
+    ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner, workspace=workspace)
     runtime = ConversationRuntime(
         llm=client,
         settings=settings,

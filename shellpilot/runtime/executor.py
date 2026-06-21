@@ -25,6 +25,7 @@ from shellpilot.tools.base import (
     ToolResult,
     schema_reminder,
     validate_args,
+    workspace_display,
 )
 from shellpilot.tools.registry import ToolRegistry
 
@@ -227,14 +228,24 @@ class ToolExecutor:
         if self._audit is not None:
             self._audit.write(event, tool=call.name, command=display, risk=risk.value, **fields)
 
-    @staticmethod
-    def _display_for(call: ToolCall) -> str:
+    def _display_for(self, call: ToolCall) -> str:
         if call.name == "run_command":
             argv = call.arguments.get("argv")
             if isinstance(argv, list):
                 return " ".join(str(token) for token in argv)
-        rendered = ", ".join(f"{key}={value!r}" for key, value in call.arguments.items())
+        rendered = ", ".join(
+            f"{key}={self._display_value(key, value)}" for key, value in call.arguments.items()
+        )
         return f"{call.name}({rendered})"
+
+    def _display_value(self, key: str, value: Any) -> str:
+        # Display-integrity (design section 14.5): a `path` argument is shown as
+        # the resolved, workspace-relative target — the SAME resolution the
+        # handler acts on — so the approval display can never diverge from the
+        # file actually touched. All other args render verbatim.
+        if key == "path" and isinstance(value, str):
+            return repr(workspace_display(self._workspace, value))
+        return repr(value)
 
     def _render(self, name: str, result: ToolResult) -> str:
         status = "ok" if result.success else "failed"

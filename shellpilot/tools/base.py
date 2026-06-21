@@ -167,3 +167,27 @@ def resolve_in_workspace(workspace: Path, raw_path: str) -> Path:
             f"path {raw_path} resolves outside the workspace boundary {root}"
         )
     return resolved
+
+
+# Honest marker shown instead of a path that resolves outside the workspace, so
+# a spoofing argument never renders as a plausible in-workspace target.
+OUTSIDE_WORKSPACE_DISPLAY = "<outside workspace>"
+
+
+def workspace_display(workspace: Path, raw_path: str) -> str:
+    """Faithful display form of a tool path argument (design section 14.5).
+
+    ponytail (display-integrity invariant): the path shown to the user is
+    derived from the SAME ``resolve_in_workspace`` the tool acts on, so the
+    display can never diverge from the file actually touched. A spoofing
+    argument (``..`` segments, ``./x/../y``, symlink, trailing junk) collapses
+    to its resolved, workspace-relative target; an argument that escapes the
+    boundary renders as an honest rejection marker, never a fabricated path.
+    """
+    try:
+        resolved = resolve_in_workspace(workspace, raw_path)
+    except WorkspaceBoundaryError:
+        return OUTSIDE_WORKSPACE_DISPLAY
+    relative = resolved.relative_to(workspace.resolve())
+    rel_str = relative.as_posix()
+    return "." if rel_str == "." else rel_str
