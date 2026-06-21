@@ -145,8 +145,14 @@ def _diff_row(
     return row
 
 
-def render_diff(diff_text: str, glyphs: Glyphs) -> Panel:
-    """Claude-Code-style diff panel: gutter, line backgrounds, word highlights."""
+def render_diff(diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None) -> Panel:
+    """Claude-Code-style diff panel: gutter, line backgrounds, word highlights.
+
+    When *max_rows* is set and the rendered diff exceeds it, the panel keeps the
+    first ``max_rows`` rows and appends one ``… (+N more)`` footer (``sp.faint``,
+    mirroring :func:`output_truncation`). ``max_rows=None`` (the default at every
+    existing call site) renders the full diff unchanged.
+    """
     lines = [_sanitize_line(line) for line in diff_text.splitlines()]
     width = _gutter_width(lines)
     title_name = "diff"
@@ -223,6 +229,10 @@ def render_diff(diff_text: str, glyphs: Glyphs) -> Panel:
             old_no += 1
             new_no += 1
             i += 1
+    if max_rows is not None and len(rows) > max_rows:
+        hidden = len(rows) - max_rows
+        rows = rows[:max_rows]
+        rows.append(Text(f"{glyphs.ellipsis} (+{hidden} more)", style="sp.faint"))
     body: Group | Text = Group(*rows) if rows else Text("(no changes)", style="sp.dim")
     return Panel(
         body,

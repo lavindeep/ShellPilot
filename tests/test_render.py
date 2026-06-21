@@ -129,6 +129,61 @@ def test_render_diff_sanitizes_tabs_crlf_and_truncation_marker() -> None:
     assert "42 more lines" in out
 
 
+def _additions_diff(count: int, name: str = "big.py") -> str:
+    """A unified diff that adds *count* numbered lines to an empty file."""
+    after = "".join(f"line {i}\n" for i in range(count))
+    return make_diff("", after, name=name)
+
+
+def test_render_diff_max_rows_param_exists() -> None:
+    """CI guard: render_diff keeps its keyword-only max_rows parameter."""
+    import inspect
+
+    sig = inspect.signature(render_diff)
+    assert "max_rows" in sig.parameters
+
+
+def test_render_diff_max_rows_caps_output_with_footer() -> None:
+    diff = _additions_diff(30)
+    out = rendered(render_diff(diff, GLYPHS, max_rows=10))
+    assert "line 0" in out
+    assert "line 9" in out  # the 10th content row is shown
+    assert "line 25" not in out  # rows past the cap are hidden
+    assert f"{GLYPHS.ellipsis} (+" in out
+    assert "more)" in out
+
+
+def test_render_diff_max_rows_none_shows_full() -> None:
+    diff = _additions_diff(30)
+    out = rendered(render_diff(diff, GLYPHS, max_rows=None))
+    assert "line 0" in out
+    assert "line 29" in out
+    assert "more)" not in out
+
+
+def test_render_diff_max_rows_at_exact_boundary_no_footer() -> None:
+    """rows == max_rows is inclusive: no cap, no footer."""
+    diff = _additions_diff(8)
+    # An 8-addition diff renders exactly 8 content rows.
+    out = rendered(render_diff(diff, GLYPHS, max_rows=8))
+    assert "line 7" in out
+    assert "more)" not in out
+
+
+def test_render_diff_footer_style_is_faint() -> None:
+    from rich.console import Group
+    from rich.text import Text
+
+    diff = _additions_diff(30)
+    panel = render_diff(diff, GLYPHS, max_rows=5)
+    body = panel.renderable
+    assert isinstance(body, Group)
+    footer = body.renderables[-1]
+    assert isinstance(footer, Text)
+    assert footer.style == "sp.faint"
+    assert footer.plain.startswith(f"{GLYPHS.ellipsis} (+")
+
+
 def test_badge_chips_and_plain_degradation() -> None:
     assert badge("medium").plain == " MEDIUM "
     assert badge("high").plain == " HIGH "
