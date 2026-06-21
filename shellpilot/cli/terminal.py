@@ -45,8 +45,8 @@ from shellpilot.cli.slash import SlashAction, SlashDispatcher, command_words
 from shellpilot.cli.streaming import AviationSpinner, ResponseStream
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
 from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
-from shellpilot.config.model import Settings, is_cloud_model
-from shellpilot.llm.ollama import OllamaClient, OllamaError, is_loopback_url
+from shellpilot.config.model import Settings, is_cloud_model, is_egressing
+from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.memory.agents_md import (
     BehaviorInstructions,
     load_behavior_instructions,
@@ -149,7 +149,7 @@ def _resolve_cloud_consent(console: Console, settings: Settings, chosen: str, *,
 
     Consent is per session — never persisted; every launch re-asks.
     """
-    egressing = is_cloud_model(chosen) or not is_loopback_url(settings.model.base_url)
+    egressing = is_egressing(chosen, settings.model.base_url)
     if not egressing:
         return True
     if not settings.model.allow_cloud:
@@ -389,7 +389,7 @@ def run_interactive(
     # cloud-model case base_url is loopback → no egress; a non-loopback base_url
     # is a metadata-only probe to the user's own configured endpoint, documented
     # as an accepted residual in DESIGN §15.2.)
-    egressing_session = is_cloud_model(chosen) or not is_loopback_url(settings.model.base_url)
+    egressing_session = is_egressing(chosen, settings.model.base_url)
     if not _resolve_cloud_consent(console, settings, chosen, tty=tty):
         return 1
 
@@ -546,6 +546,17 @@ def run_interactive(
         context = PromptContext(
             workspace=status.workspace, model=status.model, profile=status.profile
         )
+        # Persistent, unspoofable active-cloud indicator (design section 15.2).
+        # Derived from the harness egress signal on the LIVE model, so a
+        # mid-session /model use to a cloud model turns it on and switching back
+        # turns it off. A default local session prints nothing.
+        if is_egressing(runtime.model, settings.model.base_url):
+            console.print(
+                Text(
+                    "☁ CLOUD MODEL ACTIVE — this session's content leaves your device",
+                    style="bold sp.warn",
+                )
+            )
         console.print()
         read_started = time.monotonic()
         try:

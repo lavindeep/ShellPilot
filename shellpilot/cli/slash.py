@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.render import plan_panel, render_diff
@@ -199,6 +200,7 @@ class SlashDispatcher:
         status = self._runtime.status()
         self._console.print(f"Model: {status.model}")
         self._console.print(f"Profile: {status.profile}")
+        self._console.print(self._locality_line(status.model))
         self._console.print(f"Workspace: {status.workspace}")
         self._console.print(
             f"Context: ~{status.estimated_prompt_tokens} of "
@@ -211,6 +213,27 @@ class SlashDispatcher:
         else:
             self._console.print("Active plan: none")
         self._console.print("Pending approvals: none")
+
+    def _locality_line(self, model: str) -> Text:
+        """Honest one-line locality readout derived from the egress signal.
+
+        REMOTE in amber names the off-box host (the configured non-loopback
+        endpoint, or 'cloud' for a -cloud model proxied through loopback);
+        local in dim otherwise (design section 15.2).
+        """
+        from urllib.parse import urlsplit
+
+        from shellpilot.config.model import is_cloud_model, is_egressing
+        from shellpilot.llm.ollama import is_loopback_url
+
+        base_url = self._loaded.settings.model.base_url
+        if not is_egressing(model, base_url):
+            return Text("Locality: local", style="sp.dim")
+        if not is_loopback_url(base_url):
+            host = (urlsplit(base_url).hostname or "").rstrip(".") or base_url
+        else:
+            host = "cloud" if is_cloud_model(model) else base_url
+        return Text(f"Locality: REMOTE — {host}", style="sp.warn")
 
     def _model(self, args: list[str]) -> None:
         if not args:
@@ -257,10 +280,10 @@ class SlashDispatcher:
             # consent BEFORE set_model/_preload touch it. On reject: no switch,
             # no preload, no egress.
             from shellpilot.cli.terminal import _resolve_cloud_consent
-            from shellpilot.llm.ollama import is_loopback_url
+            from shellpilot.config.model import is_egressing
 
             base_url = self._loaded.settings.model.base_url
-            egressing = is_cloud_model(name) or not is_loopback_url(base_url)
+            egressing = is_egressing(name, base_url)
             if not _resolve_cloud_consent(
                 self._console, self._loaded.settings, name, tty=self._tty
             ):

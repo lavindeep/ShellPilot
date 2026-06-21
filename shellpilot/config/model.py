@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from shellpilot.llm.ollama import is_loopback_url
+
 VALID_PROFILES = ("supervised", "balanced")  # trusted-local arrives in v2
 
 TESTED_FAMILIES: Final[tuple[str, ...]] = ("gemma4", "qwen3.5")
@@ -23,6 +25,18 @@ def is_cloud_model(name: str) -> bool:
     cloud-egress signal independent of base_url (design section 15.2).
     """
     return name.endswith("-cloud")
+
+
+def is_egressing(model: str, base_url: str) -> bool:
+    """True when a request for *model* on *base_url* leaves this device.
+
+    A request egresses when the endpoint base_url is non-loopback OR the model
+    is a cloud model (a ``-cloud`` name egresses to the provider even through a
+    localhost Ollama proxy). The single source of truth for the cloud/remote
+    locality signal, shared by the boot consent gate, the runtime egress
+    chokepoint, and the active-cloud UI indicator (design section 15.2).
+    """
+    return is_cloud_model(model) or not is_loopback_url(base_url)
 
 
 @dataclass(frozen=True)

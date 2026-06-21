@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from shellpilot.config.model import Settings, is_cloud_model
+from shellpilot.config.model import Settings, is_egressing
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
 from shellpilot.llm.ollama import encode_tool, is_loopback_url
@@ -290,11 +290,11 @@ class ConversationRuntime:
     def _is_egressing(self) -> bool:
         """True when a model request leaves this device.
 
-        A request egresses when the endpoint base_url is non-loopback OR the
-        model is a cloud model — a ``-cloud`` name egresses to the provider even
-        through a localhost Ollama proxy (design section 15.2).
+        Delegates to the shared ``is_egressing`` predicate so the runtime egress
+        chokepoint, the boot consent gate, and the active-cloud UI indicator all
+        agree on what counts as off-box (design section 15.2).
         """
-        return not self._endpoint_is_loopback() or is_cloud_model(self._model)
+        return is_egressing(self._model, self._base_url)
 
     def _redacted_for_egress(self, messages: list[Message]) -> list[Message]:
         """Best-effort redacted COPY of *messages* for a remote send.

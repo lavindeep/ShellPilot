@@ -1048,3 +1048,19 @@ def test_is_cloud_model_classification() -> None:
     assert is_cloud_model("") is False
     # The suffix must be exact: a substring elsewhere is not a cloud model.
     assert is_cloud_model("cloud-runner:7b") is False
+
+
+def test_is_egressing_combines_cloud_model_and_base_url() -> None:
+    """is_egressing is True for a cloud model OR a non-loopback endpoint."""
+    from shellpilot.config.model import is_egressing
+
+    loopback = "http://127.0.0.1:11434"
+    remote = "http://10.0.0.5:11434"
+    # Cloud model on a loopback endpoint still egresses (Ollama proxies it out).
+    assert is_egressing("x-cloud", loopback) is True
+    # A local model on a loopback endpoint stays local.
+    assert is_egressing("gemma4:e4b", loopback) is False
+    # A local model pointed at a non-loopback endpoint egresses.
+    assert is_egressing("gemma4:e4b", remote) is True
+    # Both signals firing is still egressing.
+    assert is_egressing("x-cloud", remote) is True

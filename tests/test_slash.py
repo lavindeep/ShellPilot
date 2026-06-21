@@ -92,6 +92,18 @@ def test_status_shows_model_and_context(tmp_path: Path) -> None:
     assert "gemma4:e4b" in out
     assert "balanced" in out
     assert "8192" in out
+    # Default loopback session with a local model reports a local locality.
+    assert "Locality: local" in out
+
+
+def test_status_locality_remote_for_cloud_model(tmp_path: Path) -> None:
+    """A live cloud model flips the /status locality line to REMOTE."""
+    harness = Harness(tmp_path)
+    harness.runtime.set_model("nemotron-3-nano:30b-cloud")
+    harness.dispatcher.handle("/status")
+    out = harness.output()
+    assert "Locality: REMOTE" in out
+    assert "cloud" in out
 
 
 def test_model_list_shows_all_models_with_tags(tmp_path: Path) -> None:
