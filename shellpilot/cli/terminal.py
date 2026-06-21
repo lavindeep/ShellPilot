@@ -18,7 +18,12 @@ from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_im
 from shellpilot.cli.banner import render_banner
 from shellpilot.cli.input import PromptContext, make_input
 from shellpilot.cli.manual_shell import manual_shell_loop
-from shellpilot.cli.model_picker import choose_model, resolve_preselect, should_show_picker
+from shellpilot.cli.model_picker import (
+    choose_model,
+    confirm_last_model,
+    resolve_preselect,
+    should_show_picker,
+)
 from shellpilot.cli.render import (
     _sanitize_line,
     approval_cwd,
@@ -346,16 +351,29 @@ def run_interactive(
     installed = {m.name for m in installed_models}
 
     tty = console.is_terminal and sys.stdin.isatty()
-    if should_show_picker(
+    if not should_show_picker(
         tty=tty,
         model_override=model_override,
         installed_count=len(installed_models),
     ):
-        preselect = resolve_preselect(settings.model.default, load_last_model(workspace), installed)
-        chosen = choose_model(console, installed_models, preselect)
-        save_last_model(workspace, chosen)
-    else:
         chosen = settings.model.default
+    else:
+        last = load_last_model(workspace)
+        if last is not None and last in installed:
+            # Every boot after the first: Enter flies the last model, any other
+            # key opens the full menu (preselected on the last model).
+            if confirm_last_model(console, last):
+                chosen = last
+            else:
+                chosen = choose_model(console, installed_models, last)
+        else:
+            # First boot, or the last model is no longer installed.
+            chosen = choose_model(
+                console,
+                installed_models,
+                resolve_preselect(settings.model.default, last, installed),
+            )
+        save_last_model(workspace, chosen)
 
     # Cloud models are absent from the local /api/tags, so the availability gate
     # is skipped for them (the typo-catch survives for local names).

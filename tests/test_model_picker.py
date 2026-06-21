@@ -7,7 +7,12 @@ from collections.abc import Iterator
 
 from rich.console import Console
 
-from shellpilot.cli.model_picker import choose_model, resolve_preselect, should_show_picker
+from shellpilot.cli.model_picker import (
+    choose_model,
+    confirm_last_model,
+    resolve_preselect,
+    should_show_picker,
+)
 from shellpilot.cli.theme import SHELLPILOT_THEME
 from shellpilot.llm.ollama import LocalModel
 
@@ -144,3 +149,45 @@ def test_picker_marks_untested_models() -> None:
     assert "untested" in llama_line
     assert "untested" not in gemma_line
     assert "untested" not in qwen_line
+
+
+# ---------------------------------------------------------------------------
+# confirm_last_model
+# ---------------------------------------------------------------------------
+
+
+def test_confirm_enter_flies_last_model() -> None:
+    # Empty input (Enter) → fly the last model as-is.
+    console = make_console([""])
+    assert confirm_last_model(console, GEMMA) is True
+    assert GEMMA in console.export_text()
+
+
+def test_confirm_any_key_opens_menu() -> None:
+    # Any non-empty input → open the full picker.
+    console = make_console(["m"])
+    assert confirm_last_model(console, GEMMA) is False
+
+
+def test_confirm_eof_flies_last_model() -> None:
+    console = Console(
+        record=True, width=100, file=io.StringIO(), theme=SHELLPILOT_THEME, force_terminal=True
+    )
+
+    def raise_eof(prompt: str = "", **kwargs: object) -> str:
+        raise EOFError
+
+    console.input = raise_eof  # type: ignore[method-assign]
+    assert confirm_last_model(console, GEMMA) is True
+
+
+def test_confirm_keyboard_interrupt_flies_last_model() -> None:
+    console = Console(
+        record=True, width=100, file=io.StringIO(), theme=SHELLPILOT_THEME, force_terminal=True
+    )
+
+    def raise_interrupt(prompt: str = "", **kwargs: object) -> str:
+        raise KeyboardInterrupt
+
+    console.input = raise_interrupt  # type: ignore[method-assign]
+    assert confirm_last_model(console, GEMMA) is True

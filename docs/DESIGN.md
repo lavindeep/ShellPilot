@@ -2718,15 +2718,17 @@ The boot banner is a rich `Panel` (`cli/banner.py:render_banner(model, *, is_clo
 
 Settled 2026-06-11. On every interactive boot, ShellPilot presents a numbered list of all models installed in the local Ollama instance so the user can choose which model to run for the session.
 
-**When the picker is shown:** the picker appears when all three conditions hold: the session is interactive (the console is a TTY and `sys.stdin.isatty()` is true), no `--model` flag was passed on the command line, and more than one model is installed. When any condition fails the session model is `settings.model.default` without prompting.
+**When the picker is shown:** the picker runs when all three conditions hold: the session is interactive (the console is a TTY and `sys.stdin.isatty()` is true), no `--model` flag was passed on the command line, and more than one model is installed. When any condition fails the session model is `settings.model.default` without prompting.
+
+**Compact confirm vs full menu:** the first boot in a workspace (no recorded last model, or the last model is no longer installed) shows the full numbered menu, preselected on the last model if present else `settings.model.default`. Every boot after that shows a one-line confirm — `✈ Last flight: <model>` then `Enter to fly · any other key for the menu` — so the common case (keep flying the same model) is a single Enter. Empty input / EOF / `KeyboardInterrupt` flies the last model; any non-empty key opens the full menu preselected on it. Whichever path resolves, `save_last_model` persists the choice, and the chosen model flows unchanged into the availability gate and the cloud-egress consent gate (§15.2).
 
 **List layout:** one row per model — row number, chevron marking the preselected row (`❯` in accent green, a space otherwise), model name in emphasis style, size in GB in dim style, and a dim `untested` tag for any model not in `TESTED_FAMILIES` (see `shellpilot/config/model.py`). Rich named styles from the §31 theme are used throughout; no inline hex.
 
 **Preselection:** the row highlighted by default is the last model the user chose in this workspace (from `.shellpilot/state.json`), falling back to `settings.model.default` if the last model is absent from the current install list.
 
-**Input:** the prompt reads `Select a model [Enter = <preselect>]`. Accepted input: empty Enter (returns preselect), a 1-based row number, or an exact model name. Anything else re-prompts. `EOFError` and `KeyboardInterrupt` return the preselect silently. After a selection `save_last_model` persists the choice for the next boot.
+**Input:** the menu prompt reads `Select a model [Enter = <preselect>]`. Accepted input: empty Enter (returns preselect), a 1-based row number, or an exact model name. Anything else re-prompts. `EOFError` and `KeyboardInterrupt` return the preselect silently. After a selection `save_last_model` persists the choice for the next boot.
 
-**Module:** `shellpilot/cli/model_picker.py` — three pure functions (`should_show_picker`, `resolve_preselect`, `choose_model`) with console injected for testability.
+**Module:** `shellpilot/cli/model_picker.py` — four pure functions (`should_show_picker`, `resolve_preselect`, `confirm_last_model`, `choose_model`) with console injected for testability.
 
 ### 32.2 Model Preload And keep_alive
 
