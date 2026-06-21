@@ -125,6 +125,10 @@ gemma4:e4b · balanced · /help for commands
   ⎿ ✓ applied 1 change
 
   ⏺ run_command(argv=['python', '-m', 'pytest'])
+
+     MEDIUM  command · runs arbitrary python code
+    CWD: ~/my-project
+  Approve? [y/n] y
   ⎿ ✓ 14 passed in 0.31s
 
   All steps complete. Fixed the off-by-one (the loop skipped the first line)
@@ -132,7 +136,7 @@ gemma4:e4b · balanced · /help for commands
   9.4s · 1.2k tokens · ctx 11%
 ```
 
-Read-only tools and low-risk commands (like `pytest`) run automatically under `balanced`; a write asks first and shows the diff. A high-risk command is different again — it carries the deterministic purpose explanation and refuses a plain `y`:
+Read-only tools and low-risk commands (`ls`, `git status`, an in-workspace `cat`) run automatically under `balanced`; anything that runs code or writes — including a test run — asks first, and a write shows the diff. A high-risk command is different again — it carries the deterministic purpose explanation and refuses a plain `y`:
 
 ```text
   ⏺ run_command(argv=['rm', '-rf', 'build/'])
@@ -204,7 +208,7 @@ Inside a session, plain language is the primary interface; slash commands contro
 
 Config is a user-owned TOML file. ShellPilot never rewrites it — only the program-managed `overrides.json` (set via `/config set`) is self-healing. The file lives in the platform-native config directory via `platformdirs`: on macOS `~/Library/Application Support/shellpilot/`, on Linux `~/.config/shellpilot/`. `shellpilot config edit` prints the exact paths. A `<repo>/.shellpilot/config.toml` can override the user file per project.
 
-Settings resolve highest-wins: CLI flags → a fixed set of `SHELLPILOT_*` env vars (model, profile, Ollama URL, color, glyphs) → `overrides.json` → project config → user config → defaults. Most keys — including `tools.web` — have no env override by design.
+Settings resolve highest-wins: CLI flags → a fixed set of `SHELLPILOT_*` env vars (model, color, glyphs) → `overrides.json` → project config → user config → defaults. Egress and safety keys (`tools.web`, `model.base_url`, `model.allow_cloud`, `runtime.security_profile`) have no env override by design — an ambient env var must never enable network egress or downgrade the safety posture.
 
 ```toml
 [model]
@@ -231,7 +235,7 @@ theme = "default"
 glyphs = "auto"          # auto | unicode | ascii
 ```
 
-`[tools] web` and `[skills] enabled` are config-file-only by design: enabling network egress or activating skills must be a deliberate edit, not something an env var or `/config set` can flip. User skills live in `<config_dir>/skills/<name>/SKILL.md`. ShellPilot also reads behavior instructions from `AGENTS.md` in your config directory (global) and the workspace root (project) at session start; it follows them and never writes those files.
+`[skills] enabled` (and `[model.options]`) are config-file-only: they can only be changed by editing `config.toml`, never via an env var, `overrides.json`, or `/config set`. Egress and safety keys (`[tools] web`, `[model] base_url`, `[model] allow_cloud`, `[runtime] security_profile`) can be set in `config.toml` or via a confirm-gated `/config set` — never silently by an env var. `/config set` shows an amber warning and requires explicit confirmation before persisting any of these to `overrides.json`. User skills live in `<config_dir>/skills/<name>/SKILL.md`. ShellPilot also reads behavior instructions from `AGENTS.md` in your config directory (global) and the workspace root (project) at session start; it follows them and never writes those files.
 
 ### Cloud models (opt-in)
 
@@ -243,7 +247,7 @@ allow_cloud = true
 default = "nemotron-3-nano:30b-cloud"
 ```
 
-`[model] allow_cloud` is **config-file-only** — it cannot be set via an environment variable, `overrides.json`, or `/config set`. Enabling cloud egress must be a deliberate edit.
+`[model] allow_cloud` has **no environment-variable override** — an ambient env var must never enable cloud egress. It can be set in `config.toml` or via a confirm-gated `/config set` (which shows an amber warning and persists to `overrides.json`); enabling it must be a deliberate act either way. Whichever way it was set, the per-session consent prompt below is the real egress boundary.
 
 With `allow_cloud = true`, ShellPilot shows an honest disclosure prompt before any data leaves the device and asks for explicit **y/N** consent (defaulting to **N**). Declining — or running non-interactively — fails closed and the session does not start. Consent is per-session and never persisted; every launch re-asks.
 
@@ -259,7 +263,7 @@ The same gate fires if you switch models mid-session with `/model use <cloud-nam
 - **`Ollama binary: not on PATH`** — Ollama is not installed. Get it from [ollama.com](https://ollama.com).
 - **`Models: none installed`** — pull the default model: `ollama pull gemma4:e4b`.
 - **First turn is slow** — the model cold-starts on the first prompt. ShellPilot preloads the selected model at boot and `keep_alive` keeps it warm between turns; subsequent turns are much faster.
-- **Web tools missing** — `web_search`/`web_fetch` only register when `[tools] web = true` in `config.toml`. There is no env-var or runtime toggle for it.
+- **Web tools missing** — `web_search`/`web_fetch` only register when `[tools] web = true`. Set it in `config.toml`, or via a confirm-gated `/config set tools.web true` (it takes effect next session). There is no env-var toggle for it.
 - **A command was rejected before any prompt** — a command that can't start (missing executable, packed shell line, stray shell operator) is rejected deterministically and never spends an approval; correct the arguments and retry. Look for a `did you mean` suggestion.
 
 ## Design principles

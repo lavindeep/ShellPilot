@@ -573,7 +573,7 @@ Planning is NOT required (do the action directly) when:
 
 - The task is a direct answer or single read-only inspection.
 - The task is a single command or a single file edit.
-- The task is a simple low-risk command like `pwd` or `python -m pytest`.
+- The task is a simple low-risk command like `pwd` or `git status`.
 
 ### 11.2 Plan Shape
 
@@ -1217,7 +1217,7 @@ Examples:
 | Pattern | Risk |
 |---|---|
 | `ls`, `pwd`, `git status` | Low |
-| `python -m pytest` | Low or medium depending on config |
+| `python -m pytest` | Medium (runs arbitrary project Python) |
 | `pip install` | Medium |
 | `git commit` | Medium |
 | `git push` | Medium or high depending on config |
