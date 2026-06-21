@@ -17,7 +17,7 @@ from rich.text import Text
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.banner import render_banner
 from shellpilot.cli.input import PromptContext, make_input
-from shellpilot.cli.manual_shell import manual_shell_loop
+from shellpilot.cli.manual_shell import manual_shell_loop, run_manual_command
 from shellpilot.cli.model_picker import (
     choose_model,
     confirm_last_model,
@@ -614,6 +614,19 @@ def run_interactive(
                 console.print("[sp.dim](Ctrl-C — use /exit to quit)[/sp.dim]")
             continue
         if not line:
+            continue
+        if line.startswith("!"):
+            # `!<cmd>` runs one command through the audited manual-shell path
+            # (raw shell=True, exactly like /shell); a bare `!` opens the shell
+            # loop. This is a human-only escape — model output never reaches this
+            # reader — so it carries the same trust as /shell. Live workspace
+            # honours a prior /cwd.
+            workspace = runtime.status().workspace
+            command = line[1:].strip()
+            if command:
+                run_manual_command(command, workspace, audit)
+            else:
+                manual_shell_loop(console, workspace, audit)
             continue
         if line.startswith("/"):
             action = dispatcher.handle(line)

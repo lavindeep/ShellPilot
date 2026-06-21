@@ -627,3 +627,74 @@ def test_relative_age_buckets() -> None:
     assert _relative_age(now - 3 * 86400, now=now) == "3d ago"
     # Future / clock skew never goes negative.
     assert _relative_age(now + 100, now=now) == "just now"
+
+
+def test_bang_prefix_runs_manual_shell_not_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`!<cmd>` routes to the audited manual-shell path and is never sent to the model."""
+    import shellpilot.cli.terminal as terminal_mod
+    from shellpilot.llm.ollama import LocalModel
+    from shellpilot.persistence.paths import AppPaths
+
+    model = "gemma4:e4b"
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def health(self) -> bool:
+            return True
+
+        def list_models(self) -> list[LocalModel]:
+            return [LocalModel(name=model, size_bytes=1)]
+
+        def preload(self, name: str, *, keep_alive: str = "5m") -> None:
+            pass
+
+        def model_context_length(self, name: str) -> int:
+            return 8192
+
+    monkeypatch.setattr(terminal_mod, "OllamaClient", lambda *a, **k: _FakeClient())
+    # Redirect app dirs to tmp so boot-time audit/session/memory never touch real state.
+    fake_paths = AppPaths(
+        config_dir=tmp_path / "cfg",
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        cache_dir=tmp_path / "cache",
+    )
+    monkeypatch.setattr(terminal_mod.AppPaths, "default", classmethod(lambda cls: fake_paths))
+
+    # Feed one `!` line, then EOF to end the REPL.
+    class _Reader:
+        def __init__(self) -> None:
+            self._lines = iter(["!echo hi"])
+
+        def read(self, context: object) -> str:
+            try:
+                return next(self._lines)
+            except StopIteration:
+                raise EOFError from None
+
+    monkeypatch.setattr(terminal_mod, "make_input", lambda *a, **k: _Reader())
+
+    bang_calls: list[str] = []
+    monkeypatch.setattr(
+        terminal_mod,
+        "run_manual_command",
+        lambda command, cwd, audit: bang_calls.append(command) or 0,
+    )
+    model_turns: list[str] = []
+    monkeypatch.setattr(
+        terminal_mod.ConversationRuntime,
+        "run_turn",
+        lambda self, text, **k: model_turns.append(text) or "",
+    )
+    monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    rc = terminal_mod.run_interactive(tmp_path, model_override=model)
+
+    assert bang_calls == ["echo hi"], "'!<cmd>' must run via the manual-shell path"
+    assert model_turns == [], "a '!' line must NOT be sent to the model"
+    assert rc == 0
