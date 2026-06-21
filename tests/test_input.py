@@ -29,7 +29,7 @@ def context() -> PromptContext:
 def test_command_words_derives_clean_phrases() -> None:
     words = command_words()
     assert "/help" in words
-    assert "/exit" in words and "/quit" in words  # split combined row
+    assert "/exit" in words and "/quit" not in words  # /quit dropped
     assert "/model use" in words  # argument placeholder stripped
     assert not any("<" in word for word in words)
 

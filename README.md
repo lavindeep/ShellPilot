@@ -199,7 +199,7 @@ Inside a session, plain language is the primary interface; slash commands contro
 | `/attach <path>` | Stage an image for your next message; bare `/attach` lists staged images. |
 | `/shell`, `/exit-shell` | Enter and leave Manual Shell. |
 | `/doctor` | Run the doctor checks from within a session. |
-| `/exit`, `/quit` | Exit ShellPilot. |
+| `/exit` | Exit ShellPilot. |
 
 ## Configuration
 

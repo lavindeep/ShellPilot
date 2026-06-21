@@ -53,10 +53,11 @@ class Harness:
         return self.console.export_text()
 
 
-def test_exit_and_quit(tmp_path: Path) -> None:
+def test_exit_only_quit_dropped(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     assert harness.dispatcher.handle("/exit") is SlashAction.EXIT
-    assert harness.dispatcher.handle("/quit") is SlashAction.EXIT
+    # /quit was dropped (one exit command); it is now an unknown command.
+    assert harness.dispatcher.handle("/quit") is SlashAction.CONTINUE
 
 
 def test_help_lists_commands(tmp_path: Path) -> None:

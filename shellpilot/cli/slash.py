@@ -21,6 +21,12 @@ from shellpilot.config.loader import (
     LoadedConfig,
     validate_override,
 )
+from shellpilot.config.model import (
+    TESTED_FAMILIES,
+    is_cloud_model,
+    is_egressing,
+    is_tested_model,
+)
 from shellpilot.config.overrides import load_overrides, overrides_path, save_overrides
 from shellpilot.llm.client import LLMClient
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -35,7 +41,7 @@ class SlashAction(Enum):
 
 HELP_ROWS: list[tuple[str, str]] = [
     ("/help", "Show available commands."),
-    ("/exit, /quit", "Exit ShellPilot."),
+    ("/exit", "Exit ShellPilot."),
     ("/clear", "Clear the visible conversation after confirmation."),
     ("/status", "Show model, profile, workspace, and context usage."),
     ("/model", "Show the active model and context metadata."),
@@ -148,7 +154,7 @@ class SlashDispatcher:
         parts = line.strip().split()
         command, args = parts[0].lower(), parts[1:]
 
-        if command in ("/exit", "/quit"):
+        if command == "/exit":
             return SlashAction.EXIT
         if command == "/shell":
             return SlashAction.MANUAL_SHELL
@@ -238,7 +244,6 @@ class SlashDispatcher:
         """
         from urllib.parse import urlsplit
 
-        from shellpilot.config.model import is_cloud_model, is_egressing
         from shellpilot.llm.ollama import is_loopback_url
 
         base_url = self._loaded.settings.model.base_url
@@ -259,8 +264,6 @@ class SlashDispatcher:
             )
             return
         if args[0] == "list":
-            from shellpilot.config.model import TESTED_FAMILIES, is_tested_model
-
             models = self._client.list_models()
             table = Table(title="Local models")
             table.add_column("Name")
@@ -280,7 +283,6 @@ class SlashDispatcher:
                 )
             return
         if args[0] == "use" and len(args) > 1:
-            from shellpilot.config.model import TESTED_FAMILIES, is_cloud_model, is_tested_model
             from shellpilot.persistence.workspace_state import save_last_model
 
             name = args[1]

@@ -1959,7 +1959,6 @@ Planned commands:
 |---|---|
 | `/help` | Show available slash commands and short examples. |
 | `/exit` | Exit the harness. |
-| `/quit` | Alias for `/exit`. |
 | `/clear` | Clear conversation history after confirmation; also cancels the active plan and resets snapshots, diffs, and failure state. |
 | `/status` | Show current model, profile, cwd, context usage, active plan, and pending approvals. |
 | `/doctor` | Check Python version, Ollama reachability, model availability, config paths, and workspace access. |
