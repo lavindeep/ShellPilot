@@ -323,6 +323,18 @@ def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple
     return user_file, project_state_dir(workspace) / "config.toml"
 
 
+def _relative_age(mtime: float, *, now: float | None = None) -> str:
+    """Compact relative age, e.g. "just now", "39m ago", "2h ago", "3d ago"."""
+    delta = max(0.0, (time.time() if now is None else now) - mtime)
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
 def run_interactive(
     workspace: Path, resume: str | None = None, model_override: str | None = None
 ) -> int:
@@ -463,6 +475,11 @@ def run_interactive(
         )
 
     sessions_dir = SessionStore.sessions_dir(workspace)
+    # Capture prior sessions for the banner BEFORE this session's meta is
+    # written, so the current (empty) session never lists itself.
+    recent_sessions = [
+        (label, _relative_age(mtime)) for label, mtime in SessionStore.recent(sessions_dir)
+    ]
     restored = None
     if resume is not None:
         session_path = (
@@ -540,7 +557,15 @@ def run_interactive(
         tty=tty,
     )
 
-    console.print(render_banner(runtime.model, is_cloud=egressing_session))
+    console.print(
+        render_banner(
+            runtime.model,
+            is_cloud=egressing_session,
+            profile=settings.runtime.security_profile,
+            skills=settings.skills.enabled,
+            recent_sessions=recent_sessions,
+        )
+    )
     if restored is not None:
         console.print(
             f"[sp.dim]Resumed session {escape(restored.session_id)} "

@@ -63,6 +63,50 @@ class SessionStore:
         candidate = directory / f"{session_id}.jsonl"
         return candidate if candidate.is_file() else None
 
+    @staticmethod
+    def recent(directory: Path, limit: int = 3) -> list[tuple[str, float]]:
+        """Newest `limit` sessions as ``(label, mtime)`` pairs, newest first.
+
+        The label is a short snippet of the session's first user message —
+        the most recognizable real field — falling back to the session's model
+        name when the transcript has no user message yet.
+        """
+        if not directory.is_dir():
+            return []
+        files = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        out: list[tuple[str, float]] = []
+        for path in files[:limit]:
+            out.append((SessionStore._session_label(path), path.stat().st_mtime))
+        return out
+
+    @staticmethod
+    def _session_label(path: Path) -> str:
+        """First user message (truncated) or, failing that, the model name."""
+        model = ""
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    if record.get("type") == "meta":
+                        model = record.get("model", model)
+                    elif record.get("type") == "message" and record.get("role") == "user":
+                        snippet = " ".join(str(record.get("content", "")).split())
+                        if snippet:
+                            return snippet[:32] + "…" if len(snippet) > 32 else snippet
+        except OSError:
+            pass
+        # ponytail: no user message recorded yet — fall back to the model name
+        # (the only other recognizable real field) rather than the session id.
+        return model or path.stem
+
     def write_meta(self, *, model: str, profile: str, workspace: Path) -> None:
         self._append(
             {

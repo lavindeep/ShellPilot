@@ -462,3 +462,49 @@ def test_session_append_preserves_content_at_0600(tmp_path: Path) -> None:
     assert [m.content for m in loaded.messages] == ["first", "second"]
     file_mode = stat.S_IMODE(os.stat(store.path).st_mode)
     assert file_mode == 0o600, f"expected 0o600, got {oct(file_mode)}"
+
+
+# ---------------------------------------------------------------------------
+# recent() — banner data: newest-first (label, mtime), label from 1st user msg
+# ---------------------------------------------------------------------------
+
+
+def test_recent_empty_dir_returns_empty(tmp_path: Path) -> None:
+    assert SessionStore.recent(tmp_path / "sessions") == []
+
+
+def test_recent_label_is_first_user_message(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    store.record_message(Message(role="user", content="fix the off-by-one in parser"))
+    store.record_message(Message(role="assistant", content="done"))
+    recent = SessionStore.recent(store.path.parent)
+    assert len(recent) == 1
+    label, mtime = recent[0]
+    assert label == "fix the off-by-one in parser"
+    assert isinstance(mtime, float)
+
+
+def test_recent_label_truncated(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="x" * 50))
+    label, _ = SessionStore.recent(store.path.parent)[0]
+    assert label.endswith("…")
+    assert len(label) == 33  # 32 chars + ellipsis
+
+
+def test_recent_falls_back_to_model_when_no_user_message(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    label, _ = SessionStore.recent(store.path.parent)[0]
+    assert label == "gemma4:e4b"
+
+
+def test_recent_newest_first_and_capped(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    for i in range(5):
+        s = SessionStore(sessions, f"sess-{i}")
+        s.record_message(Message(role="user", content=f"msg {i}"))
+        os.utime(s.path, (1000.0 + i, 1000.0 + i))
+    recent = SessionStore.recent(sessions, limit=3)
+    assert [label for label, _ in recent] == ["msg 4", "msg 3", "msg 2"]

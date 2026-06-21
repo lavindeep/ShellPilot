@@ -11,6 +11,7 @@ from rich.console import Console
 
 from shellpilot.cli.terminal import (
     TerminalUI,
+    _relative_age,
     _resolve_project_agents_trust,
     should_discard_interrupt,
 )
@@ -616,3 +617,13 @@ def test_one_key_cloud_confirm_reaches_consent_gate_before_preload(
     assert consent_calls == [cloud_model], "consent gate not reached for the chosen cloud model"
     assert fake_client.preload_calls == [], "the model was touched despite refused consent"
     assert rc == 1, "a refused cloud consent must abort the boot"
+
+
+def test_relative_age_buckets() -> None:
+    now = 1_000_000.0
+    assert _relative_age(now - 10, now=now) == "just now"
+    assert _relative_age(now - 39 * 60, now=now) == "39m ago"
+    assert _relative_age(now - 2 * 3600, now=now) == "2h ago"
+    assert _relative_age(now - 3 * 86400, now=now) == "3d ago"
+    # Future / clock skew never goes negative.
+    assert _relative_age(now + 100, now=now) == "just now"
