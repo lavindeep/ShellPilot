@@ -152,7 +152,7 @@ Read-only tools and low-risk commands (like `pytest`) run automatically under `b
 | **Tools** | `read_file`, `list_dir`, `search_text`, `write_file`, `patch_file` (anchored edits), `run_command` (`shell=False`), `env_info`, plus planning (`propose_plan`, `update_plan`), memory (`memory_read`, `memory_propose_update`), and `view_image`. Flat schemas, kept few on purpose — small models degrade as tool count and schema complexity grow. |
 | **Security profiles** | `supervised` asks before every side-effecting tool and command; `balanced` (default) auto-runs read-only tools and low-risk commands and asks for writes, installs, deletes, network, and anything risky. |
 | **Planning** | Tasks needing three or more steps produce a visible plan file under `.shellpilot/tasks/`, approved before execution, updated as work progresses, with a single end-of-plan summary. |
-| **Skills** | Trigger-driven markdown guidance injected only when relevant (a plan is live, web is enabled, always-on, or opted in). Built-ins cover planning, context management, web grounding, and skill authoring. |
+| **Skills** | Trigger-driven markdown guidance injected only when relevant (a plan is live, web is enabled, always-on, or opted in). Built-ins cover planning, context management, web grounding, and skill authoring. Opt-in workflow skills: `debugging`, `verification`, `code-review`, `git-workflow` — each with a lean injected body routing to deeper on-demand docs via `skill_read`. |
 | **Progressive disclosure** | Deeper skill docs are read on demand through the `skill_read` tool rather than injected into every prompt; active skills advertise their readable docs in a one-line menu. New in v0.9.0. |
 | **Web grounding** | Opt-in `web_search` and `web_fetch`, off by default, network-approved per request in every profile. The model is guided to fetch sources before asserting facts and to re-search rather than invent URLs. |
 | **Memory** | Global and project memory as plain JSON; the model proposes, you approve each change. Secrets are redacted before disk. |
@@ -290,9 +290,9 @@ Current release: **v0.10.0** — opt-in cloud models. Recent milestones:
 - **v0.7.x** — Skills v2 with trigger-driven built-in guidance and read-only resources; instant high-risk approvals generated deterministically from classifier reasons.
 - **v0.8.x** — web-grounding quality and hardening for small local models: fetch-before-answer, discover-first query shaping, fetch-recovery, current-generation checks; planner hardening for a single end-of-plan summary and idempotent re-proposals.
 - **v0.9.0** — progressive disclosure: a `skill_read` tool and a readable-docs menu let skills carry depth without inflating every prompt.
-- **v0.10.0** — opt-in cloud models behind `[model] allow_cloud` and a per-session consent gate; egress chokepoint with best-effort outbound redaction; `cloud_consent_granted` and `model_request` audit events; honest system-prompt when egressing.
+- **v0.10.0** — security hardening pass (policy tightening, terminal-output sanitization, DNS rebinding guard, audit/session file modes, config-key hardening, AGENTS.md TOFU); opt-in cloud models behind `[model] allow_cloud` with a per-session consent gate, fail-closed non-TTY path, best-effort outbound redaction, `cloud_consent_granted` and `model_request` audit events, honest system-prompt when egressing, and an unmistakable active-cloud indicator (☁ header bar + amber model name + `/status` locality); four opt-in workflow skills (debugging, verification, code-review, git-workflow); boot banner with cheat-sheet and amber/green model-locality color; streamlined one-key boot picker; approval diff scrolling reveal for long diffs.
 
-Later candidates include richer workflow skills (debugging, verification, review, git), controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
+Later candidates include controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
 
 ## License
 
