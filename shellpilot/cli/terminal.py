@@ -14,8 +14,8 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
-from shellpilot import __version__
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
+from shellpilot.cli.banner import render_banner
 from shellpilot.cli.input import PromptContext, make_input
 from shellpilot.cli.manual_shell import manual_shell_loop
 from shellpilot.cli.model_picker import choose_model, resolve_preselect, should_show_picker
@@ -23,7 +23,6 @@ from shellpilot.cli.render import (
     _sanitize_line,
     approval_cwd,
     approval_info,
-    banner,
     plan_panel,
     plan_step_line,
     render_diff,
@@ -507,7 +506,7 @@ def run_interactive(
         tty=tty,
     )
 
-    console.print(banner(__version__, runtime.model, settings.runtime.security_profile))
+    console.print(render_banner(runtime.model, is_cloud=egressing_session))
     if restored is not None:
         console.print(
             f"[sp.dim]Resumed session {escape(restored.session_id)} "

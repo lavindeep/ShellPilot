@@ -2708,6 +2708,10 @@ No-label behaviour (flight-phase phrases) is the default. The `ui.spinner = fals
 - Glyph fallback: `ui.glyphs = "auto" | "unicode" | "ascii"`. The glyph set (`⏺ ⎿ ❯ ✈ ✦ ✧ ☐ ✓ ▶`) maps to ASCII equivalents; `auto` selects ASCII on terminals that cannot encode the Unicode set.
 - Snapshot tests (section 26.1) cover plan, approval, and diff rendering.
 
+### 31.10 Boot banner
+
+The boot banner is a rich `Panel` (`cli/banner.py:render_banner(model, *, is_cloud)`), printed once after preload and consent resolve. It carries the block-art fighter-jet logo, a welcome line, the active model name, and a two-column command cheat-sheet. The panel title is `ShellPilot v<version>`; the profile is not shown here (it stays in the per-prompt context line and `/status`). The model name is styled **green** for a local session and **amber** for an egressing (cloud/remote) one — `is_cloud` is the boot-time `egressing_session` value (see §15.2), making the banner the first locality cue of the session. This panel replaced the earlier two-line text banner.
+
 ## 32. Model Selection And Preload
 
 ### 32.1 Boot Model Picker

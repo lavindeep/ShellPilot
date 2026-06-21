@@ -33,13 +33,6 @@ _BADGE_STYLES = {
 }
 
 
-def banner(version: str, model: str, profile: str) -> Group:
-    return Group(
-        Text(f"ShellPilot {version}", style="sp.emph"),
-        Text(f"{model} · {profile} · /help for commands", style="sp.dim"),
-    )
-
-
 def _abbreviate_home(path: Path, home: Path) -> str:
     try:
         rel = path.relative_to(home)

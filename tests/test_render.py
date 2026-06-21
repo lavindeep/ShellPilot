@@ -11,7 +11,6 @@ from rich.console import Console, RenderableType
 from shellpilot.cli.render import (
     approval_block,
     badge,
-    banner,
     context_line,
     output_truncation,
     plan_panel,
@@ -45,12 +44,6 @@ def make_diff(before: str, after: str, name: str = "hello.py") -> str:
             tofile=f"b/{name}",
         )
     )
-
-
-def test_banner_shows_version_and_model() -> None:
-    out = rendered(banner("9.9.9", "gemma4:e4b", "balanced"))
-    assert "ShellPilot 9.9.9" in out
-    assert "gemma4:e4b · balanced" in out
 
 
 def test_context_line_abbreviates_home() -> None:
