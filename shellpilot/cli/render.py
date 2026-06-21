@@ -12,6 +12,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from rich import box
+from rich.cells import cell_len
 from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
@@ -134,10 +135,19 @@ def _diff_row(
     base_style: str | None,
     word_style: str | None,
     ranges: list[tuple[int, int]] | None,
+    *,
+    pad_width: int = 0,
 ) -> Text:
     row = Text()
     row.append(f"{number:>{width}} ", style="sp.diff.gutter")
     prefix = len(row) + 2  # gutter + marker + space
+    # Pad the content under the colored background so a changed line renders as a
+    # full-width red/green bar (DESIGN section 31.4 full-line backgrounds): the
+    # removal and its addition then read as two distinct rows, never one. The
+    # padding rides inside base_style so the fill is colored; word ranges sit at
+    # the content start and are unaffected by trailing spaces.
+    if base_style is not None and pad_width:
+        content = content + " " * max(0, pad_width - cell_len(content))
     row.append(f"{marker} {content}", style=base_style)
     if ranges and word_style:
         for start, end in ranges:
@@ -153,6 +163,17 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
     """
     lines = [_sanitize_line(line) for line in diff_text.splitlines()]
     width = _gutter_width(lines)
+    # Widest changed-line content, so every removal/addition fills its colored
+    # background to a uniform width (full-line red/green bars, DESIGN 31.4).
+    pad_width = max(
+        (
+            cell_len(line[1:])
+            for line in lines
+            if (line.startswith("-") and not line.startswith("---"))
+            or (line.startswith("+") and not line.startswith("+++"))
+        ),
+        default=0,
+    )
     title_name = "diff"
     rows: list[Text] = []
     old_no = new_no = 0
@@ -198,6 +219,7 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
                         "sp.diff.remove",
                         "sp.diff.remove_word",
                         old_words.get(idx),
+                        pad_width=pad_width,
                     )
                 )
                 old_no += 1
@@ -211,11 +233,16 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
                         "sp.diff.add",
                         "sp.diff.add_word",
                         new_words.get(idx),
+                        pad_width=pad_width,
                     )
                 )
                 new_no += 1
         elif line.startswith("+"):
-            rows.append(_diff_row(new_no, width, "+", line[1:], "sp.diff.add", None, None))
+            rows.append(
+                _diff_row(
+                    new_no, width, "+", line[1:], "sp.diff.add", None, None, pad_width=pad_width
+                )
+            )
             new_no += 1
             i += 1
         elif line.startswith("\\") or line.startswith("... ("):

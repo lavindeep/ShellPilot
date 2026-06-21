@@ -120,6 +120,34 @@ def test_render_diff_pure_add_and_remove() -> None:
     assert "- b" in rendered(render_diff(remove_only, GLYPHS))
 
 
+def test_render_diff_changed_lines_are_separate_full_width_bars() -> None:
+    """A changed line renders as its own red removal row then its own green
+    addition row (DESIGN section 31.4 full-line backgrounds) — never paired onto
+    one visual line. Each changed row's colored background must span the full
+    content width so removal (red) and addition (green) read as distinct bars.
+    """
+    from shellpilot.cli.render import _diff_rows
+
+    # Removal shorter than its addition: without full-width fill the red bar
+    # would stop mid-line and the two rows would not read as separate diff lines.
+    diff = make_diff('print("done")\n', 'print("Goodbye World")\n')
+    rows, _ = _diff_rows(diff, GLYPHS)
+    remove_row = next(r for r in rows if "- " in r.plain)
+    add_row = next(r for r in rows if "+ " in r.plain)
+
+    def base_bg_end(row: object, style: str) -> int:
+        return next(span.end for span in row.spans if span.style == style)  # type: ignore[attr-defined]
+
+    remove_end = base_bg_end(remove_row, "sp.diff.remove")
+    add_end = base_bg_end(add_row, "sp.diff.add")
+    # Both colored backgrounds reach the same full content width: the removal's
+    # red bar is padded to match the longer addition's green bar.
+    assert remove_end == add_end
+    # And the fill genuinely extends past the removal's own short text (the bug:
+    # the red bar stopped at len("- print(\"done\")") instead of filling).
+    assert remove_end > len('- print("done")') + 2  # gutter ("1 ") + text
+
+
 def test_render_diff_sanitizes_tabs_crlf_and_truncation_marker() -> None:
     diff = make_diff("x\r\n", "x\r\n\tindented\r\n") + "... (42 more lines)\n"
     out = rendered(render_diff(diff, GLYPHS))
