@@ -57,9 +57,10 @@ class ModelSettings:
     keep_alive: str = "5m"
     # Master cloud-egress switch (v0.10.0). Off by default keeps the local-first
     # posture intact: a cloud/remote model boots only when the user has flipped
-    # this in config.toml AND granted per-session consent. Config-file-only and
-    # boot-only (see loader.CONFIG_FILE_ONLY_KEYS / BOOT_ONLY_KEYS) — egress can
-    # never be enabled via an env var, overrides.json, or /config set.
+    # this (in config.toml or a confirm-gated /config set) AND granted per-session
+    # consent. High-stakes and boot-only (see loader.HIGH_STAKES_KEYS /
+    # BOOT_ONLY_KEYS) — never enabled via an env var; the per-session consent gate
+    # is the real egress boundary regardless of how it was set.
     allow_cloud: bool = False
     # Verbatim Ollama request `options`, passed through untouched (e.g.
     # repeat_penalty, repeat_last_n, temperature, seed). ShellPilot does NOT

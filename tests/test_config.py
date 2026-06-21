@@ -475,20 +475,20 @@ def test_override_beats_project_config(tmp_path: Path) -> None:
     assert loaded.sources["model.default"] == "set"
 
 
-def test_override_security_profile_rejected_keeps_project(tmp_path: Path) -> None:
-    """runtime.security_profile is config-file only: an override is ignored.
+def test_override_security_profile_applies_over_project(tmp_path: Path) -> None:
+    """runtime.security_profile is a high-stakes overrides key: a persisted
+    override (written by a confirmed /config set) applies and outranks project.
 
-    The project-layer profile stands; the override never applies (source is the
-    project layer, not 'set').
+    The overrides layer wins over the project layer (source is 'set').
     """
     loaded = _cfg(
         tmp_path,
-        {"runtime.security_profile": "balanced"},
-        project_toml='[runtime]\nsecurity_profile = "supervised"\n',
+        {"runtime.security_profile": "supervised"},
+        project_toml='[runtime]\nsecurity_profile = "balanced"\n',
     )
     assert loaded.settings.runtime.security_profile == "supervised"
-    assert loaded.sources["runtime.security_profile"] == "project"
-    assert any("runtime.security_profile" in w and "config-file only" in w for w in loaded.warnings)
+    assert loaded.sources["runtime.security_profile"] == "set"
+    assert not any("config-file only" in w for w in loaded.warnings)
 
 
 def test_env_beats_override(tmp_path: Path) -> None:
@@ -539,15 +539,14 @@ def test_override_enum_violation_skipped_with_warning(tmp_path: Path) -> None:
     assert loaded.settings.workspace.boundary == "start_cwd"
 
 
-def test_override_security_profile_config_file_only_before_enum(tmp_path: Path) -> None:
-    """runtime.security_profile is rejected as config-file only before enum validation.
-
-    Even a syntactically invalid value short-circuits on the config-file-only
-    guard, so the warning is the config-file-only message, not an enum error.
-    """
+def test_override_security_profile_invalid_value_self_heals(tmp_path: Path) -> None:
+    """An invalid runtime.security_profile override value is skipped-with-warning
+    by the normal enum validation (it is no longer short-circuited as
+    config-file-only); the default profile stands."""
     loaded = _cfg(tmp_path, {"runtime.security_profile": "badprofile"})
     assert loaded.warnings
-    assert any("runtime.security_profile" in w and "config-file only" in w for w in loaded.warnings)
+    assert any("runtime.security_profile" in w for w in loaded.warnings)
+    assert not any("config-file only" in w for w in loaded.warnings)
     assert loaded.settings.runtime.security_profile == "balanced"
 
 
@@ -644,12 +643,12 @@ def test_validate_override_bad_enum_raises(tmp_path: Path) -> None:
         validate_override("privacy.allow_sensitive_reads", "root")
 
 
-def test_validate_override_security_profile_raises(tmp_path: Path) -> None:
-    """runtime.security_profile is config-file only — both valid and invalid
-    values raise ConfigError before any enum check."""
-    with pytest.raises(ConfigError, match="config-file only"):
-        validate_override("runtime.security_profile", "supervised")
-    with pytest.raises(ConfigError, match="config-file only"):
+def test_validate_override_security_profile_accepts(tmp_path: Path) -> None:
+    """runtime.security_profile is a high-stakes /config set key (confirm-gated
+    in the handler) — validate_override coerces a valid value and still rejects
+    an invalid enum value."""
+    assert validate_override("runtime.security_profile", "supervised") == "supervised"
+    with pytest.raises(ConfigError):
         validate_override("runtime.security_profile", "root")
 
 
@@ -844,38 +843,37 @@ def test_validate_override_skills_enabled_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Config-file-only egress/security invariant (audit F7): tools.web,
-# model.base_url, runtime.security_profile must be explicit config.toml acts —
-# never settable via overrides.json, env vars, or /config set.
+# Egress / safety keys (tools.web, model.base_url, runtime.security_profile,
+# model.allow_cloud) are HIGH_STAKES_KEYS: settable via a confirm-gated
+# /config set (so they apply through the overrides layer) and via config.toml,
+# but never via an env var (the env invariant is load-bearing — see below).
 # ---------------------------------------------------------------------------
 
 
-def test_override_tools_web_skipped_with_warning(tmp_path: Path) -> None:
-    """tools.web cannot be enabled via overrides; the entry is ignored."""
+def test_override_tools_web_applies(tmp_path: Path) -> None:
+    """tools.web set via a (confirmed) /config set applies through overrides."""
     loaded = _cfg(tmp_path, {"tools.web": True})
-    assert any("tools.web" in w and "config-file only" in w for w in loaded.warnings)
-    assert loaded.settings.tools.web is False
-    assert loaded.sources["tools.web"] == "default"
+    assert not any("config-file only" in w for w in loaded.warnings)
+    assert loaded.settings.tools.web is True
+    assert loaded.sources["tools.web"] == "set"
 
 
-def test_validate_override_tools_web_raises(tmp_path: Path) -> None:
-    """tools.web raises ConfigError via /config set (config-file only)."""
-    with pytest.raises(ConfigError, match="config-file only"):
-        validate_override("tools.web", "true")
+def test_validate_override_tools_web_accepts(tmp_path: Path) -> None:
+    """tools.web coerces via /config set (high-stakes, confirm-gated in handler)."""
+    assert validate_override("tools.web", "true") is True
 
 
-def test_override_base_url_skipped_with_warning(tmp_path: Path) -> None:
-    """model.base_url cannot be redirected via overrides; the entry is ignored."""
-    loaded = _cfg(tmp_path, {"model.base_url": "http://evil.example"})
-    assert any("model.base_url" in w and "config-file only" in w for w in loaded.warnings)
-    assert loaded.settings.model.base_url == "http://localhost:11434"
-    assert loaded.sources["model.base_url"] == "default"
+def test_override_base_url_applies(tmp_path: Path) -> None:
+    """model.base_url set via a (confirmed) /config set applies through overrides."""
+    loaded = _cfg(tmp_path, {"model.base_url": "http://127.0.0.1:9999"})
+    assert not any("config-file only" in w for w in loaded.warnings)
+    assert loaded.settings.model.base_url == "http://127.0.0.1:9999"
+    assert loaded.sources["model.base_url"] == "set"
 
 
-def test_validate_override_base_url_raises(tmp_path: Path) -> None:
-    """model.base_url raises ConfigError via /config set (config-file only)."""
-    with pytest.raises(ConfigError, match="config-file only"):
-        validate_override("model.base_url", "http://evil.example")
+def test_validate_override_base_url_accepts(tmp_path: Path) -> None:
+    """model.base_url coerces via /config set (high-stakes, confirm-gated)."""
+    assert validate_override("model.base_url", "http://127.0.0.1:9999") == "http://127.0.0.1:9999"
 
 
 def test_env_base_url_ignored(tmp_path: Path) -> None:
@@ -973,7 +971,8 @@ def test_validate_override_skills_enabled_message_unchanged(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# model.allow_cloud: master cloud-egress switch (config-file only, v0.10.0)
+# model.allow_cloud: master cloud-egress switch (high-stakes, v0.10.0).
+# Settable via confirm-gated /config set + config.toml; never via env var.
 # ---------------------------------------------------------------------------
 
 
@@ -1009,18 +1008,21 @@ def test_allow_cloud_rejects_non_boolean(tmp_path: Path) -> None:
         )
 
 
-def test_override_allow_cloud_skipped_with_warning(tmp_path: Path) -> None:
-    """allow_cloud cannot be enabled via overrides.json; the entry is ignored."""
+def test_override_allow_cloud_applies(tmp_path: Path) -> None:
+    """allow_cloud set via a (confirmed) /config set applies through overrides.
+
+    The per-session cloud-consent gate (§15.2) still fires regardless of how
+    allow_cloud was set, so this opens no silent-egress vector.
+    """
     loaded = _cfg(tmp_path, {"model.allow_cloud": True})
-    assert any("model.allow_cloud" in w and "config-file only" in w for w in loaded.warnings)
-    assert loaded.settings.model.allow_cloud is False
-    assert loaded.sources["model.allow_cloud"] == "default"
+    assert not any("config-file only" in w for w in loaded.warnings)
+    assert loaded.settings.model.allow_cloud is True
+    assert loaded.sources["model.allow_cloud"] == "set"
 
 
-def test_validate_override_allow_cloud_raises(tmp_path: Path) -> None:
-    """allow_cloud raises ConfigError via /config set (config-file only)."""
-    with pytest.raises(ConfigError, match="config-file only"):
-        validate_override("model.allow_cloud", "true")
+def test_validate_override_allow_cloud_accepts(tmp_path: Path) -> None:
+    """allow_cloud coerces via /config set (high-stakes, confirm-gated)."""
+    assert validate_override("model.allow_cloud", "true") is True
 
 
 def test_allow_cloud_has_no_env_var(tmp_path: Path) -> None:
@@ -1035,6 +1037,31 @@ def test_allow_cloud_is_boot_only(tmp_path: Path) -> None:
     from shellpilot.config.loader import BOOT_ONLY_KEYS
 
     assert "model.allow_cloud" in BOOT_ONLY_KEYS
+
+
+def test_high_stakes_keys_membership() -> None:
+    """HIGH_STAKES_KEYS holds exactly the four egress/safety keys, and the two
+    structural keys stay config-file-only and out of the high-stakes set."""
+    from shellpilot.config.loader import CONFIG_FILE_ONLY_KEYS, HIGH_STAKES_KEYS
+
+    assert HIGH_STAKES_KEYS == {
+        "tools.web",
+        "model.base_url",
+        "runtime.security_profile",
+        "model.allow_cloud",
+    }
+    assert CONFIG_FILE_ONLY_KEYS == {"model.options", "skills.enabled"}
+    assert HIGH_STAKES_KEYS.isdisjoint(CONFIG_FILE_ONLY_KEYS)
+
+
+def test_high_stakes_keys_are_boot_only_and_absent_from_env() -> None:
+    """Every high-stakes key stays boot-only and absent from ENV_MAP — the env
+    invariant is load-bearing and must survive the /config set relaxation."""
+    from shellpilot.config.loader import BOOT_ONLY_KEYS, ENV_MAP, HIGH_STAKES_KEYS
+
+    for key in HIGH_STAKES_KEYS:
+        assert key in BOOT_ONLY_KEYS, key
+        assert key not in ENV_MAP.values(), key
 
 
 def test_is_cloud_model_classification() -> None:

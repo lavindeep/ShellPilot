@@ -13,6 +13,7 @@ from shellpilot.cli.terminal import (
     TerminalUI,
     _relative_age,
     _resolve_project_agents_trust,
+    high_stakes_override_notice,
     should_discard_interrupt,
 )
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS
@@ -617,6 +618,34 @@ def test_one_key_cloud_confirm_reaches_consent_gate_before_preload(
     assert consent_calls == [cloud_model], "consent gate not reached for the chosen cloud model"
     assert fake_client.preload_calls == [], "the model was touched despite refused consent"
     assert rc == 1, "a refused cloud consent must abort the boot"
+
+
+def test_high_stakes_override_notice_lists_active_egress_overrides(tmp_path: Path) -> None:
+    """A persisted high-stakes override surfaces an amber notice every boot."""
+    from shellpilot.config.overrides import overrides_path, save_overrides
+
+    save_overrides(
+        overrides_path(tmp_path),
+        {"model.allow_cloud": True, "tools.web": True, "runtime.max_tool_turns": 20},
+    )
+    notice = high_stakes_override_notice(tmp_path)
+    assert notice is not None
+    assert "model.allow_cloud=True" in notice
+    assert "tools.web=True" in notice
+    # Non-high-stakes overrides are not surfaced by this notice.
+    assert "max_tool_turns" not in notice
+    assert "/config unset" in notice
+
+
+def test_high_stakes_override_notice_none_when_clean(tmp_path: Path) -> None:
+    """No high-stakes override → no notice (default boot prints nothing)."""
+    from shellpilot.config.overrides import overrides_path, save_overrides
+
+    # No overrides file at all.
+    assert high_stakes_override_notice(tmp_path) is None
+    # An overrides file with only ordinary keys also yields no notice.
+    save_overrides(overrides_path(tmp_path), {"runtime.max_tool_turns": 20})
+    assert high_stakes_override_notice(tmp_path) is None
 
 
 def test_relative_age_buckets() -> None:

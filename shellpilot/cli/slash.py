@@ -14,7 +14,13 @@ from rich.text import Text
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.render import plan_panel, render_diff
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs
-from shellpilot.config.loader import BOOT_ONLY_KEYS, ConfigError, LoadedConfig, validate_override
+from shellpilot.config.loader import (
+    BOOT_ONLY_KEYS,
+    HIGH_STAKES_KEYS,
+    ConfigError,
+    LoadedConfig,
+    validate_override,
+)
 from shellpilot.config.overrides import load_overrides, overrides_path, save_overrides
 from shellpilot.llm.client import LLMClient
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -97,6 +103,15 @@ def render_config(loaded: LoadedConfig, console: Console) -> None:
 
 def _default_confirm(prompt: str) -> bool:
     return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
+
+
+# Per-key risk phrasing for the HIGH_STAKES_KEYS confirm-gate in /config set.
+_HIGH_STAKES_RISK: dict[str, str] = {
+    "model.allow_cloud": "enables cloud egress — model calls may leave the device",
+    "tools.web": "enables web egress — searches and fetches leave the device",
+    "model.base_url": "changes the model endpoint — requests go to a different host",
+    "runtime.security_profile": "lowers the local safety profile — low-risk commands may auto-run",
+}
 
 
 class SlashDispatcher:
@@ -374,6 +389,27 @@ class SlashDispatcher:
         except ConfigError as exc:
             self._console.print(f"[red]Config error:[/red] {exc}")
             return
+        # Egress / safety keys: amber warning + explicit confirm before persisting.
+        if key in HIGH_STAKES_KEYS:
+            risk = _HIGH_STAKES_RISK[key]
+            self._console.print(Text(f"⚠ {key} {risk}.", style="sp.warn"))
+            self._console.print(
+                Text(
+                    "It takes effect next session and persists in overrides.json "
+                    f"until /config unset {key}.",
+                    style="sp.warn",
+                )
+            )
+            if key == "runtime.security_profile":
+                self._console.print(
+                    Text(
+                        "Use /profile use <profile> for an instant, session-only change.",
+                        style="sp.warn",
+                    )
+                )
+            if not self._confirm(f"Persist {key} = {coerced!r} to overrides?"):
+                self._console.print("[dim]unchanged.[/dim]")
+                return
         # Capture old effective value before overwrite.
         old_value = self._resolve_setting_value(self._loaded, key)
         # Read → mutate → save (atomic).

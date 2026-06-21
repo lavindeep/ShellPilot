@@ -651,44 +651,92 @@ def test_config_set_model_options_rejected(tmp_path: Path) -> None:
     assert not (tmp_path / "overrides.json").exists()
 
 
-def test_config_set_security_profile_rejected(tmp_path: Path) -> None:
-    """/config set runtime.security_profile is rejected (config-file only).
+def _overrides_data(tmp_path: Path) -> dict:
+    import json
 
-    Changing the security posture must be an explicit config.toml act, never a
-    persisted /config set override.
-    """
-    harness = Harness(tmp_path)
+    path = tmp_path / "overrides.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def test_config_set_security_profile_confirmed_persists(tmp_path: Path) -> None:
+    """/config set runtime.security_profile is high-stakes: an amber warning +
+    confirm gates it; a yes persists the override (boot-only) and points the
+    user at /profile use for an instant session-only change."""
+    harness = Harness(tmp_path, confirm_answer=True)
     harness.dispatcher.handle("/config set runtime.security_profile supervised")
     out = harness.output()
-    assert "config-file only" in out.lower()
-    # Nothing persisted; the active profile is unchanged.
+    assert "lowers the local safety profile" in out
+    assert "/profile use" in out
+    assert _overrides_data(tmp_path).get("runtime.security_profile") == "supervised"
+
+
+def test_config_set_security_profile_declined_not_persisted(tmp_path: Path) -> None:
+    """Declining the confirm leaves overrides.json untouched and the profile as-is."""
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set runtime.security_profile supervised")
+    out = harness.output()
+    assert "unchanged" in out.lower()
     assert not (tmp_path / "overrides.json").exists()
     assert harness.runtime.settings.runtime.security_profile == "balanced"
 
 
-def test_config_set_tools_web_rejected(tmp_path: Path) -> None:
-    """/config set tools.web is rejected (config-file only).
-
-    Enabling network egress must be an explicit config.toml act.
-    """
-    harness = Harness(tmp_path)
+def test_config_set_tools_web_confirmed_persists(tmp_path: Path) -> None:
+    """/config set tools.web is high-stakes: confirmed → persisted with an
+    egress warning + boot-only note."""
+    harness = Harness(tmp_path, confirm_answer=True)
     harness.dispatcher.handle("/config set tools.web true")
     out = harness.output()
-    assert "config-file only" in out.lower()
+    assert "enables web egress" in out
+    assert "next session" in out
+    assert _overrides_data(tmp_path).get("tools.web") is True
+
+
+def test_config_set_tools_web_declined_not_persisted(tmp_path: Path) -> None:
+    """Declining the tools.web confirm persists nothing and leaves web off."""
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set tools.web true")
+    assert "unchanged" in harness.output().lower()
     assert not (tmp_path / "overrides.json").exists()
     assert harness.runtime.settings.tools.web is False
 
 
-def test_config_set_base_url_rejected(tmp_path: Path) -> None:
-    """/config set model.base_url is rejected (config-file only).
-
-    Redirecting the Ollama endpoint must be an explicit config.toml act.
-    """
-    harness = Harness(tmp_path)
-    harness.dispatcher.handle("/config set model.base_url http://evil.example")
+def test_config_set_base_url_confirmed_persists(tmp_path: Path) -> None:
+    """/config set model.base_url is high-stakes: confirmed → persisted with an
+    endpoint-change warning."""
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle("/config set model.base_url http://127.0.0.1:9999")
     out = harness.output()
-    assert "config-file only" in out.lower()
+    assert "changes the model endpoint" in out
+    assert _overrides_data(tmp_path).get("model.base_url") == "http://127.0.0.1:9999"
+
+
+def test_config_set_base_url_declined_not_persisted(tmp_path: Path) -> None:
+    """Declining the model.base_url confirm persists nothing."""
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set model.base_url http://127.0.0.1:9999")
+    assert "unchanged" in harness.output().lower()
     assert not (tmp_path / "overrides.json").exists()
+
+
+def test_config_set_allow_cloud_confirmed_persists(tmp_path: Path) -> None:
+    """/config set model.allow_cloud is high-stakes: confirmed → persisted with
+    a cloud-egress warning (the consent gate still fires at boot regardless)."""
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle("/config set model.allow_cloud true")
+    out = harness.output()
+    assert "enables cloud egress" in out
+    assert _overrides_data(tmp_path).get("model.allow_cloud") is True
+
+
+def test_config_set_allow_cloud_declined_not_persisted(tmp_path: Path) -> None:
+    """Declining the model.allow_cloud confirm persists nothing."""
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set model.allow_cloud true")
+    assert "unchanged" in harness.output().lower()
+    assert not (tmp_path / "overrides.json").exists()
+    assert harness.runtime.settings.model.allow_cloud is False
 
 
 def test_config_unset_existing_reverts(tmp_path: Path) -> None:

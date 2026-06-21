@@ -97,7 +97,7 @@ Recommendation (superseded by the settled name):
 
 ### 5.1 Local First
 
-By default, all model calls happen through local Ollama. No telemetry, cloud sync, or automatic upload is part of the product. Cloud/remote models are an explicit opt-in, off by default and gated behind the config-file-only `[model] allow_cloud` switch plus per-session consent (section 15.2) — local-first stays the default and the only full-privacy posture. The only other network egress is the optional, off-by-default web grounding tools: they contact only the search provider and pages the user approves per request, with no API keys.
+By default, all model calls happen through local Ollama. No telemetry, cloud sync, or automatic upload is part of the product. Cloud/remote models are an explicit opt-in, off by default behind the `[model] allow_cloud` switch (changeable only by a deliberate act — a `config.toml` edit or a confirm-gated `/config set`, never an env var) plus per-session consent (section 15.2) — local-first stays the default and the only full-privacy posture. The only other network egress is the optional, off-by-default web grounding tools: they contact only the search provider and pages the user approves per request, with no API keys.
 
 ### 5.2 Gemma 4 First
 
@@ -1306,7 +1306,7 @@ A session **egresses** when the model is a cloud model (`is_cloud_model(name)` �
 
 Three layered controls form the consent boundary:
 
-- **`[model] allow_cloud` — the master egress switch (default `false`).** It is **config-file-only and boot-only** (in both `CONFIG_FILE_ONLY_KEYS` and `BOOT_ONLY_KEYS`, absent from `ENV_MAP`): enabling cloud egress is never reachable from an env var, the program-managed `overrides.json`, or `/config set` — only an explicit `config.toml` edit, the same invariant as `tools.web` and `model.base_url`. With it off, a cloud/remote model is refused at boot with a message pointing at the switch; no model is loaded.
+- **`[model] allow_cloud` — the master egress switch (default `false`).** It is **high-stakes and boot-only** (in both `HIGH_STAKES_KEYS` and `BOOT_ONLY_KEYS`, absent from `ENV_MAP`): it is settable via a `config.toml` edit or a confirm-gated `/config set` (which persists through the program-managed `overrides.json`; boot-only, so the effect is next launch) — but **never via an env var**, and never via overrides written by anything but an explicit user `/config set`. The same invariant applies to `tools.web` and `model.base_url`. Whatever the setter, the per-session consent gate below is the real boundary. With `allow_cloud` off, a cloud/remote model is refused at boot with a message pointing at the switch; no model is loaded.
 - **Per-session consent (re-asked every launch, never persisted).** With `allow_cloud` on, an egressing session shows an honest disclosure — the model runs off the device; the entire prompt (file contents, command output, memory the model reads) is sent to the provider and may be **unredacted**; under the `balanced` profile low-risk actions auto-run and can send data without a per-action prompt; the provider's retention/training/jurisdiction are outside ShellPilot's control — followed by a simple **y/N prompt that defaults to No** (Enter, EOF, or anything but an explicit yes declines). The session keeps the `balanced` profile (no profile change); the disclosure discloses that risk rather than silently downgrading capability.
 - **Fail-closed ordering.** The consent gate (`_resolve_cloud_consent`, a testable module-level helper mirroring the AGENTS.md trust gate) runs at boot **strictly before** the first prompt-bearing call (`_preload` → `model_context_length` → `chat`). A decline (or a non-interactive/non-TTY session, which fails closed because consent cannot be obtained) returns before any model load — **no prompt data egresses**. The local availability gate (`chosen not in installed`) is skipped for cloud names, since cloud models are absent from the local `/api/tags`; the typo-catch survives for local names. `/model use <name>` mid-session mirrors the same gate: a cloud/remote target requires `allow_cloud` and fresh consent before `set_model`/`_preload`; on reject it neither switches nor preloads.
 
@@ -1324,7 +1324,7 @@ The colored chip is deliberately **not** threaded into the prompt_toolkit contex
 
 **Boundary, not guarantee.** Consent is *the* boundary: once granted, the prompt egresses. The best-effort outbound redaction from §15.1 is defence-in-depth layered behind it, not a confidentiality guarantee (regex-based, misses novel secret formats, leaves image/base64 unredacted). The disclosure says so plainly; **local-first remains the only full privacy posture.**
 
-**Accepted residual — metadata probe before consent.** At boot, `client.health()` and `list_models()` issue `GET /api/tags` against `base_url` *before* the consent gate. For the primary cloud-model case `base_url` is loopback, so this is a purely local call and nothing egresses (Ollama proxies only the actual model load, which is gated). For a **non-loopback `base_url`** these are a **metadata-only probe** (no prompt content) to the endpoint the user *deliberately configured in `config.toml`*, made before consent. This is documented and accepted: it carries no prompt/file/memory data, and the user already chose that endpoint by editing the config-file-only `base_url`. All **prompt-data** egress remains consent-gated from `_preload` onward.
+**Accepted residual — metadata probe before consent.** At boot, `client.health()` and `list_models()` issue `GET /api/tags` against `base_url` *before* the consent gate. For the primary cloud-model case `base_url` is loopback, so this is a purely local call and nothing egresses (Ollama proxies only the actual model load, which is gated). For a **non-loopback `base_url`** these are a **metadata-only probe** (no prompt content) to the endpoint the user *deliberately configured in `config.toml`*, made before consent. This is documented and accepted: it carries no prompt/file/memory data, and the user already chose that endpoint by a deliberate act (a `config.toml` edit or a confirm-gated `/config set` of `base_url`). All **prompt-data** egress remains consent-gated from `_preload` onward.
 
 ## 16. Memory System (v2)
 
@@ -1579,29 +1579,45 @@ This is the opposite of `config.toml` handling: hand-edited TOML is
 user-owned and fails loudly with `ConfigError` exactly as today.  The
 harness never writes TOML (`tomllib` is read-only by design).
 
-**Config-file-only keys (egress / security invariant)**
+**Two-tier setter invariant (egress / security)**
 
-A fixed set of keys (`CONFIG_FILE_ONLY_KEYS`) can only be set in `config.toml`
-(the user or project layer) — never via an environment variable, the
-program-managed `overrides.json`, or `/config set`:
+Two named sets in `config/loader.py` constrain how a key may be set:
 
-- `model.options` — a sampling change must be an explicit config act.
-- `skills.enabled` — the active skill set must be an explicit config act.
-- `tools.web` — enabling network egress must be an explicit config act.
-- `model.base_url` — redirecting the Ollama endpoint must be an explicit
-  config act (an ambient env var or tampered `overrides.json` must not point
-  the harness at a different host).
+*Config-file-only keys (`CONFIG_FILE_ONLY_KEYS`)* — structural tables/lists
+with no scalar CLI representation, settable only by editing `config.toml`
+(the user or project layer); never via an env var, the program-managed
+`overrides.json`, or `/config set`:
+
+- `model.options` — a sampling-options table; a sampling change must be an
+  explicit config act.
+- `skills.enabled` — the active-skill list must be an explicit config act.
+
+An entry for either in `overrides.json` is silently skipped with a warning;
+`/config set` rejects it with a `ConfigError`; neither has an env-var mapping.
+
+*High-stakes keys (`HIGH_STAKES_KEYS`)* — egress/safety keys whose runtime
+change materially affects whether data leaves the device or the local approval
+posture. They are settable via `config.toml` **or** a confirm-gated
+`/config set` (which persists through the overrides layer), but are
+**deliberately absent from `ENV_MAP`** — an ambient env var is not a
+deliberate act, so it can never enable egress or downgrade the security
+posture. This env-absence claim is load-bearing.
+
+- `tools.web` — enables network egress (web search/fetch).
+- `model.base_url` — redirects the Ollama endpoint to a different host.
 - `model.allow_cloud` — the master cloud-egress switch (default `false`).
-  Enabling cloud/remote models must be an explicit config act, and never
-  hot-reloads mid-session (it is also boot-only). See §15.2.
+  Enabling cloud/remote models is also boot-only. See §15.2.
 - `runtime.security_profile` — downgrading the security posture (e.g.
-  `supervised` → `balanced`) must be an explicit config act, and never
-  hot-reloads mid-session (it is also boot-only).
+  `supervised` → `balanced`); also boot-only. `/profile use` remains an
+  in-session, non-persisted runtime switch among the valid profiles.
 
-An entry for any of these in `overrides.json` is silently skipped with a
-warning; `/config set` rejects it with a `ConfigError`; none of them have an
-env-var mapping.  `/profile use` remains an in-session, non-persisted runtime
-switch among the valid profiles and is unaffected by this rule.
+The relaxation rationale: the model can neither type slash commands nor write
+`overrides.json` (it lives in the config dir, outside the workspace), and the
+per-session cloud-consent gate (§15.2) still fires regardless of how
+`allow_cloud` was set — so a confirm-gated `/config set` opens no model/
+injection vector while the amber confirm preserves deliberateness. Because a
+high-stakes override persists and outranks `config.toml`, a boot notice lists
+any active high-stakes override on every launch (§36.3).
 
 **Slash commands**
 
@@ -1618,6 +1634,16 @@ Three slash commands manage the overrides file at runtime:
   keep_alive preload, etc.); for those a dim note is appended: "takes effect
   next session".  For `model.default` specifically the note adds "use
   `/model use <name>` to switch now".
+  Setting a **high-stakes key** (`HIGH_STAKES_KEYS` — `tools.web`,
+  `model.base_url`, `runtime.security_profile`, `model.allow_cloud`) first
+  prints an amber warning naming the specific risk (cloud egress / changes the
+  model endpoint / lowers the safety profile / enables web egress), that it
+  takes effect next session, and that it persists in `overrides.json` until
+  `/config unset <key>`; it then requires an explicit confirm. A decline saves
+  nothing and prints a dim "unchanged."  For `runtime.security_profile` the
+  warning also points at `/profile use <profile>` for an instant, session-only
+  change. The structural config-file-only keys (`model.options`,
+  `skills.enabled`) are still rejected outright by `validate_override`.
 
 - `/config unset <key>` — remove the override for `<key>`.  If no override
   exists the command is a silent no-op with a message.  After removal the
@@ -1744,10 +1770,11 @@ SHELLPILOT_UI_GLYPHS
 Do not require environment variables for normal use.
 
 There is deliberately **no** environment variable for the egress / security
-keys (`model.base_url`, `runtime.security_profile`, `tools.web`).  An ambient
-env var (e.g. an inherited `.envrc`) must not be able to redirect the Ollama
-endpoint, downgrade the security profile, or enable network egress — those are
-config-file-only acts (see the config-file-only keys above).
+keys (`model.base_url`, `runtime.security_profile`, `tools.web`,
+`model.allow_cloud`).  An ambient env var (e.g. an inherited `.envrc`) must not
+be able to redirect the Ollama endpoint, downgrade the security profile, or
+enable network/cloud egress — those require a deliberate act (a `config.toml`
+edit or a confirm-gated `/config set`; see the high-stakes keys above).
 
 #### `--model` flag
 
@@ -2907,9 +2934,13 @@ The dedicated `read_file`/`search_text` tools enforce the workspace boundary and
 
 The active-cloud indicator (section 15.2) is only trustworthy if the model — or untrusted data it surfaces — cannot repaint the terminal over it. Control characters and ANSI escape sequences are now stripped at **every** output sink via the shared `_sanitize_line`/`_CONTROL_CHARS` helper (`cli/render.py`), not only in the diff panel: streamed model text (`cli/streaming.py`), raw command output (`show_command_output`), tool-call/tool-result summaries (`cli/render.py`), and status/error lines (`cli/terminal.py`). Tab and newline are preserved; ESC and C0/DEL bytes are removed before anything reaches the screen, so neither model output nor auto-run command output can forge a status region or spoof an approval prompt.
 
-### 36.3 Config-File-Only Egress Invariant
+### 36.3 Egress / Safety Setter Invariant
 
-Anything that controls whether data leaves the device is a deliberate config-file act, never reachable from an ambient env var, the program-managed `overrides.json`, or `/config set`. `config/loader.py` defines `CONFIG_FILE_ONLY_KEYS` = {`tools.web`, `model.base_url`, `runtime.security_profile`, `model.allow_cloud`}: these are rejected by `validate_override`, skipped-with-warning in the overrides loop, and absent from `ENV_MAP` (the `SHELLPILOT_OLLAMA_BASE_URL` env redirect was dropped). The invariant previously asserted only for `tools.web` against env vars now holds uniformly across all three layers and all four keys — the precedent `allow_cloud` was built to copy.
+Anything that controls whether data leaves the device, or the local approval posture, is a **deliberate** act — never reachable from an **ambient environment variable**. `config/loader.py` defines `HIGH_STAKES_KEYS` = {`tools.web`, `model.base_url`, `runtime.security_profile`, `model.allow_cloud`}: every one is **absent from `ENV_MAP`** (the `SHELLPILOT_OLLAMA_BASE_URL` env redirect was dropped), so no ambient env var can enable egress, redirect the endpoint, or downgrade the profile. This env-absence claim is the load-bearing invariant and holds uniformly across all four keys.
+
+The four keys are settable two deliberate ways: a `config.toml` edit, or a runtime `/config set` gated by an amber warning + explicit confirmation (the `HIGH_STAKES_KEYS` gate in `SlashDispatcher._config_set`). A confirmed `/config set` persists through the program-managed `overrides.json` and applies at the key's reload time (all four are boot-only, so the effect is next launch). This is a deliberate relaxation of the stricter original form (which also forbade `/config set` and the overrides layer) for a reasoned trade-off: the model can neither type slash commands nor write `overrides.json` (it lives in the config dir, outside the workspace), and the per-session cloud-consent gate (§36.8 control 2) still fires regardless of how `allow_cloud` was set — so the relaxation opens no model/injection vector, while the amber confirm preserves the deliberateness the invariant exists to guarantee. The two **structural** config-file-only keys (`CONFIG_FILE_ONLY_KEYS` = {`model.options`, `skills.enabled`}) remain fully config-file-only: rejected by `validate_override`, skipped-with-warning in the overrides loop, and absent from `ENV_MAP`.
+
+Because a high-stakes override persists in `overrides.json` and silently outranks `config.toml`, a confirmed runtime relax would otherwise quietly stay enabled. As a residual-risk mitigation, the boot path (`run_interactive`, after config load) prints one amber line listing any active high-stakes override — e.g. `⚠ Active overrides: model.allow_cloud=true, tools.web=true — these override config.toml; /config unset <key> to revert.` — built by the pure, testable `high_stakes_override_notice` helper. It gates nothing (the consent gate remains the egress barrier); it ensures a set-and-forget egress override is visible on every launch.
 
 ### 36.4 Project AGENTS.md Trust-on-First-Use
 
@@ -2932,4 +2963,4 @@ The two highest-value at-rest artifacts — session transcripts and the audit lo
 
 ### 36.8 Cloud Consent Triad
 
-The opt-in cloud feature (section 15.2) rests on four enforced controls, summarized here as the security spine: (1) `[model] allow_cloud` defaults to **`false`** and is config-file-only (section 36.3); (2) a **fail-closed per-session consent gate** (`_resolve_cloud_consent`) runs at boot strictly before any prompt-bearing call and declines on a non-TTY, EOF, Enter, or anything but an explicit yes — so a decline egresses no prompt data; (3) an **unspoofable active-cloud indicator** (boot banner, persistent header bar, `/status` locality) derived from `is_egressing` on the live model, never from model output; and (4) a `cloud_consent_granted` audit event recording the consent. Consent is *the* boundary: once granted, the prompt egresses, with the best-effort redaction above layered behind it. Local-first remains the only full-privacy posture.
+The opt-in cloud feature (section 15.2) rests on four enforced controls, summarized here as the security spine: (1) `[model] allow_cloud` defaults to **`false`** and can be enabled only by a deliberate act — a `config.toml` edit or a confirm-gated `/config set`, never an ambient env var (section 36.3); (2) a **fail-closed per-session consent gate** (`_resolve_cloud_consent`) runs at boot strictly before any prompt-bearing call and declines on a non-TTY, EOF, Enter, or anything but an explicit yes — so a decline egresses no prompt data; (3) an **unspoofable active-cloud indicator** (boot banner, persistent header bar, `/status` locality) derived from `is_egressing` on the live model, never from model output; and (4) a `cloud_consent_granted` audit event recording the consent. Consent is *the* boundary: once granted, the prompt egresses, with the best-effort redaction above layered behind it. Local-first remains the only full-privacy posture.

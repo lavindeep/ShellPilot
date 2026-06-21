@@ -55,8 +55,9 @@ ENV_MAP: dict[str, str] = {
     # Egress and security-posture keys (tools.web, model.base_url,
     # model.allow_cloud, runtime.security_profile) are deliberately absent:
     # enabling network egress or cloud models, redirecting the Ollama endpoint,
-    # or downgrading the security profile must be an explicit config-file act,
-    # not an ambient environment variable. See CONFIG_FILE_ONLY_KEYS.
+    # or downgrading the security profile must be a DELIBERATE act (a config.toml
+    # edit or a confirm-gated /config set), never an ambient environment
+    # variable. This env-absence invariant is load-bearing. See HIGH_STAKES_KEYS.
 }
 
 ALLOWED_VALUES: dict[str, tuple[str, ...]] = {
@@ -100,13 +101,26 @@ BOOT_ONLY_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Network egress and the security posture must be explicit config.toml acts —
-# never settable via env vars, the program-managed overrides.json, or
-# /config set. (model.options/skills.enabled were already config-file-only.)
+# Structural tables/lists with no scalar CLI representation — settable ONLY by
+# editing config.toml (the user or project layer), never via an env var, the
+# program-managed overrides.json, or /config set.
 CONFIG_FILE_ONLY_KEYS: frozenset[str] = frozenset(
     {
         "model.options",
         "skills.enabled",
+    }
+)
+
+# Egress / safety keys whose runtime change materially affects whether data
+# leaves the device or the local approval posture. They are settable via the
+# DELIBERATE /config set act — but only behind an amber warning + explicit
+# confirmation (the HIGH_STAKES_KEYS gate in the slash handler) — and via a
+# config.toml edit. They are deliberately ABSENT from ENV_MAP: an ambient env
+# var is not a deliberate act, so it must never enable egress or downgrade the
+# security posture. The per-session cloud-consent gate (§15.2) is the real
+# egress boundary regardless of how allow_cloud was set.
+HIGH_STAKES_KEYS: frozenset[str] = frozenset(
+    {
         "tools.web",
         "model.base_url",
         "runtime.security_profile",

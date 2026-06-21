@@ -44,8 +44,9 @@ from shellpilot.cli.render import (
 from shellpilot.cli.slash import SlashAction, SlashDispatcher, command_words
 from shellpilot.cli.streaming import AviationSpinner, DiffReveal, ResponseStream
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
-from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
+from shellpilot.config.loader import HIGH_STAKES_KEYS, ConfigError, LoadedConfig, load_config
 from shellpilot.config.model import Settings, is_cloud_model, is_egressing
+from shellpilot.config.overrides import load_overrides, overrides_path
 from shellpilot.llm.ollama import OllamaClient, OllamaError
 from shellpilot.memory.agents_md import (
     BehaviorInstructions,
@@ -323,6 +324,26 @@ def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple
     return user_file, project_state_dir(workspace) / "config.toml"
 
 
+def high_stakes_override_notice(config_dir: Path) -> str | None:
+    """One amber line naming any active high-stakes (egress/safety) override.
+
+    A confirmed ``/config set`` for an egress/safety key persists in
+    ``overrides.json`` and silently outranks ``config.toml`` every future boot,
+    so surface it on each launch — egress must not quietly stay enabled. Returns
+    ``None`` when no such override is present. Pure (no I/O beyond the read) so
+    it is unit-testable; it gates nothing — the cloud-consent gate (§15.2) is
+    the egress boundary.
+    """
+    overrides, _ = load_overrides(overrides_path(config_dir))
+    active = {k: v for k, v in overrides.items() if k in HIGH_STAKES_KEYS}
+    if not active:
+        return None
+    pairs = ", ".join(f"{k}={active[k]!r}" for k in sorted(active))
+    return (
+        f"⚠ Active overrides: {pairs} — these override config.toml; /config unset <key> to revert."
+    )
+
+
 def _relative_age(mtime: float, *, now: float | None = None) -> str:
     """Compact relative age, e.g. "just now", "39m ago", "2h ago", "3d ago"."""
     delta = max(0.0, (time.time() if now is None else now) - mtime)
@@ -359,6 +380,9 @@ def run_interactive(
         return 2
     for _warning in loaded.warnings:
         console.print(f"[dim]{escape(_warning)}[/dim]")
+    _override_notice = high_stakes_override_notice(user_file.parent)
+    if _override_notice is not None:
+        console.print(escape(_override_notice), style="sp.warn")
     settings = loaded.settings
     if settings.ui.no_color:
         console = build_console(settings)
