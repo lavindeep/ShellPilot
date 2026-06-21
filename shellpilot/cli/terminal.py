@@ -42,7 +42,7 @@ from shellpilot.cli.render import (
     turn_stats as render_turn_stats,
 )
 from shellpilot.cli.slash import SlashAction, SlashDispatcher, command_words
-from shellpilot.cli.streaming import AviationSpinner, ResponseStream
+from shellpilot.cli.streaming import AviationSpinner, DiffReveal, ResponseStream
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
 from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
 from shellpilot.config.model import Settings, is_cloud_model, is_egressing
@@ -188,6 +188,8 @@ class TerminalUI:
         self._glyphs = glyphs
         self._stream = ResponseStream(console)
         self._spinner = AviationSpinner(console, glyphs, enabled=spinner)
+        # The diff-reveal animation rides the same motion toggle as the spinner.
+        self._diff_reveal = DiffReveal(console, glyphs, enabled=spinner)
 
     def begin_response(self) -> None:
         self._spinner.start()
@@ -253,10 +255,24 @@ class TerminalUI:
         No head line here: the tool-call line printed just before the approval
         already names the action, so repeating it would duplicate output.
         """
+        # LIVE-ORDERING (load-bearing): stop the spinner FIRST. It joins its
+        # thread and stops its Live before returning, so DiffReveal's Live (below)
+        # never overlaps it — two concurrent rich Live on one Console corrupt the
+        # display. The reveal must start strictly after this call.
         self._spinner.stop()
         self._console.print()
         if request.diff:
-            self._console.print(Padding(render_diff(request.diff, self._glyphs), (0, 0, 0, 2)))
+            cap = DiffReveal.WINDOW_ROWS
+            long_diff = self._diff_reveal.row_count(request.diff) > DiffReveal.ANIMATE_THRESHOLD
+            # Long diffs scroll-reveal (motion only when enabled+TTY) then settle
+            # into a capped window; short diffs print the full panel unchanged.
+            self._diff_reveal.reveal(request.diff, max_rows=cap)
+            self._console.print(
+                Padding(
+                    render_diff(request.diff, self._glyphs, max_rows=cap if long_diff else None),
+                    (0, 0, 0, 2),
+                )
+            )
         self._console.print(approval_info(request, plain_badge=self._plain_badges()))
         self._console.print(approval_cwd(request))
         try:

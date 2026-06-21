@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import io
 import random
 from pathlib import Path
@@ -16,6 +17,7 @@ import shellpilot.cli.streaming as streaming_mod
 from shellpilot.cli.streaming import (
     FLIGHT_PHASES,
     AviationSpinner,
+    DiffReveal,
     ResponseStream,
     phase_for_elapsed,
 )
@@ -418,6 +420,113 @@ def test_finish_clears_live_before_stop() -> None:
     refresh = last_update[2]["refresh"]
     assert renderable == "", f"expected empty string renderable, got {renderable!r}"
     assert refresh is False, "expected refresh=False on the clearing update"
+
+
+# ---------------------------------------------------------------------------
+# DiffReveal: approval-time scrolling reveal (design section 31.4)
+# ---------------------------------------------------------------------------
+
+
+def _additions_diff(count: int, name: str = "big.py") -> str:
+    """A unified diff that adds *count* numbered lines to an empty file."""
+    before = ""
+    after = "".join(f"line {i}\n" for i in range(count))
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{name}",
+            tofile=f"b/{name}",
+        )
+    )
+
+
+class _SpyLive:
+    """Records start/update/stop so reveal ordering can be asserted with no sleeps."""
+
+    instances: list[_SpyLive] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+        _SpyLive.instances.append(self)
+
+    def start(self) -> None:
+        self.calls.append(("start", (), {}))
+
+    def update(self, renderable: object, *, refresh: bool = True) -> None:
+        self.calls.append(("update", (renderable,), {"refresh": refresh}))
+
+    def stop(self) -> None:
+        self.calls.append(("stop", (), {}))
+
+
+def test_diff_reveal_short_diff_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    _SpyLive.instances = []
+    monkeypatch.setattr(streaming_mod, "Live", _SpyLive)
+    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=True)
+    # 5 additions = 5 rendered rows, well under ANIMATE_THRESHOLD.
+    reveal.reveal(_additions_diff(5), max_rows=DiffReveal.WINDOW_ROWS)
+    assert _SpyLive.instances == []  # no Live opened for a short diff
+
+
+def test_diff_reveal_disabled_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    _SpyLive.instances = []
+    monkeypatch.setattr(streaming_mod, "Live", _SpyLive)
+    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=False)
+    reveal.reveal(_additions_diff(40), max_rows=DiffReveal.WINDOW_ROWS)
+    assert _SpyLive.instances == []  # motion off → no Live even for a long diff
+
+
+def test_diff_reveal_nontty_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    _SpyLive.instances = []
+    monkeypatch.setattr(streaming_mod, "Live", _SpyLive)
+    # plain_console() is not a terminal → enabled collapses to False internally.
+    reveal = DiffReveal(plain_console(), GLYPHS, enabled=True)
+    reveal.reveal(_additions_diff(40), max_rows=DiffReveal.WINDOW_ROWS)
+    assert _SpyLive.instances == []
+
+
+def test_diff_reveal_row_count_is_pure() -> None:
+    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=True)
+    diff = _additions_diff(30)
+    first = reveal.row_count(diff)
+    second = reveal.row_count(diff)
+    assert first == second == 30
+    assert reveal.row_count("") >= 0
+
+
+def test_diff_reveal_long_diff_animates_and_clears_before_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _SpyLive.instances = []
+    monkeypatch.setattr(streaming_mod, "Live", _SpyLive)
+    monkeypatch.setattr(streaming_mod.time, "sleep", lambda _seconds: None)  # no real delay
+    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=True)
+    reveal.reveal(_additions_diff(40), max_rows=DiffReveal.WINDOW_ROWS)
+
+    assert len(_SpyLive.instances) == 1
+    live = _SpyLive.instances[0]
+    names = [c[0] for c in live.calls]
+    assert names[0] == "start"
+    assert names[-1] == "stop"
+    # The clearing update must immediately precede stop (mirrors finish()).
+    stop_index = names.index("stop")
+    last_update_index = max(i for i, n in enumerate(names) if n == "update")
+    assert last_update_index == stop_index - 1
+    clearing = live.calls[last_update_index]
+    assert clearing[1][0] == ""
+    assert clearing[2]["refresh"] is False
+
+
+def test_diff_reveal_chunk_math_bounds_tick_count() -> None:
+    """The chunk size keeps any diff length within TOTAL_DURATION's tick budget."""
+    import math
+
+    ticks_budget = math.floor(DiffReveal.TOTAL_DURATION / streaming_mod._REFRESH_SECONDS)
+    for total in (21, 40, 60, 200, 500):
+        chunk = max(1, math.ceil(total / max(1, ticks_budget)))
+        frames = math.ceil(total / chunk)
+        assert frames <= ticks_budget, f"{total} rows took {frames} frames > {ticks_budget}"
 
 
 def test_runtime_emits_response_hooks_and_turn_stats(tmp_path: Path) -> None:
