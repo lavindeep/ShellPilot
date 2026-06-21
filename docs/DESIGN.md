@@ -1291,10 +1291,30 @@ Reads of these are gated deterministically, never by model judgement. The `read_
 
 ### 15.1 Egress Chokepoint (v0.10.0)
 
-When the model endpoint is **remote**, the entire prompt (system prompt, AGENTS.md, memory, file contents, command output) leaves the device — the prompt itself is an exfiltration channel that no per-action approval gate intercepts. The runtime owns a single locality signal (`_is_egressing()`, true when the model `base_url` is not loopback; the v0.10.0 cloud-model work extends it to cloud model names) and applies two controls at the one chokepoint where every model request passes (`conversation.py` tool loop):
+When the model endpoint is **remote**, the entire prompt (system prompt, AGENTS.md, memory, file contents, command output) leaves the device — the prompt itself is an exfiltration channel that no per-action approval gate intercepts. The runtime owns a single locality signal (`_is_egressing()`, true when the model `base_url` is not loopback **or** the model is a cloud model — `is_cloud_model(name)`, the Ollama `-cloud` tag suffix, which egresses to the provider even through a localhost Ollama proxy) and applies two controls at the one chokepoint where every model request passes (`conversation.py` tool loop):
 
 - **Outbound redaction (best-effort defence-in-depth, not a guarantee).** On an egressing turn, when `privacy.redact_secrets` is on, a **redacted copy** of the outbound messages is sent (`redact_secrets` on content, `redact_structure` on tool-call arguments) — the in-memory history is never mutated. A **loopback turn is sent byte-identical** (no copy, zero behaviour change). This is regex-based and conservative: **novel secret formats are missed**, and **image/base64 data is not redactable here and egresses unredacted**. It reduces accidental credential leakage to a provider; it is not a confidentiality guarantee. Local-first remains the only full privacy posture.
 - **Egress visibility (audit).** Every egressing model request emits a `model_request` audit event (host/model/counts only — never message bodies; section 22), and every `SideEffect.NETWORK` tool call that actually runs emits a `web_egress` event. Together these record *what left the device* without recording its contents.
+
+### 15.2 Cloud Models — Opt-in Egress Consent (v0.10.0)
+
+Cloud/remote models are **opt-in and off by default**: the local-first posture is the product's core promise, so enabling a model that egresses is a deliberate, security-gated act. A default localhost session is byte-identical to the pre-v0.10.0 program — no new prompt, no `allow_cloud` needed, the system prompt unchanged.
+
+A session **egresses** when the model is a cloud model (`is_cloud_model(name)` — the Ollama `-cloud` tag suffix; the prompt leaves the device even though the daemon proxies it through localhost) **or** the endpoint `base_url` is non-loopback (`is_loopback_url`, a single shared helper in `llm/ollama.py` used by both the runtime egress chokepoint and the CLI boot gate so the consent trigger and the outbound-redaction trigger always agree). The cloud-models case is the primary feature: `base_url` stays `localhost`; only the model name signals egress.
+
+Three layered controls form the consent boundary:
+
+- **`[model] allow_cloud` — the master egress switch (default `false`).** It is **config-file-only and boot-only** (in both `CONFIG_FILE_ONLY_KEYS` and `BOOT_ONLY_KEYS`, absent from `ENV_MAP`): enabling cloud egress is never reachable from an env var, the program-managed `overrides.json`, or `/config set` — only an explicit `config.toml` edit, the same invariant as `tools.web` and `model.base_url`. With it off, a cloud/remote model is refused at boot with a message pointing at the switch; no model is loaded.
+- **Per-session consent (re-asked every launch, never persisted).** With `allow_cloud` on, an egressing session shows an honest disclosure — the model runs off the device; the entire prompt (file contents, command output, memory the model reads) is sent to the provider and may be **unredacted**; under the `balanced` profile low-risk actions auto-run and can send data without a per-action prompt; the provider's retention/training/jurisdiction are outside ShellPilot's control — followed by a simple **y/N prompt that defaults to No** (Enter, EOF, or anything but an explicit yes declines). The session keeps the `balanced` profile (no profile change); the disclosure discloses that risk rather than silently downgrading capability.
+- **Fail-closed ordering.** The consent gate (`_resolve_cloud_consent`, a testable module-level helper mirroring the AGENTS.md trust gate) runs at boot **strictly before** the first prompt-bearing call (`_preload` → `model_context_length` → `chat`). A decline (or a non-interactive/non-TTY session, which fails closed because consent cannot be obtained) returns before any model load — **no prompt data egresses**. The local availability gate (`chosen not in installed`) is skipped for cloud names, since cloud models are absent from the local `/api/tags`; the typo-catch survives for local names. `/model use <name>` mid-session mirrors the same gate: a cloud/remote target requires `allow_cloud` and fresh consent before `set_model`/`_preload`; on reject it neither switches nor preloads.
+
+**System-prompt honesty.** The base prompt's claim that ShellPilot runs "entirely on this machine" with "no independent network access" is **false when egressing**, so it is conditional: a non-egressing (local) session keeps the byte-identical line (zero regression on the gemma4 baseline); an egressing session replaces it with an honest line stating the session's content leaves the device (`build_system_prompt(is_egressing=...)`, threaded from `_is_egressing()`; `PROMPT_VERSION` 5).
+
+**Audit.** When the AuditLogger is constructed (after the gate, by which point consent has already been granted), an egressing session records a single `cloud_consent_granted` event (`model`, endpoint `host`) — the consent record alongside the per-turn `model_request` egress-visibility events.
+
+**Boundary, not guarantee.** Consent is *the* boundary: once granted, the prompt egresses. The best-effort outbound redaction from §15.1 is defence-in-depth layered behind it, not a confidentiality guarantee (regex-based, misses novel secret formats, leaves image/base64 unredacted). The disclosure says so plainly; **local-first remains the only full privacy posture.**
+
+**Accepted residual — metadata probe before consent.** At boot, `client.health()` and `list_models()` issue `GET /api/tags` against `base_url` *before* the consent gate. For the primary cloud-model case `base_url` is loopback, so this is a purely local call and nothing egresses (Ollama proxies only the actual model load, which is gated). For a **non-loopback `base_url`** these are a **metadata-only probe** (no prompt content) to the endpoint the user *deliberately configured in `config.toml`*, made before consent. This is documented and accepted: it carries no prompt/file/memory data, and the user already chose that endpoint by editing the config-file-only `base_url`. All **prompt-data** egress remains consent-gated from `_preload` onward.
 
 ## 16. Memory System (v2)
 
@@ -1561,6 +1581,9 @@ program-managed `overrides.json`, or `/config set`:
 - `model.base_url` — redirecting the Ollama endpoint must be an explicit
   config act (an ambient env var or tampered `overrides.json` must not point
   the harness at a different host).
+- `model.allow_cloud` — the master cloud-egress switch (default `false`).
+  Enabling cloud/remote models must be an explicit config act, and never
+  hot-reloads mid-session (it is also boot-only). See §15.2.
 - `runtime.security_profile` — downgrading the security posture (e.g.
   `supervised` → `balanced`) must be an explicit config act, and never
   hot-reloads mid-session (it is also boot-only).
@@ -2032,8 +2055,9 @@ Events:
 - (v2) Memory update.
 - Config change.
 - Error.
-- **`model_request`** (v0.10.0) — emitted only on an **egressing** turn (a non-loopback model endpoint). Records *that* a prompt left the device and to where, with **counts only, never message bodies**: `host`, `model`, `locality` ("remote"), `message_count`, `approx_bytes`, `image_count`. A loopback (local Ollama) turn emits nothing. This is the egress-visibility record (F10/F12) for what leaves the box.
+- **`model_request`** (v0.10.0) — emitted only on an **egressing** turn (a non-loopback model endpoint *or* a cloud model; §15.2). Records *that* a prompt left the device and to where, with **counts only, never message bodies**: `host`, `model`, `locality` ("remote"), `message_count`, `approx_bytes`, `image_count`. A purely local turn emits nothing. This is the egress-visibility record (F10/F12) for what leaves the box.
 - **`web_egress`** (v0.10.0) — emitted by the executor when a `SideEffect.NETWORK` tool (`web_search`/`web_fetch`) actually runs (after every gate passes, immediately before the call leaves the box). Records `tool` and the redacted `args` (the AuditLogger redacts a secret in a query/URL). A blocked or user-declined call never ran and emits nothing.
+- **`cloud_consent_granted`** (v0.10.0) — emitted once per egressing session, after the user has granted per-session cloud consent at boot (or via `/model use`; §15.2). Records `model` and the endpoint `host` only — the consent record for a session that may egress prompt data.
 
 Log entry shape:
 

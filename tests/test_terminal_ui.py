@@ -419,3 +419,126 @@ def test_trust_eof_declines(tmp_path: Path) -> None:
 
     console.input = raise_eof  # type: ignore[method-assign]
     assert _resolve_project_agents_trust(console, tmp_path, tty=True) is False
+
+
+# ---------------------------------------------------------------------------
+# Cloud-egress consent gate (v0.10.0 Part 2): per-session y/N, fail-closed.
+# ---------------------------------------------------------------------------
+
+
+def _settings(*, allow_cloud: bool = False, base_url: str = "http://localhost:11434"):
+    from shellpilot.config.model import ModelSettings, Settings
+
+    return Settings(model=ModelSettings(allow_cloud=allow_cloud, base_url=base_url))
+
+
+def test_consent_local_model_no_prompt(tmp_path: Path) -> None:
+    """A local model on localhost is non-egressing → proceed, NO prompt shown."""
+    from shellpilot.cli.terminal import _resolve_cloud_consent
+
+    # No input wired: a prompt would raise StopIteration.
+    console = make_trust_console([])
+    assert _resolve_cloud_consent(console, _settings(), "gemma4:e4b", tty=True) is True
+    assert console.export_text().strip() == ""
+
+
+def test_consent_cloud_model_allow_off_rejects(tmp_path: Path) -> None:
+    """A cloud model with allow_cloud off is refused with a clear message — no prompt."""
+    from shellpilot.cli.terminal import _resolve_cloud_consent
+
+    console = make_trust_console([])
+    assert (
+        _resolve_cloud_consent(
+            console, _settings(allow_cloud=False), "nemotron-3-nano:30b-cloud", tty=True
+        )
+        is False
+    )
+    out = console.export_text()
+    assert "allow_cloud" in out
+
+
+def test_consent_cloud_model_non_tty_fails_closed(tmp_path: Path) -> None:
+    """allow_cloud on but non-interactive → fail closed (no egress without consent)."""
+    from shellpilot.cli.terminal import _resolve_cloud_consent
+
+    console = make_trust_console([])
+    assert (
+        _resolve_cloud_consent(
+            console, _settings(allow_cloud=True), "nemotron-3-nano:30b-cloud", tty=False
+        )
+        is False
+    )
+    assert "non-interactive" in console.export_text()
+
+
+def test_consent_cloud_model_accepts_yes(tmp_path: Path) -> None:
+    """allow_cloud on + tty + 'y' → proceed; the disclosure text is shown."""
+    from shellpilot.cli.terminal import _resolve_cloud_consent
+
+    console = make_trust_console(["y"])
+    assert (
+        _resolve_cloud_consent(
+            console, _settings(allow_cloud=True), "nemotron-3-nano:30b-cloud", tty=True
+        )
+        is True
+    )
+    out = console.export_text()
+    # The disclosure must be honest about what leaves the device.
+    assert "remote" in out.lower() or "leaves" in out.lower()
+
+
+def test_consent_cloud_model_enter_declines(tmp_path: Path) -> None:
+    """Default No: a bare Enter declines (fail closed)."""
+    from shellpilot.cli.terminal import _resolve_cloud_consent
+
+    console = make_trust_console([""])
+    assert (
+        _resolve_cloud_consent(
+            console, _settings(allow_cloud=True), "nemotron-3-nano:30b-cloud", tty=True
+        )
+        is False
+    )
+
+
+def test_consent_cloud_model_explicit_no_declines(tmp_path: Path) -> None:
+    from shellpilot.cli.terminal import _resolve_cloud_consent
+
+    console = make_trust_console(["n"])
+    assert (
+        _resolve_cloud_consent(
+            console, _settings(allow_cloud=True), "nemotron-3-nano:30b-cloud", tty=True
+        )
+        is False
+    )
+
+
+def test_consent_cloud_model_eof_declines(tmp_path: Path) -> None:
+    """EOF at the consent prompt fails closed."""
+    from shellpilot.cli.terminal import _resolve_cloud_consent
+
+    console = make_console()
+
+    def raise_eof(prompt: str = "", **kwargs: object) -> str:
+        raise EOFError
+
+    console.input = raise_eof  # type: ignore[method-assign]
+    assert (
+        _resolve_cloud_consent(
+            console, _settings(allow_cloud=True), "nemotron-3-nano:30b-cloud", tty=True
+        )
+        is False
+    )
+
+
+def test_consent_remote_base_url_local_model_requires_consent(tmp_path: Path) -> None:
+    """A non-loopback base_url egresses even for a local-looking model name."""
+    from shellpilot.cli.terminal import _resolve_cloud_consent
+
+    settings = _settings(allow_cloud=True, base_url="https://ollama.com")
+    console = make_trust_console([""])
+    assert _resolve_cloud_consent(console, settings, "gemma4:e4b", tty=True) is False
+    # And with allow_cloud off it is refused before any prompt.
+    settings_off = _settings(allow_cloud=False, base_url="https://ollama.com")
+    console2 = make_trust_console([])
+    assert _resolve_cloud_consent(console2, settings_off, "gemma4:e4b", tty=True) is False
+    assert "allow_cloud" in console2.export_text()

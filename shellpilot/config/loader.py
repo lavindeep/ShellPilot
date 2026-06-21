@@ -53,10 +53,10 @@ ENV_MAP: dict[str, str] = {
     "SHELLPILOT_NO_COLOR": "ui.no_color",
     "SHELLPILOT_UI_GLYPHS": "ui.glyphs",
     # Egress and security-posture keys (tools.web, model.base_url,
-    # runtime.security_profile) are deliberately absent: enabling network
-    # egress, redirecting the Ollama endpoint, or downgrading the security
-    # profile must be an explicit config-file act, not an ambient environment
-    # variable. See CONFIG_FILE_ONLY_KEYS.
+    # model.allow_cloud, runtime.security_profile) are deliberately absent:
+    # enabling network egress or cloud models, redirecting the Ollama endpoint,
+    # or downgrading the security profile must be an explicit config-file act,
+    # not an ambient environment variable. See CONFIG_FILE_ONLY_KEYS.
 }
 
 ALLOWED_VALUES: dict[str, tuple[str, ...]] = {
@@ -96,6 +96,7 @@ BOOT_ONLY_KEYS: frozenset[str] = frozenset(
         "ui.glyphs",
         "ui.spinner",
         "tools.web",
+        "model.allow_cloud",
     }
 )
 
@@ -109,6 +110,7 @@ CONFIG_FILE_ONLY_KEYS: frozenset[str] = frozenset(
         "tools.web",
         "model.base_url",
         "runtime.security_profile",
+        "model.allow_cloud",
     }
 )
 

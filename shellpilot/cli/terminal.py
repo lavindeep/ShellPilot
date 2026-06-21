@@ -7,6 +7,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from rich.console import Console
 from rich.markup import escape
@@ -40,8 +41,8 @@ from shellpilot.cli.slash import SlashAction, SlashDispatcher, command_words
 from shellpilot.cli.streaming import AviationSpinner, ResponseStream
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
 from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
-from shellpilot.config.model import Settings
-from shellpilot.llm.ollama import OllamaClient, OllamaError
+from shellpilot.config.model import Settings, is_cloud_model
+from shellpilot.llm.ollama import OllamaClient, OllamaError, is_loopback_url
 from shellpilot.memory.agents_md import (
     BehaviorInstructions,
     load_behavior_instructions,
@@ -109,6 +110,63 @@ def _resolve_project_agents_trust(console: Console, workspace: Path, *, tty: boo
         save_trusted_agents_digest(workspace, digest)
         return True
     console.print("[sp.dim]Project AGENTS.md not loaded (declined).[/sp.dim]")
+    return False
+
+
+# The honest disclosure shown before egressing to a cloud/remote model. It must
+# state plainly what leaves the device — this prompt IS the consent boundary
+# (design section 15.2). Best-effort redaction is defence-in-depth, not a
+# guarantee, so the text does not promise protection.
+CLOUD_CONSENT_DISCLOSURE = (
+    "[yellow]{model}[/yellow] is a cloud/remote model: it runs OFF this device.\n"
+    "[sp.dim]The ENTIRE prompt — file contents, command output, and any memory the "
+    "model reads — is sent to the provider and may be UNREDACTED. Under the balanced "
+    "profile, low-risk actions auto-run and can send data without a per-action prompt. "
+    "The provider's retention, training, and jurisdiction are outside ShellPilot's "
+    "control.[/sp.dim]"
+)
+
+
+def _resolve_cloud_consent(console: Console, settings: Settings, chosen: str, *, tty: bool) -> bool:
+    """Per-session consent gate for a cloud/remote (egressing) model.
+
+    The consent boundary for data leaving the device (design section 15.2).
+    Returns True to proceed, False to abort — the caller MUST NOT touch the
+    model (no preload, no metadata, no chat) when this returns False.
+
+    Fails closed on every uncertainty:
+    - A non-egressing local session proceeds with NO prompt (the common path).
+    - An egressing session with ``allow_cloud`` off is refused with a clear
+      message pointing at the config switch.
+    - An egressing session in a non-interactive (non-TTY) context is refused
+      — there is no way to obtain consent, so nothing egresses.
+    - Otherwise the user is shown an honest disclosure and a y/N prompt that
+      DEFAULTS TO NO; only an explicit yes proceeds (Enter/EOF/no decline).
+
+    Consent is per session — never persisted; every launch re-asks.
+    """
+    egressing = is_cloud_model(chosen) or not is_loopback_url(settings.model.base_url)
+    if not egressing:
+        return True
+    if not settings.model.allow_cloud:
+        console.print(
+            f"[red]{escape(chosen)} is a cloud/remote model; cloud egress is off.[/red] "
+            "Set [model] allow_cloud = true in config.toml to enable."
+        )
+        return False
+    if not tty:
+        console.print(
+            "[red]Cloud model requires interactive consent; refusing (non-interactive).[/red]"
+        )
+        return False
+    console.print(CLOUD_CONSENT_DISCLOSURE.format(model=escape(chosen)))
+    try:
+        answer = console.input("  Send this session to the cloud? [sp.dim]\\[y/N][/sp.dim] ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    console.print("[sp.dim]Cloud model declined; not started.[/sp.dim]")
     return False
 
 
@@ -300,8 +358,22 @@ def run_interactive(
     else:
         chosen = settings.model.default
 
-    if chosen not in installed:
+    # Cloud models are absent from the local /api/tags, so the availability gate
+    # is skipped for them (the typo-catch survives for local names).
+    if chosen not in installed and not is_cloud_model(chosen):
         console.print(f"[red]Model {chosen} is not installed.[/red] Try: ollama pull {chosen}")
+        return 1
+
+    # Cloud-egress consent boundary (design section 15.2): a cloud/remote model
+    # must clear allow_cloud + per-session consent BEFORE any prompt-bearing call
+    # touches it. Placed strictly before _preload — the first egress point — so a
+    # declined session performs no model load and no chat. (client.health/
+    # list_models above hit /api/tags on base_url only: for the primary
+    # cloud-model case base_url is loopback → no egress; a non-loopback base_url
+    # is a metadata-only probe to the user's own configured endpoint, documented
+    # as an accepted residual in DESIGN §15.2.)
+    egressing_session = is_cloud_model(chosen) or not is_loopback_url(settings.model.base_url)
+    if not _resolve_cloud_consent(console, settings, chosen, tty=tty):
         return 1
 
     # ------------------------------------------------------------------
@@ -348,6 +420,14 @@ def run_interactive(
         redact=settings.privacy.redact_secrets,
     )
     audit.write("session_start", model=chosen)
+    if egressing_session:
+        # Record that the user granted cloud-egress consent for this session
+        # (consent already happened above; logged now that the logger exists).
+        audit.write(
+            "cloud_consent_granted",
+            model=chosen,
+            host=(urlsplit(settings.model.base_url).hostname or "").rstrip("."),
+        )
 
     sessions_dir = SessionStore.sessions_dir(workspace)
     restored = None
@@ -424,6 +504,7 @@ def run_interactive(
         glyphs=glyphs,
         preload=_preload,
         attachments=attachments,
+        tty=tty,
     )
 
     console.print(banner(__version__, runtime.model, settings.runtime.security_profile))

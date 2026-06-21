@@ -1026,3 +1026,125 @@ def test_no_model_request_audit_on_loopback_turn(tmp_path: Path) -> None:
 
     events = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
     assert not any(e["event"] == "model_request" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Shared loopback helper + cloud-model egress (v0.10.0 Part 2)
+# ---------------------------------------------------------------------------
+
+
+def test_is_loopback_url_shared_helper() -> None:
+    """The module-level helper classifies loopback vs remote URLs consistently."""
+    from shellpilot.llm.ollama import is_loopback_url
+
+    for url in (
+        "",
+        "http://localhost:11434",
+        "http://127.0.0.1:11434",
+        "http://127.5.6.7:11434",
+        "http://[::1]:11434",
+        "http://0.0.0.0:11434",
+        "http://foo.localhost:11434",
+    ):
+        assert is_loopback_url(url) is True, url
+    for url in (
+        "https://ollama.com",
+        "https://api.example.com:443",
+        "http://10.0.0.5:11434",
+        "ollama.com:443",  # scheme-less, no parseable host → fail closed (remote)
+        "http://[bad",  # unparseable URL → fail closed (remote), no raise
+    ):
+        assert is_loopback_url(url) is False, url
+
+
+def test_endpoint_is_loopback_uses_shared_helper(tmp_path: Path) -> None:
+    """_endpoint_is_loopback delegates to the shared helper (no behaviour change)."""
+    runtime = _make_runtime_with_base_url(
+        FakeLLM(script=[]), FakeUI(), tmp_path, "https://ollama.com"
+    )
+    assert runtime._endpoint_is_loopback() is False
+
+
+def _make_runtime_with_model(
+    fake: FakeLLM, ui: FakeUI, tmp_path: Path, model: str, *, base_url: str
+) -> ConversationRuntime:
+    return ConversationRuntime(
+        llm=fake,
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=ui,
+        model=model,
+        base_url=base_url,
+    )
+
+
+def test_cloud_model_egresses_on_localhost(tmp_path: Path) -> None:
+    """A '-cloud' model egresses even through a loopback Ollama proxy."""
+    runtime = _make_runtime_with_model(
+        FakeLLM(script=[]),
+        FakeUI(),
+        tmp_path,
+        "nemotron-3-nano:30b-cloud",
+        base_url="http://localhost:11434",
+    )
+    assert runtime._endpoint_is_loopback() is True
+    assert runtime._is_egressing() is True
+
+
+def test_local_model_on_localhost_does_not_egress(tmp_path: Path) -> None:
+    """A local model on a loopback endpoint does not egress (the common path)."""
+    runtime = _make_runtime_with_model(
+        FakeLLM(script=[]),
+        FakeUI(),
+        tmp_path,
+        "gemma4:e4b",
+        base_url="http://localhost:11434",
+    )
+    assert runtime._is_egressing() is False
+
+
+# ---------------------------------------------------------------------------
+# System-prompt honesty (v0.10.0 Part 2): the "no network" claim is conditional
+# ---------------------------------------------------------------------------
+
+
+def test_local_system_prompt_is_byte_identical(tmp_path: Path) -> None:
+    """A non-egressing (local) session's system prompt is unchanged — zero regression."""
+    from shellpilot.prompts.system import build_system_prompt
+
+    runtime = make_runtime(FakeLLM(script=[]), FakeUI(), tmp_path)
+    expected = build_system_prompt(
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    assert runtime._context_snapshot().system_text().startswith(expected)
+    assert "no independent network access" in runtime._system_message_text()
+    assert "entirely on this machine" in runtime._system_message_text()
+
+
+def test_egressing_system_prompt_drops_false_network_claim(tmp_path: Path) -> None:
+    """An egressing session's prompt drops the false 'entirely on this machine' claim."""
+    runtime = _make_runtime_with_model(
+        FakeLLM(script=[]),
+        FakeUI(),
+        tmp_path,
+        "nemotron-3-nano:30b-cloud",
+        base_url="http://localhost:11434",
+    )
+    text = runtime._system_message_text()
+    assert "no independent network access" not in text
+    assert "entirely on this machine" not in text
+    assert "leaves this device" in text
+
+
+def test_build_system_prompt_egressing_flag() -> None:
+    """build_system_prompt(is_egressing=True) replaces the local-only network line."""
+    from shellpilot.prompts.system import build_system_prompt
+
+    local = build_system_prompt(workspace=Path("/work"), profile="balanced")
+    remote = build_system_prompt(workspace=Path("/work"), profile="balanced", is_egressing=True)
+    assert "no independent network access" in local
+    assert "no independent network access" not in remote
+    assert "entirely on this machine" not in remote
+    assert "leaves this device" in remote

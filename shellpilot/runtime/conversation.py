@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import ipaddress
 import json
 import time
 from collections.abc import Sequence
@@ -11,10 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from shellpilot.config.model import Settings
+from shellpilot.config.model import Settings, is_cloud_model
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
-from shellpilot.llm.ollama import encode_tool
+from shellpilot.llm.ollama import encode_tool, is_loopback_url
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.memory.redaction import redact_secrets, redact_structure
 from shellpilot.memory.store import MemoryStores
@@ -283,30 +282,19 @@ class ConversationRuntime:
     def _endpoint_is_loopback(self) -> bool:
         """True when the model endpoint is on this box (loopback = local).
 
-        Mirrors the spirit of web/fetch.py's host checks: an empty host,
-        ``localhost`` / ``*.localhost``, ``0.0.0.0``, and any loopback IP
-        (127.0.0.0/8, ::1) are local. Anything else is off-box.
+        Delegates to the shared ``is_loopback_url`` helper so the runtime egress
+        chokepoint and the CLI boot consent gate use one definition of off-box.
         """
-        host = self._endpoint_host()
-        if not host:
-            return True
-        if host == "localhost" or host.endswith(".localhost") or host == "0.0.0.0":
-            return True
-        ip_str = host[1:-1] if host.startswith("[") and host.endswith("]") else host
-        try:
-            addr = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        return addr.is_loopback or addr.is_unspecified
+        return is_loopback_url(self._base_url)
 
     def _is_egressing(self) -> bool:
         """True when a model request leaves this device.
 
-        For now only a non-loopback base_url egresses. Part 2 (cloud models)
-        will extend this to ``... or is_cloud_model(self._model)`` — a cloud
-        model name egresses even through a localhost Ollama proxy.
+        A request egresses when the endpoint base_url is non-loopback OR the
+        model is a cloud model — a ``-cloud`` name egresses to the provider even
+        through a localhost Ollama proxy (design section 15.2).
         """
-        return not self._endpoint_is_loopback()
+        return not self._endpoint_is_loopback() or is_cloud_model(self._model)
 
     def _redacted_for_egress(self, messages: list[Message]) -> list[Message]:
         """Best-effort redacted COPY of *messages* for a remote send.
@@ -354,6 +342,7 @@ class ConversationRuntime:
         base_prompt = build_system_prompt(
             workspace=self._workspace,
             profile=self._settings.runtime.security_profile,
+            is_egressing=self._is_egressing(),
         )
         memory_block = ""
         if self._memory is not None:

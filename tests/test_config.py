@@ -970,3 +970,81 @@ def test_validate_override_skills_enabled_message_unchanged(tmp_path: Path) -> N
         match="^skills.enabled is config-file only and cannot be set via /config set$",
     ):
         validate_override("skills.enabled", ["x"])
+
+
+# ---------------------------------------------------------------------------
+# model.allow_cloud: master cloud-egress switch (config-file only, v0.10.0)
+# ---------------------------------------------------------------------------
+
+
+def test_allow_cloud_defaults_off(tmp_path: Path) -> None:
+    """allow_cloud is False by default — local-first egress stays disabled."""
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert loaded.settings.model.allow_cloud is False
+    assert loaded.sources["model.allow_cloud"] == "default"
+
+
+def test_allow_cloud_toml_override(tmp_path: Path) -> None:
+    """allow_cloud = true in config.toml flips it on and records the source."""
+    user = write_toml(tmp_path / "user.toml", "[model]\nallow_cloud = true\n")
+    loaded = load_config(
+        user_config_file=user, project_config_file=tmp_path / "missing.toml", env={}
+    )
+    assert loaded.settings.model.allow_cloud is True
+    assert loaded.sources["model.allow_cloud"] == "user"
+
+
+def test_allow_cloud_rejects_non_boolean(tmp_path: Path) -> None:
+    """allow_cloud must be a boolean; a string value is a fatal config error."""
+    user = write_toml(tmp_path / "user.toml", '[model]\nallow_cloud = "yes"\n')
+    with pytest.raises(ConfigError, match="model.allow_cloud"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_override_allow_cloud_skipped_with_warning(tmp_path: Path) -> None:
+    """allow_cloud cannot be enabled via overrides.json; the entry is ignored."""
+    loaded = _cfg(tmp_path, {"model.allow_cloud": True})
+    assert any("model.allow_cloud" in w and "config-file only" in w for w in loaded.warnings)
+    assert loaded.settings.model.allow_cloud is False
+    assert loaded.sources["model.allow_cloud"] == "default"
+
+
+def test_validate_override_allow_cloud_raises(tmp_path: Path) -> None:
+    """allow_cloud raises ConfigError via /config set (config-file only)."""
+    with pytest.raises(ConfigError, match="config-file only"):
+        validate_override("model.allow_cloud", "true")
+
+
+def test_allow_cloud_has_no_env_var(tmp_path: Path) -> None:
+    """No env var can enable cloud egress (allow_cloud is absent from ENV_MAP)."""
+    from shellpilot.config.loader import ENV_MAP
+
+    assert "model.allow_cloud" not in ENV_MAP.values()
+
+
+def test_allow_cloud_is_boot_only(tmp_path: Path) -> None:
+    """allow_cloud is a boot-only key (cannot toggle egress mid-session)."""
+    from shellpilot.config.loader import BOOT_ONLY_KEYS
+
+    assert "model.allow_cloud" in BOOT_ONLY_KEYS
+
+
+def test_is_cloud_model_classification() -> None:
+    """is_cloud_model recognises the Ollama '-cloud' tag suffix only."""
+    from shellpilot.config.model import is_cloud_model
+
+    assert is_cloud_model("nemotron-3-nano:30b-cloud") is True
+    assert is_cloud_model("gpt-oss:120b-cloud") is True
+    assert is_cloud_model("gemma4:e4b") is False
+    assert is_cloud_model("qwen3.5:4b-mlx") is False
+    assert is_cloud_model("") is False
+    # The suffix must be exact: a substring elsewhere is not a cloud model.
+    assert is_cloud_model("cloud-runner:7b") is False

@@ -114,6 +114,7 @@ class SlashDispatcher:
         glyphs: Glyphs = UNICODE_GLYPHS,
         preload: Callable[[str], None] | None = None,
         attachments: AttachmentQueue | None = None,
+        tty: bool = True,
     ) -> None:
         self._runtime = runtime
         self._client = client
@@ -125,6 +126,7 @@ class SlashDispatcher:
         self._glyphs = glyphs
         self._preload = preload
         self._attachments = attachments
+        self._tty = tty
 
     def handle(self, line: str) -> SlashAction:
         parts = line.strip().split()
@@ -240,13 +242,28 @@ class SlashDispatcher:
                 )
             return
         if args[0] == "use" and len(args) > 1:
-            from shellpilot.config.model import TESTED_FAMILIES, is_tested_model
+            from shellpilot.config.model import TESTED_FAMILIES, is_cloud_model, is_tested_model
             from shellpilot.persistence.workspace_state import save_last_model
 
             name = args[1]
             installed = {model.name for model in self._client.list_models()}
-            if name not in installed:
+            # Cloud models are absent from /api/tags — skip the availability gate
+            # for them (the typo-catch survives for local names).
+            if name not in installed and not is_cloud_model(name):
                 self._console.print(f"[red]{name} is not installed.[/red] See /model list.")
+                return
+            # Cloud-egress consent boundary (design section 15.2): switching to a
+            # cloud/remote model mid-session requires allow_cloud + per-session
+            # consent BEFORE set_model/_preload touch it. On reject: no switch,
+            # no preload, no egress.
+            from shellpilot.cli.terminal import _resolve_cloud_consent
+            from shellpilot.llm.ollama import is_loopback_url
+
+            base_url = self._loaded.settings.model.base_url
+            egressing = is_cloud_model(name) or not is_loopback_url(base_url)
+            if not _resolve_cloud_consent(
+                self._console, self._loaded.settings, name, tty=self._tty
+            ):
                 return
             self._runtime.set_model(name)
             workspace = self._runtime.status().workspace
@@ -256,6 +273,14 @@ class SlashDispatcher:
                 self._console.print(f"[dim]Warning: could not save model choice: {exc}[/dim]")
             if self._preload is not None:
                 self._preload(name)
+            if egressing and self._runtime.audit is not None:
+                from urllib.parse import urlsplit
+
+                self._runtime.audit.write(
+                    "cloud_consent_granted",
+                    model=name,
+                    host=(urlsplit(base_url).hostname or "").rstrip("."),
+                )
             self._console.print(f"Switched to {name}.")
             if not is_tested_model(name):
                 families = ", ".join(TESTED_FAMILIES)

@@ -5,13 +5,31 @@ from __future__ import annotations
 from pathlib import Path
 
 # Tracks behavioral prompt revisions: v1 = initial, v2 = plan-discipline hardening,
-# v3 = proposal/execution split, v4 = Skills v2 builtin resources/triggers.
-PROMPT_VERSION = 4
+# v3 = proposal/execution split, v4 = Skills v2 builtin resources/triggers,
+# v5 = conditional locality line (honest under opt-in cloud egress).
+PROMPT_VERSION = 5
+
+# Local (non-egressing) opening: byte-identical to the pre-v0.10.0 prompt so the
+# gemma4 baseline session is unchanged.
+_LOCAL_OPENING = (
+    "You are ShellPilot, a local AI shell harness running entirely on this machine "
+    "through Ollama. You have no independent network access — any internet contact "
+    "happens only through explicitly registered tools, and every such call requires "
+    "the user's approval."
+)
+
+# Egressing opening: the honest line when the session runs on a cloud/remote model.
+# The "entirely on this machine / no independent network access" claim is FALSE
+# when the prompt leaves the device, so it must not be asserted.
+_EGRESS_OPENING = (
+    "You are ShellPilot, an AI shell harness driven through Ollama. You may be running "
+    "on a remote model: this session's content (system prompt, files, command output, "
+    "memory) leaves this device. Internet contact still happens only through explicitly "
+    "registered tools, and every such call requires the user's approval."
+)
 
 _BASE = """\
-You are ShellPilot, a local AI shell harness running entirely on this machine through Ollama. \
-You have no independent network access — any internet contact happens only through \
-explicitly registered tools, and every such call requires the user's approval.
+{opening}
 
 Workspace: {workspace}
 Security profile: {profile}
@@ -45,8 +63,13 @@ def build_system_prompt(
     workspace: Path,
     profile: str,
     behavior_block: str = "",
+    is_egressing: bool = False,
 ) -> str:
-    prompt = _BASE.format(workspace=workspace, profile=profile)
+    # Default is_egressing=False keeps every existing caller — and the gemma4
+    # local baseline — byte-identical. Only an egressing (cloud/remote) session
+    # swaps in the honest locality line (design section 15.2).
+    opening = _EGRESS_OPENING if is_egressing else _LOCAL_OPENING
+    prompt = _BASE.format(opening=opening, workspace=workspace, profile=profile)
     if behavior_block:
         prompt = f"{prompt}\n\n{behavior_block}"
     return prompt
