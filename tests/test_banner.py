@@ -163,3 +163,21 @@ def test_jet_is_left_right_symmetric() -> None:
         assert leading == trailing, (
             f"jet row not centered: leading={leading} trailing={trailing} :: {raw!r}"
         )
+
+
+def test_recent_session_label_sanitized() -> None:
+    """A control/ANSI sequence in a recent-session label is stripped (Group B).
+
+    The label is a snippet of a past session's first user message — untrusted,
+    possibly-pasted input. A stored escape (e.g. clear-screen) must not repaint
+    the terminal at boot.
+    """
+    panel = render_banner(
+        "gemma4:e4b",
+        is_cloud=False,
+        profile="balanced",
+        recent_sessions=[("hi\x1b[2Jpwned", "1h ago")],
+    )
+    out = _export(panel)  # plain text; the label's ESC is the only escape source
+    assert "\x1b" not in out, "raw ESC from the session label must be stripped before render"
+    assert "pwned" in out, "the visible label text should survive, minus the escape byte"

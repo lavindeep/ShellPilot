@@ -16,6 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from shellpilot import __version__
+from shellpilot.cli.render import _sanitize_line
 
 # ---------------------------------------------------------------------------
 # Jet art — locked v2 block art, embedded verbatim (do NOT read from disk).
@@ -184,7 +185,10 @@ def _recent_section(recent_sessions: Sequence[tuple[str, str]]) -> Text:
     for label, age in recent_sessions:
         t.append("\n")
         t.append("● ", style=_COLOR_DIM)
-        t.append(label)
+        # The label is a snippet of a past session's first USER message — untrusted,
+        # possibly-pasted input. Strip control/ANSI bytes at this render sink so a
+        # stored escape sequence cannot repaint the terminal on boot (Group B).
+        t.append(_sanitize_line(label))
         t.append(f" ({age})", style=_COLOR_DIM)
     return t
 
