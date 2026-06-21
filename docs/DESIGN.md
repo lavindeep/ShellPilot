@@ -1,16 +1,16 @@
 # ShellPilot Design
 
-Status: Current implementation design through v0.8.0, with historical rebuild notes retained
-Date: 2026-06-14
+Status: Current implementation design through v0.10.0, with historical rebuild notes retained
+Date: 2026-06-21
 Repository: `/Users/lavin/Projects/ShellPilot`
 
 ## 1. Purpose
 
-This document defines ShellPilot's design as a modular, local-first Python AI harness. Early sections retain the original rebuild rationale from 2026-06-10; later release-settled sections describe the current implementation through v0.8.0.
+This document defines ShellPilot's design as a modular, local-first Python AI harness. Early sections retain the original rebuild rationale from 2026-06-10; later release-settled sections describe the current implementation through v0.10.0.
 
 The rebuilt project should feel closer to a local coding and shell partner than a menu-driven chatbot. The user should be able to open one CLI conversation, ask questions, ask for project inspection, request command execution, approve plans for complex work, and use a manual shell when they want direct control.
 
-The system remains local-only through Ollama. Gemma 4 is the default and primary supported model family. The design intentionally avoids broad multi-provider abstractions in the first version because different model families vary widely in tool calling, reasoning behavior, streaming, and instruction following.
+The system is local-first through Ollama: by default every model call is local, and cloud/remote models are an explicit, off-by-default opt-in (section 15.2). Gemma 4 is the default and primary supported model family. The design intentionally avoids broad multi-provider abstractions in the first version because different model families vary widely in tool calling, reasoning behavior, streaming, and instruction following.
 
 ## Safety Scope
 
@@ -18,7 +18,7 @@ This project is a local developer productivity harness. Security-related feature
 
 ## 2. Original Repo Baseline
 
-This section is historical context from the initial rebuild plan. The repository has since shipped the rebuilt architecture through v0.8.0, but these observations explain why the current boundaries exist.
+This section is historical context from the initial rebuild plan. The repository has since shipped the rebuilt architecture through v0.10.0, but these observations explain why the current boundaries exist.
 
 The pre-rebuild repository already proved several valuable ideas:
 
@@ -97,7 +97,7 @@ Recommendation (superseded by the settled name):
 
 ### 5.1 Local First
 
-All model calls happen through local Ollama. No telemetry, cloud sync, or hosted API is part of the product. The only network egress is the optional, off-by-default web grounding tools: they contact only the search provider and pages the user approves per request, with no API keys.
+By default, all model calls happen through local Ollama. No telemetry, cloud sync, or automatic upload is part of the product. Cloud/remote models are an explicit opt-in, off by default and gated behind the config-file-only `[model] allow_cloud` switch plus per-session consent (section 15.2) — local-first stays the default and the only full-privacy posture. The only other network egress is the optional, off-by-default web grounding tools: they contact only the search provider and pages the user approves per request, with no API keys.
 
 ### 5.2 Gemma 4 First
 
@@ -1263,7 +1263,7 @@ The product must stay local by default.
 
 Privacy requirements:
 
-- No cloud model calls. No telemetry. No remote logging. No automatic upload of files.
+- No cloud model calls by default. No telemetry. No remote logging. No automatic upload of files. Cloud/remote models are opt-in and off by default; enabling one is gated by `[model] allow_cloud` plus per-session consent, with an active-cloud indicator and an egress audit as the boundary (section 15.2).
 - Web grounding is off by default; when enabled, every request is individually approved
   and audit-logged (query/URL, redacted).
 - No reading sensitive paths unless relevant and approved.
@@ -2247,7 +2247,7 @@ Progressive disclosure lets the model read a skill's deeper docs on demand rathe
 
 **`Readable:` menu.** After the skills-index block, the assembler injects a one-line `"skills readable"` block advertising the on-demand docs of every injected skill: `Readable docs (open with skill_read): <skill>: <name>, <name>; <skill>: <name>`. Only skills with ≥1 on-demand resource appear; names are references before templates, deduped per skill. The block is injected only when `trigger_ctx.enabled` is non-empty (mirroring the `skill_read` registration gate exactly — see Registration above), so a default session with no opted-in skills sees no menu and the baseline system text is unchanged. The block is not budget-counted; it is a bounded single line, not skill body content.
 
-**Workflow skills (opt-in showcase, v0.9.x).** Four `ENABLED`-gated builtins exercise progressive disclosure: `debugging` (reproduce → hypothesize → isolate/bisect → fix the cause → verify; refs `method`, `common-traps`), `verification` (run the real check before claiming done; ref `checklist`), `code-review` (correctness/security/clarity/tests/scope; ref `dimensions`), and `git-workflow` (inspect-before-commit, atomic commits, safe undo; refs `commits`, `recovery`). Each ships a lean injected body (~175–185 est tokens) that routes by name to on-demand `references/*.md` the model reads via `skill_read` when relevant — depth without standing context cost. They are opt-in (enable via `[skills] enabled`), so a default session is byte-identical to before. The `git-workflow` guidance is accurate to the policy classifier: `git reset`/`git clean`, branch deletion, and force-push are `RiskLevel.HIGH` (section 14), a plain `git push` is medium.
+**Workflow skills (opt-in showcase, v0.10.0).** Four `ENABLED`-gated builtins exercise progressive disclosure: `debugging` (reproduce → hypothesize → isolate/bisect → fix the cause → verify; refs `method`, `common-traps`), `verification` (run the real check before claiming done; ref `checklist`), `code-review` (correctness/security/clarity/tests/scope; ref `dimensions`), and `git-workflow` (inspect-before-commit, atomic commits, safe undo; refs `commits`, `recovery`). Each ships a lean injected body (~175–185 est tokens) that routes by name to on-demand `references/*.md` the model reads via `skill_read` when relevant — depth without standing context cost. They are opt-in (enable via `[skills] enabled`), so a default session is byte-identical to before. The `git-workflow` guidance is accurate to the policy classifier: `git reset`/`git clean`, branch deletion, and force-push are `RiskLevel.HIGH` (section 14), a plain `git push` is medium.
 
 ## 24. Operational Edge Cases
 
@@ -2883,3 +2883,47 @@ The specific incidents that motivated the sandbox idea are addressed without OS 
 ### 35.3 Revisit Condition
 
 Real user demand for running ShellPilot in untrusted directories — for example, reviewing unknown repositories or executing agent tasks against code from external sources — would reopen this question with fresh eyes. In that scenario the threat model shifts meaningfully and OS-level confinement becomes more defensible despite the maintenance cost. A future decision should evaluate the sandboxing options available at that time rather than assuming the current Seatbelt or Apple container landscape is unchanged.
+
+## 36. Security Hardening (v0.10.0)
+
+v0.10.0 introduces opt-in cloud models (section 15.2), so it shipped with a deliberate, red-team-audited hardening pass and a dedicated security review before release. The audit lens reflects the new threat model. ShellPilot's existing safety layers — deterministic risk classification, per-action approval, the workspace boundary, the sensitive-read gate — exist to protect **the machine from the model**: even a hijacked or prompt-injected model cannot harm the host without passing a gate. Cloud egress adds a second axis: protecting **the user's data from the provider**. The prompt is itself an egress channel that no per-action gate intercepts, so the hardening below closes the gaps that the new axis exposes, alongside fixes to the existing machine-protection layers that the audit surfaced. The fixes are categorized below; exploit mechanics are deliberately omitted. This is hardening for a single-user local tool run in trusted directories — defence-in-depth, not a confinement boundary (section 35).
+
+### 36.1 Command Classifier — Read-Path Boundary
+
+The dedicated `read_file`/`search_text` tools enforce the workspace boundary and the sensitive-read gate (section 15); the audit found the `run_command` reader path was a parallel, ungated file-read channel. Hardened in `policy/command_policy.py`:
+
+- **Reader executables now honour the boundary.** A reader executable (`cat`/`head`/`tail`/`grep`/`rg`/`wc`/`file`/`stat`/`du`) whose path argument resolves **outside the workspace**, or names a secret marker, is escalated to `RiskLevel.HIGH` (always-ask) instead of returning LOW/auto-run. Because reader commands carry `SideEffect.VARIABLE` they can never auto-run silently, so the deterministic over-ask (HIGH → ASK) is the conservative match for the file tools' boundary, rather than threading the `allow_sensitive_reads` setting through the command path.
+- **`git` global options feed classification.** A `git` invocation carrying a non-benign global option before the verb (`--git-dir`/`--work-tree`/`--exec-path`/`-C`/`-c` and the like) is treated as at least MEDIUM (ASK), closing an out-of-workspace read primitive that the previous first-non-dash-token verb derivation skipped past. Only `--no-pager`/`--literal-pathspecs` remain benign.
+- **`pytest` requires approval.** `pytest` and `python -m pytest` execute arbitrary project Python (conftest/collected modules) at collection time, so the previous LOW carve-out is removed: they now classify MEDIUM (ASK in `balanced`), symmetric with `python script.py`.
+- **Path-qualified basenames are distrusted.** When `argv[0]` contains a path separator (`./grep`, `/abs/grep`), the bare-name LOW allowlist no longer applies; a path-qualified executable is classified at least MEDIUM, so a workspace-staged file sharing a trusted command's name cannot auto-run.
+
+### 36.2 Terminal Output Sanitization
+
+The active-cloud indicator (section 15.2) is only trustworthy if the model — or untrusted data it surfaces — cannot repaint the terminal over it. Control characters and ANSI escape sequences are now stripped at **every** output sink via the shared `_sanitize_line`/`_CONTROL_CHARS` helper (`cli/render.py`), not only in the diff panel: streamed model text (`cli/streaming.py`), raw command output (`show_command_output`), tool-call/tool-result summaries (`cli/render.py`), and status/error lines (`cli/terminal.py`). Tab and newline are preserved; ESC and C0/DEL bytes are removed before anything reaches the screen, so neither model output nor auto-run command output can forge a status region or spoof an approval prompt.
+
+### 36.3 Config-File-Only Egress Invariant
+
+Anything that controls whether data leaves the device is a deliberate config-file act, never reachable from an ambient env var, the program-managed `overrides.json`, or `/config set`. `config/loader.py` defines `CONFIG_FILE_ONLY_KEYS` = {`tools.web`, `model.base_url`, `runtime.security_profile`, `model.allow_cloud`}: these are rejected by `validate_override`, skipped-with-warning in the overrides loop, and absent from `ENV_MAP` (the `SHELLPILOT_OLLAMA_BASE_URL` env redirect was dropped). The invariant previously asserted only for `tools.web` against env vars now holds uniformly across all three layers and all four keys — the precedent `allow_cloud` was built to copy.
+
+### 36.4 Project AGENTS.md Trust-on-First-Use
+
+A project `AGENTS.md` is injected as standing instructions with the same authority as ShellPilot's own prompt, so cloning and running in an untrusted repo could load attacker-authored instructions every turn (and, under cloud, egress them turn one). The project (workspace) `AGENTS.md` is now gated behind per-workspace **trust-on-first-use**: its SHA-256 content digest (`project_agents_md_digest`, `memory/agents_md.py`) is recorded in program-managed workspace state (`.shellpilot/state.json`) once the user accepts it. A non-TTY session fails closed (the file is skipped), and because the gate keys on the content digest, **any change to the file re-prompts** before the new content is trusted. The global config-dir `AGENTS.md` stays trusted (it is the user's own).
+
+### 36.5 Egress Chokepoint and Audit
+
+A single locality predicate, `is_egressing(model, base_url)` (`config/model.py`), is the one source of truth for whether a session is off-box — true for a cloud model (the `-cloud` tag, via `is_cloud_model`) or a non-loopback `base_url` (`is_loopback_url`, `llm/ollama.py`). At the conversational chokepoint (`conversation.py` tool loop; the `/memory compact` residual is noted in section 15.1):
+
+- **Best-effort outbound redaction** runs on egressing turns when `privacy.redact_secrets` is on — a **redacted copy** of the outbound messages is sent (the in-memory history is never mutated); a loopback turn is sent byte-identical. It is regex-based defence-in-depth (misses novel formats, cannot redact image/base64), not a confidentiality guarantee.
+- **Egress-visibility audit** emits a `model_request` event per egressing turn (host/model/counts only — never message bodies) and a `web_egress` event before each `SideEffect.NETWORK` tool call (section 22), recording *what left the device* without its contents.
+
+### 36.6 DNS-Rebinding SSRF Defense in `web_fetch`
+
+The `web_fetch` fetcher previously validated only literal IP addresses, so a hostname resolving to a loopback/private/link-local/metadata address bypassed the guard. `_check_url` (`web/fetch.py`) now resolves every hostname (`socket.getaddrinfo`) and validates **each** resolved address with a single `not addr.is_global` check (covering loopback, RFC-1918 private, link-local, and CGNAT/shared metadata ranges), on the initial URL and on **every redirect hop**. Accepted residual, documented in code: the connection is not pinned to the validated IP (pinning would break TLS SNI/cert verification for arbitrary HTTPS), so the narrow resolve-then-reconnect rebinding window is not closed — acceptable on a single-user box where `web_fetch` is `SideEffect.NETWORK` (always-ask) in every profile.
+
+### 36.7 At-Rest File-Permission Parity
+
+The two highest-value at-rest artifacts — session transcripts and the audit log — were created world/group-readable (0644) under the default umask while lower-value state (memory/overrides) was already 0600. Both now create their file at mode 0600 and parent directory at 0700 (`os.open(..., O_CREAT, 0o600)`, `persistence/sessions.py` and `audit_store.py`), bringing parity. Exploitation requires a co-resident second local user — absent from the single-user laptop deployment — so this is local-first-acceptable hardening, but the split was clearly unintended and the fix is trivial.
+
+### 36.8 Cloud Consent Triad
+
+The opt-in cloud feature (section 15.2) rests on four enforced controls, summarized here as the security spine: (1) `[model] allow_cloud` defaults to **`false`** and is config-file-only (section 36.3); (2) a **fail-closed per-session consent gate** (`_resolve_cloud_consent`) runs at boot strictly before any prompt-bearing call and declines on a non-TTY, EOF, Enter, or anything but an explicit yes — so a decline egresses no prompt data; (3) an **unspoofable active-cloud indicator** (boot banner, persistent header bar, `/status` locality) derived from `is_egressing` on the live model, never from model output; and (4) a `cloud_consent_granted` audit event recording the consent. Consent is *the* boundary: once granted, the prompt egresses, with the best-effort redaction above layered behind it. Local-first remains the only full-privacy posture.
