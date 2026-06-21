@@ -6,7 +6,7 @@ A local-first AI shell harness: one terminal conversation that can answer, inspe
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-ShellPilot runs a small local model through [Ollama](https://ollama.com) and gives it a tight set of structured tools — file reads, anchored edits, command execution, planning, memory, and optional web grounding. The model proposes; you approve. Command risk is classified by a deterministic policy engine, not by asking the model whether something is safe. Nothing leaves your machine: no cloud model calls, no accounts, no API keys, no telemetry. Web access is off by default, and when enabled, every request is approved one at a time.
+ShellPilot runs a small local model through [Ollama](https://ollama.com) and gives it a tight set of structured tools — file reads, anchored edits, command execution, planning, memory, and optional web grounding. The model proposes; you approve. Command risk is classified by a deterministic policy engine, not by asking the model whether something is safe. By default, nothing leaves your machine: local Ollama only, no accounts, no API keys, no telemetry. Cloud models are opt-in and off by default, gated behind an explicit config switch and a per-session consent prompt. Web access is off by default, and when enabled, every request is approved one at a time.
 
 It is built for and tested against `gemma4:e4b` — a model that fits on modest hardware — so the design assumes a capable-but-fallible local model and treats recovery as the main loop, not an edge case.
 
@@ -16,7 +16,7 @@ It is built for and tested against `gemma4:e4b` — a model that fits on modest 
 
 **Deterministic safety and command approval.** Every command is classified by a policy engine that inspects the executable, arguments, shell metacharacters, file targets, the workspace boundary, and known destructive patterns. The classification — and the plain-language explanation of *why* a command is risky — is produced by code, not the model, so the model can never talk a `rm -rf` down to "low risk." Agent commands always run with `shell=False`; the model never gets a raw shell. High-risk commands require you to type `run`.
 
-**Local-first and private.** The only model backend is local Ollama. Sessions, memory, logs, plans, and audit trails stay on disk where you can read them. There is no telemetry and no hosted call path. The single optional source of network egress — web grounding — is off until you set it in config, and every search and page fetch is individually approved in every profile.
+**Local-first by default and private.** The default model backend is local Ollama — sessions, memory, logs, plans, and audit trails stay on disk where you can read them. There is no telemetry. Cloud models are opt-in, off by default, and require an explicit config change and per-session consent before anything leaves the device. The single optional source of network egress in a local session — web grounding — is off until you set it in config, and every search and page fetch is individually approved in every profile.
 
 Beyond the spotlight:
 
@@ -88,7 +88,7 @@ ShellPilot is developed and tested on **macOS** (Apple Silicon) and is **continu
 A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text):
 
 ```text
-ShellPilot 0.9.0
+ShellPilot 0.10.0
 gemma4:e4b · balanced · /help for commands
 
 ~/my-project · gemma4:e4b · balanced
@@ -234,6 +234,26 @@ glyphs = "auto"          # auto | unicode | ascii
 
 `[tools] web` and `[skills] enabled` are config-file-only by design: enabling network egress or activating skills must be a deliberate edit, not something an env var or `/config set` can flip. User skills live in `<config_dir>/skills/<name>/SKILL.md`. ShellPilot also reads behavior instructions from `AGENTS.md` in your config directory (global) and the workspace root (project) at session start; it follows them and never writes those files.
 
+### Cloud models (opt-in)
+
+Cloud models are **off by default**. To use an Ollama cloud model (any model whose name ends in `-cloud`, e.g. `nemotron-3-nano:30b-cloud`), add this to your `config.toml`:
+
+```toml
+[model]
+allow_cloud = true
+default = "nemotron-3-nano:30b-cloud"
+```
+
+`[model] allow_cloud` is **config-file-only** — it cannot be set via an environment variable, `overrides.json`, or `/config set`. Enabling cloud egress must be a deliberate edit.
+
+With `allow_cloud = true`, ShellPilot shows an honest disclosure prompt before any data leaves the device and asks for explicit **y/N** consent (defaulting to **N**). Declining — or running non-interactively — fails closed and the session does not start. Consent is per-session and never persisted; every launch re-asks.
+
+**What the disclosure covers:** when a cloud model is active, the entire prompt — file contents, command output, memory the model reads — is sent to the provider. Best-effort outbound redaction runs, but it is regex-based and not a confidentiality guarantee (novel secret formats and image data may egress unredacted). The provider's data retention, training, and jurisdiction are outside ShellPilot's control. ShellPilot records a `cloud_consent_granted` event and per-turn `model_request` audit events locally so you can audit what sessions egressed.
+
+**Local-first (the default) remains the only full-privacy posture.**
+
+The same gate fires if you switch models mid-session with `/model use <cloud-name>`: fresh consent is required before anything loads, and on decline the model does not switch.
+
 ## Troubleshooting
 
 - **`Ollama API: unreachable`** — Ollama is not serving. Start it (`ollama serve`, or launch the app) and re-run `shellpilot doctor`.
@@ -247,7 +267,7 @@ glyphs = "auto"          # auto | unicode | ascii
 
 - **Determinism where it earns its place.** Safety, correctness, and control flow are deterministic — risk classification, the approval gate, anchored read-before-write, pre-flight command checks, plan completion. The model's general capability is not babysat; the harness scaffolds the structure of the interaction, not the model's every output.
 - **Fix problems in the harness, not the prompt.** Bad behavior is corrected by deterministic mechanism, never by telling the model "don't do that."
-- **Local-first, no account.** Ollama is the only backend. State stays on disk; the only optional egress is per-request-approved web grounding with no keys.
+- **Local-first by default, no account.** Local Ollama is the default and recommended backend. State stays on disk; the only optional egress in a local session is per-request-approved web grounding with no keys. Cloud models are opt-in, off by default, and require explicit per-session consent.
 - **Small-model focus.** Built and validated on `gemma4:e4b` on an 8 GB machine. Prompts, tool schemas, retries, and grounding guidance are sized for that baseline, with room to dial scaffolding down as models improve.
 - **Docs as spec.** [`docs/DESIGN.md`](docs/DESIGN.md) is the spec of record and ships in the same commit as the behavior it describes.
 
@@ -265,13 +285,14 @@ python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 
 ## Status and roadmap
 
-Current release: **v0.9.0** — skill progressive disclosure. Recent milestones:
+Current release: **v0.10.0** — opt-in cloud models. Recent milestones:
 
 - **v0.7.x** — Skills v2 with trigger-driven built-in guidance and read-only resources; instant high-risk approvals generated deterministically from classifier reasons.
 - **v0.8.x** — web-grounding quality and hardening for small local models: fetch-before-answer, discover-first query shaping, fetch-recovery, current-generation checks; planner hardening for a single end-of-plan summary and idempotent re-proposals.
 - **v0.9.0** — progressive disclosure: a `skill_read` tool and a readable-docs menu let skills carry depth without inflating every prompt.
+- **v0.10.0** — opt-in cloud models behind `[model] allow_cloud` and a per-session consent gate; egress chokepoint with best-effort outbound redaction; `cloud_consent_granted` and `model_request` audit events; honest system-prompt when egressing.
 
-Later candidates include richer workflow skills (debugging, verification, review, git), controlled skill-script execution under its own safety design, opt-in cloud models behind an explicit per-session consent gate, a `trusted-local` profile, and `/undo`.
+Later candidates include richer workflow skills (debugging, verification, review, git), controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
 
 ## License
 
