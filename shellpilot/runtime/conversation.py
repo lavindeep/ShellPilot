@@ -42,7 +42,7 @@ TOOL_DIGEST_HEAD = 200
 TOOL_DIGEST_TAIL = 200
 MAX_PLAN_NUDGES = 2
 MAX_EMPTY_NUDGES = 2
-# ponytail: tunable ceiling separating a real end-of-plan summary from a terse
+# NOTE: tunable ceiling separating a real end-of-plan summary from a terse
 # "done." When a completing reply already carries content this long, the streamed
 # prose IS the single summary and the redundant re-summary round is skipped.
 MIN_SUMMARY_CHARS = 80

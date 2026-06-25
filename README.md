@@ -85,20 +85,16 @@ ShellPilot is developed and tested on **macOS** (Apple Silicon) and is **continu
 
 ## A session
 
-A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text):
+A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text). On launch, ShellPilot v0.10.0 prints a panel banner — a block-art logo alongside Commands, Tips, Workflow-skills, and Recent-sessions sections — then drops to the prompt; the transcript below picks up there:
 
 ```text
-ShellPilot 0.10.0
-gemma4:e4b · balanced · /help for commands
-
-~/my-project · gemma4:e4b · balanced
+~/my-project · gemma4:e4b · balanced · ● local   6% ctx
 ❯ what does this repo do?
 
   This is a CLI that counts lines in source files. The entry point is
   src/cli.py, which calls count_lines() in src/counter.py ...
-  3.1s · 0.4k tokens · ctx 6%
 
-~/my-project · gemma4:e4b · balanced
+~/my-project · gemma4:e4b · balanced · ● local   11% ctx
 ❯ fix the off-by-one in count_lines and run the tests
 
   ╭─ Plan · 20260620-141502-fix-off-by-one ───────────╮
@@ -121,19 +117,18 @@ gemma4:e4b · balanced · /help for commands
     +    for i in range(0, len(lines)):
      MEDIUM  tool
     CWD: ~/my-project
-  Approve? [y/n] y
+  Approve? [y]es / [e]dit / [n]o y
   ⎿ ✓ applied 1 change
 
   ⏺ run_command(argv=['python', '-m', 'pytest'])
 
      MEDIUM  command · runs arbitrary python code
     CWD: ~/my-project
-  Approve? [y/n] y
+  Approve? [y]es / [e]dit / [n]o y
   ⎿ ✓ 14 passed in 0.31s
 
   All steps complete. Fixed the off-by-one (the loop skipped the first line)
   and the suite passes.
-  9.4s · 1.2k tokens · ctx 11%
 ```
 
 Read-only tools and low-risk commands (`ls`, `git status`, an in-workspace `cat`) run automatically under `balanced`; anything that runs code or writes — including a test run — asks first, and a write shows the diff. A high-risk command is different again — it carries the deterministic purpose explanation and refuses a plain `y`:
@@ -160,7 +155,7 @@ Read-only tools and low-risk commands (`ls`, `git status`, an in-workspace `cat`
 | **Progressive disclosure** | Deeper skill docs are read on demand through the `skill_read` tool rather than injected into every prompt; active skills advertise their readable docs in a one-line menu. New in v0.9.0. |
 | **Web grounding** | Opt-in `web_search` and `web_fetch`, off by default, network-approved per request in every profile. The model is guided to fetch sources before asserting facts and to re-search rather than invent URLs. |
 | **Memory** | Global and project memory as plain JSON; the model proposes, you approve each change. Secrets are redacted before disk. |
-| **Manual shell** | `/shell` opens a raw `shell=True` session the model is not part of; `/exit-shell` returns. |
+| **Manual shell** | `/shell` opens a raw `shell=True` session the model is not part of; `/exit-shell` returns. `!<cmd>` runs one command through the same audited path without entering the loop; bare `!` opens the loop. |
 | **Image input** | `/attach <path>` stages a PNG/JPG/GIF/WebP image for the next message when the active model supports vision. |
 | **Sessions & audit** | Conversations journal to `.shellpilot/sessions/`; `--resume` restores them (active plan included); `/export` writes markdown. Approvals, commands, edits, and config changes log as redacted JSONL. |
 
@@ -201,6 +196,7 @@ Inside a session, plain language is the primary interface; slash commands contro
 | `/export <path>` | Export this session's transcript to markdown. |
 | `/attach <path>` | Stage an image for your next message; bare `/attach` lists staged images. |
 | `/shell`, `/exit-shell` | Enter and leave Manual Shell. |
+| `!<cmd>`, `!` | Run one command through the audited manual-shell path (raw shell, same as `/shell`) without entering the loop; bare `!` opens the Manual Shell loop. |
 | `/doctor` | Run the doctor checks from within a session. |
 | `/exit` | Exit ShellPilot. |
 
@@ -235,7 +231,7 @@ theme = "default"
 glyphs = "auto"          # auto | unicode | ascii
 ```
 
-`[skills] enabled` (and `[model.options]`) are config-file-only: they can only be changed by editing `config.toml`, never via an env var, `overrides.json`, or `/config set`. Egress and safety keys (`[tools] web`, `[model] base_url`, `[model] allow_cloud`, `[runtime] security_profile`) can be set in `config.toml` or via a confirm-gated `/config set` — never silently by an env var. `/config set` shows an amber warning and requires explicit confirmation before persisting any of these to `overrides.json`. User skills live in `<config_dir>/skills/<name>/SKILL.md`. ShellPilot also reads behavior instructions from `AGENTS.md` in your config directory (global) and the workspace root (project) at session start; it follows them and never writes those files.
+`[skills] enabled` (and `[model.options]`) are config-file-only: they can only be changed by editing `config.toml`, never via an env var, `overrides.json`, or `/config set`. Egress and safety keys (`[tools] web`, `[model] base_url`, `[model] allow_cloud`, `[runtime] security_profile`) can be set in `config.toml` or via a confirm-gated `/config set` — never silently by an env var. `/config set` shows an amber warning and requires explicit confirmation before persisting any of these to `overrides.json`. User skills live in `<config_dir>/skills/<name>/SKILL.md`. ShellPilot also reads behavior instructions from `AGENTS.md`: the one in your config directory (global) is always loaded, while the workspace-root one (project) is gated behind a trust-on-first-use prompt shown the first time it is seen or whenever its contents change. It follows them and never writes those files.
 
 ### Cloud models (opt-in)
 
@@ -293,9 +289,9 @@ Current release: **v0.10.0** — opt-in cloud models. Recent milestones:
 - **v0.7.x** — Skills v2 with trigger-driven built-in guidance and read-only resources; instant high-risk approvals generated deterministically from classifier reasons.
 - **v0.8.x** — web-grounding quality and hardening for small local models: fetch-before-answer, discover-first query shaping, fetch-recovery, current-generation checks; planner hardening for a single end-of-plan summary and idempotent re-proposals.
 - **v0.9.0** — progressive disclosure: a `skill_read` tool and a readable-docs menu let skills carry depth without inflating every prompt.
-- **v0.10.0** — security hardening pass (policy tightening, terminal-output sanitization, DNS rebinding guard, audit/session file modes, config-key hardening, AGENTS.md TOFU); opt-in cloud models behind `[model] allow_cloud` with a per-session consent gate, fail-closed non-TTY path, best-effort outbound redaction, `cloud_consent_granted` and `model_request` audit events, honest system-prompt when egressing, and an unmistakable active-cloud indicator (☁ header bar + amber model name + `/status` locality); four opt-in workflow skills (debugging, verification, code-review, git-workflow); boot banner with cheat-sheet and amber/green model-locality color; streamlined one-key boot picker; approval diff scrolling reveal for long diffs.
+- **v0.10.0** — security hardening pass (policy tightening, terminal-output sanitization, DNS rebinding guard, audit/session file modes, config-key hardening, AGENTS.md TOFU); opt-in cloud models behind `[model] allow_cloud` with a per-session consent gate, fail-closed non-TTY path, best-effort outbound redaction, `cloud_consent_granted` and `model_request` audit events, honest system-prompt when egressing, and an unmistakable active-cloud indicator (☁ status bar + amber model name + `/status` locality); a persistent status bar (directory · model · profile · locality + context %); four opt-in workflow skills (debugging, verification, code-review, git-workflow); boot banner with cheat-sheet and amber/green model-locality color; streamlined one-key boot picker; reject-and-steer `[e]dit` tool/command approvals; a `!` one-shot manual-shell escape; resolved-path display in approval panels; full-width diff bars; `/config` command consolidation; approval diff scrolling reveal for long diffs.
 
-Later candidates include controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
+Next up is **v0.10.1** — a full-screen TUI input dock (framed input box, queueable input, completion-menu integration) deferred from v0.10.0. Later candidates include controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
 
 ## License
 

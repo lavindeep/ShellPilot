@@ -258,7 +258,7 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
 
 
 def render_diff(diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None) -> Panel:
-    """Claude-Code-style diff panel: gutter, line backgrounds, word highlights.
+    """An editor-style diff panel: gutter, line backgrounds, word highlights.
 
     When *max_rows* is set and the rendered diff exceeds it, the panel keeps the
     first ``max_rows`` rows and appends one ``… (+N more)`` footer (``sp.faint``,

@@ -1,6 +1,6 @@
 """Persistent bottom status bar — the at-a-glance dock above the input.
 
-A Claude-Code-style one-line bar pinned just above the prompt (rendered as the
+An editor-style one-line bar pinned just above the prompt (rendered as the
 input's ``bottom_toolbar``, so it stays static and refreshes each render). It
 folds two previously-separate readouts into one always-on place:
 

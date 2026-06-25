@@ -103,7 +103,7 @@ class SessionStore:
                             return snippet[:32] + "…" if len(snippet) > 32 else snippet
         except OSError:
             pass
-        # ponytail: no user message recorded yet — fall back to the model name
+        # NOTE: no user message recorded yet — fall back to the model name
         # (the only other recognizable real field) rather than the session id.
         return model or path.stem
 

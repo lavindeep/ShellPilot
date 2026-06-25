@@ -107,7 +107,7 @@ def _write_preserving(path: Path, text: str) -> None:
 def unified_diff(display_path: str, before: str, after: str) -> str:
     """Render a unified diff whose headers name *display_path*.
 
-    ponytail (display-integrity invariant, design section 14.5): callers pass
+    NOTE (display-integrity invariant, design section 14.5): callers pass
     the workspace-relative form of the SAME ``resolve_in_workspace`` result the
     edit acts on, so the diff header — and the approval panel title derived from
     it — always names the file actually written, never the raw model argument.

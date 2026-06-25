@@ -452,7 +452,7 @@ def make_plan_tools(
             # (manager.create stores goal as-is and each step verbatim as
             # PlanStep.title), so a byte-identical re-emit matches while any real
             # goal/step change falls through to the recreate branch below.
-            # ponytail: a deliberate identical "restart" re-propose is swallowed —
+            # NOTE: a deliberate identical "restart" re-propose is swallowed —
             # far rarer than the duplicate-emit this prevents.
             return ToolResult(
                 success=True,

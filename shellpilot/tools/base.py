@@ -177,7 +177,7 @@ OUTSIDE_WORKSPACE_DISPLAY = "<outside workspace>"
 def workspace_display(workspace: Path, raw_path: str) -> str:
     """Faithful display form of a tool path argument (design section 14.5).
 
-    ponytail (display-integrity invariant): the path shown to the user is
+    NOTE (display-integrity invariant): the path shown to the user is
     derived from the SAME ``resolve_in_workspace`` the tool acts on, so the
     display can never diverge from the file actually touched. A spoofing
     argument (``..`` segments, ``./x/../y``, symlink, trailing junk) collapses

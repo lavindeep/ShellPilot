@@ -1987,7 +1987,7 @@ Slash commands are user controls for the harness itself. They should not be the 
 
 Commands should be predictable, composable, and safe. Destructive app-state commands should ask for confirmation.
 
-Planned commands:
+Commands:
 
 | Command | Purpose |
 |---|---|
@@ -2004,6 +2004,9 @@ Planned commands:
 | `/config show` | Print resolved config with source layers. |
 | `/config edit` | Print the user config path for editing; if no `config.toml` exists yet, first write a commented starter template (resolving to defaults) at that path. Never overwrites an existing file (§17.2). |
 | `/config reload` | Reload config from disk. |
+| `/config set <key> <value>` | Validate and persist a single override to `overrides.json`; high-stakes keys require an amber-gated confirmation (§17.3). |
+| `/config unset <key>` | Remove the override for `<key>` (§17.3). |
+| `/config reset` | Clear all overrides after `y/N` confirmation (§17.3). |
 | `/cwd` | Show current workspace boundary and process cwd. |
 | `/cwd set <path>` | Change workspace cwd/boundary after confirmation. |
 | `/tools` | List available tools and whether each is enabled by the active profile. |
@@ -2109,6 +2112,8 @@ Commands run exactly as typed with shell=True.
 The AI is not controlling this mode.
 Type /exit-shell to return.
 ```
+
+A `!` prefix is a one-shot escape into the same audited manual-shell path: `!<cmd>` runs a single command (raw shell, identical to `/shell`) without entering the shell loop, while a bare `!` opens the loop. It is a human-only escape — the prefix is recognized only at the interactive prompt reader, so model output can never reach it.
 
 ## 22. Logging And Audit
 
@@ -2794,7 +2799,7 @@ This sectioned layout replaced the earlier two-column command-only banner.
 
 ### 31.11 Persistent status bar
 
-A one-line status bar is pinned at the input as `prompt_toolkit`'s `bottom_toolbar`, so it stays static and refreshes on every render (the Claude-Code feel). It is the at-a-glance complement to `/status` (§15.2 detailed readout). Layout:
+A one-line status bar is pinned at the input as `prompt_toolkit`'s `bottom_toolbar`, so it stays static and refreshes on every render. It is the at-a-glance complement to `/status` (§15.2 detailed readout). Layout:
 
 ```text
 ~/Projects · gemma4:e4b · balanced · ● local      12% ctx
@@ -2875,11 +2880,11 @@ Search quality is a known watch item: DDG HTML results vary by region, UA, and p
 - Hostname must be non-empty.
 - Blocked by name: `localhost`, any `*.localhost` subdomain, `0.0.0.0`.
 - Trailing dots are stripped from the hostname before all checks (e.g. `localhost.` normalises to `localhost`); a hostname consisting entirely of dots is treated as empty and rejected.
-- IP literals (including IPv6) are rejected if `is_loopback`, `is_private`, `is_link_local`, or `is_reserved`.  Legacy short-dotted numeric forms (e.g. `127.1`) that `ipaddress` cannot parse are retried via `socket.inet_aton` and subjected to the same checks.
+- IP literals (including IPv6) are rejected when `not addr.is_global`, covering loopback, private, link-local, reserved, and CGNAT/shared ranges (matching §36.6).  Legacy short-dotted numeric forms (e.g. `127.1`) that `ipaddress` cannot parse are retried via `socket.inet_aton` and subjected to the same checks.
 
 **Per-hop redirect re-check:** redirects are followed manually (up to `MAX_REDIRECTS = 10` hops). Every redirect destination passes through the same guard before the next connection is made, so a public URL that 302s to a private IP is blocked at the second hop.
 
-**Known limitation:** the guards act on the URL hostname before DNS resolution. A public-looking domain that resolves to a private IP (DNS rebinding) is not caught. DNS pinning is not implemented; the guards cover accidental cases, not adversarial ones. Users requiring stronger SSRF protection should layer a network-level egress filter outside ShellPilot.
+**Known limitation:** every hostname is resolved and each resolved address is validated before connecting (§36.6), but the connection is not pinned to the validated IP — pinning would break TLS SNI/cert verification for arbitrary HTTPS. The narrow resolve-then-reconnect rebinding window therefore remains open; users requiring stronger SSRF protection should layer a network-level egress filter outside ShellPilot.
 
 **No `robots.txt` by design:** each fetch is an individually user-approved action that behaves like a direct browser visit. Automatic robots.txt compliance would add latency and complexity for no meaningful benefit in a single-user harness where every request is manually gate-kept.
 
@@ -2985,7 +2990,7 @@ The active-cloud indicator (section 15.2) is only trustworthy if the model — o
 
 ### 36.3 Egress / Safety Setter Invariant
 
-Anything that controls whether data leaves the device, or the local approval posture, is a **deliberate** act — never reachable from an **ambient environment variable**. `config/loader.py` defines `HIGH_STAKES_KEYS` = {`tools.web`, `model.base_url`, `runtime.security_profile`, `model.allow_cloud`}: every one is **absent from `ENV_MAP`** (the `SHELLPILOT_OLLAMA_BASE_URL` env redirect was dropped), so no ambient env var can enable egress, redirect the endpoint, or downgrade the profile. This env-absence claim is the load-bearing invariant and holds uniformly across all four keys.
+Anything that controls whether data leaves the device, or the local approval posture, is a **deliberate** act — never reachable from an **ambient environment variable**. `config/loader.py` defines `HIGH_STAKES_KEYS` = {`tools.web`, `model.base_url`, `runtime.security_profile`, `model.allow_cloud`}: every one is **absent from `ENV_MAP`** (the `SHELLPILOT_OLLAMA_BASE_URL` and `SHELLPILOT_PROFILE` env redirects were dropped), so no ambient env var can enable egress, redirect the endpoint, or downgrade the profile. This env-absence claim is the load-bearing invariant and holds uniformly across all four keys.
 
 The four keys are settable two deliberate ways: a `config.toml` edit, or a runtime `/config set` gated by an amber warning + explicit confirmation (the `HIGH_STAKES_KEYS` gate in `SlashDispatcher._config_set`). A confirmed `/config set` persists through the program-managed `overrides.json` and applies at the key's reload time (the three egress keys are boot-only, so the effect is next launch; `runtime.security_profile` is read per turn, so it applies this session — the same live effect as `/profile use`). This is a deliberate relaxation of the stricter original form (which also forbade `/config set` and the overrides layer) for a reasoned trade-off: the model can neither type slash commands nor write `overrides.json` (it lives in the config dir, outside the workspace), and the per-session cloud-consent gate (§36.8 control 2) still fires regardless of how `allow_cloud` was set — so the relaxation opens no model/injection vector, while the amber confirm preserves the deliberateness the invariant exists to guarantee. The two **structural** config-file-only keys (`CONFIG_FILE_ONLY_KEYS` = {`model.options`, `skills.enabled`}) remain fully config-file-only: rejected by `validate_override`, skipped-with-warning in the overrides loop, and absent from `ENV_MAP`.
 

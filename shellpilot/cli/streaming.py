@@ -197,7 +197,7 @@ class DiffReveal:
     # Total reveal time, bounded regardless of length: a huge diff adds no real
     # latency (chunk size scales with row count to keep within this budget).
     TOTAL_DURATION: ClassVar[float] = 0.6
-    # ponytail: tools/patch.py unified_diff already caps the source at
+    # NOTE: tools/patch.py unified_diff already caps the source at
     # MAX_PREVIEW_LINES = 60, so request.diff is <=~60 lines and these row-level
     # bounds are a second display layer — no need to re-cap beyond WINDOW_ROWS.
 
