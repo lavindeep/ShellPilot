@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
-import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -15,7 +16,6 @@ from shellpilot.llm.messages import Message, ToolCall, ToolDefinition
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_GENERATE_TIMEOUT_SECONDS = 300.0
-BASE_URL_ENV_VAR = "SHELLPILOT_OLLAMA_BASE_URL"
 
 
 class OllamaError(Exception):
@@ -39,7 +39,40 @@ class LocalModel:
 
 
 def resolve_base_url() -> str:
-    return os.environ.get(BASE_URL_ENV_VAR, DEFAULT_BASE_URL)
+    # The Ollama endpoint is a config-file-only setting (model.base_url); it is
+    # deliberately NOT read from an ambient env var, so a malicious environment
+    # cannot redirect where prompts are sent (audit F7). Clients constructed
+    # without an explicit base_url (e.g. doctor) fall back to the local default.
+    return DEFAULT_BASE_URL
+
+
+def is_loopback_url(base_url: str) -> bool:
+    """True when *base_url* points at this box (loopback = local, no egress).
+
+    The single source of truth for endpoint locality, shared by the runtime
+    egress chokepoint and the CLI boot consent gate so both agree on what
+    counts as off-box (design section 15.2). An empty/unset base_url falls back
+    to the local default and is local; ``localhost`` / ``*.localhost`` /
+    ``0.0.0.0`` and any loopback IP (127.0.0.0/8, ::1) or the unspecified
+    address are local. Anything else — a different literal host, OR a non-empty
+    but unparseable URL/host — is treated as remote (fail closed).
+    """
+    if not base_url.strip():
+        return True  # unset → OllamaClient falls back to the local default
+    try:
+        host = (urlsplit(base_url).hostname or "").rstrip(".")
+    except ValueError:
+        return False  # unparseable URL → remote (fail closed)
+    if not host:
+        return False  # non-empty URL with no parseable host → remote (fail closed)
+    if host == "localhost" or host.endswith(".localhost") or host == "0.0.0.0":  # noqa: S104
+        return True
+    ip_str = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_unspecified
 
 
 class OllamaClient:

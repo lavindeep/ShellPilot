@@ -268,6 +268,55 @@ def test_declined_command_does_not_run(tmp_path: Path) -> None:
     assert any("declined" in m.content for m in tool_messages)
 
 
+def test_steered_command_does_not_run_and_guidance_reaches_model(tmp_path: Path) -> None:
+    """[e]dit/STEER: the proposed command never runs; the guidance is fed to the
+    model so it re-proposes; the re-proposal re-enters the normal approval gate.
+
+    Both the wrong command and the (HIGH-risk) re-proposal require approval, so a
+    second gate invocation PROVES the re-proposal went through the normal flow.
+    """
+
+    class _SteerOnceUI(FakeUI):
+        """Steers the first approval, approves the second (the re-proposal)."""
+
+        def ask_approval(self, request):  # type: ignore[no-untyped-def]
+            self.approval_requests.append(request)
+            from shellpilot.policy.approvals import APPROVE, ApprovalReply
+
+            if len(self.approval_requests) == 1:
+                return ApprovalReply(
+                    approved=False, steer_text="the dir is 'build' not 'bulid', use git clean"
+                )
+            return APPROVE  # approve the re-proposal
+
+    target = tmp_path / "build"
+    target.mkdir()
+    decoy = tmp_path / "bulid"
+    decoy.mkdir()
+
+    fake = FakeLLM(
+        script=[
+            tool_call("run_command", argv=["rm", "-rf", "bulid"]),  # wrong, gets steered
+            tool_call("run_command", argv=["rm", "-rf", "build"]),  # HIGH-risk re-proposal
+            answer("done"),
+        ]
+    )
+    ui = _SteerOnceUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+
+    runtime.run_turn("delete the build dir")
+
+    # The steered (wrong) command never ran — its target survives.
+    assert decoy.exists()
+    # The re-proposal re-entered the gate (a SECOND approval request) and ran.
+    assert len(ui.approval_requests) == 2
+    assert not target.exists()
+    # The guidance reached the model as a tool-role message before the re-proposal.
+    second_call_msgs = fake.calls[1].messages
+    tool_msgs = [m for m in second_call_msgs if m.role == "tool"]
+    assert any("the dir is 'build' not 'bulid', use git clean" in m.content for m in tool_msgs)
+
+
 def test_low_risk_command_runs_without_approval_in_balanced(tmp_path: Path) -> None:
     fake = FakeLLM(script=[tool_call("run_command", argv=["pwd"]), answer("done")])
     ui = FakeUI()

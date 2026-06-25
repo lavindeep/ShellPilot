@@ -51,6 +51,21 @@ def resolve_preselect(
     return config_default
 
 
+def confirm_last_model(console: Console, last_model: str) -> bool:
+    """Compact "fly the last model or open the menu" prompt.
+
+    Returns True to use *last_model* as-is, False to open the full picker.
+    Empty input (Enter) / EOF / KeyboardInterrupt -> True (fly); any non-empty
+    input -> False (open the menu).
+    """
+    console.print(f"[sp.emph]✈ Last flight:[/sp.emph] [sp.emph]{escape(last_model)}[/sp.emph]")
+    prompt = "[sp.dim]Enter to fly · any other key for the menu[/sp.dim] "
+    try:
+        return console.input(prompt).strip() == ""
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+
 def choose_model(console: Console, models: list[LocalModel], preselect: str) -> str:
     """Print a numbered model list and prompt the user to pick one.
 

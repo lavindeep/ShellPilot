@@ -7,6 +7,7 @@ or writes them (settled open decision, design section 29).
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,11 +43,36 @@ def _read_bounded(path: Path, max_tokens: int) -> str | None:
     return bounded
 
 
+def project_agents_md_digest(workspace: Path) -> str | None:
+    """SHA-256 of the raw bytes of ``<workspace>/AGENTS.md``, or None.
+
+    Returns None when the file is absent, unreadable, or empty after stripping.
+    Hashing the raw content means any change at all flips the digest, so a
+    previously trusted project AGENTS.md must be re-accepted once it changes.
+    """
+    try:
+        raw = (workspace / AGENTS_FILENAME).read_bytes()
+    except OSError:
+        return None
+    if not raw.strip():
+        return None
+    return hashlib.sha256(raw).hexdigest()
+
+
 def load_behavior_instructions(
-    config_dir: Path, workspace: Path, max_tokens: int
+    config_dir: Path,
+    workspace: Path,
+    max_tokens: int,
+    *,
+    project_trusted: bool = True,
 ) -> BehaviorInstructions:
-    """Load global and project AGENTS.md, splitting the token budget between them."""
+    """Load global and project AGENTS.md, splitting the token budget between them.
+
+    The global ``<config-dir>/AGENTS.md`` is always trusted. The project
+    ``<workspace>/AGENTS.md`` is loaded only when *project_trusted* is True
+    (trust-on-first-use, design section 16); when False it is skipped entirely.
+    """
     per_file = max(1, max_tokens // 2)
     global_text = _read_bounded(config_dir / AGENTS_FILENAME, per_file)
-    project_text = _read_bounded(workspace / AGENTS_FILENAME, per_file)
+    project_text = _read_bounded(workspace / AGENTS_FILENAME, per_file) if project_trusted else None
     return BehaviorInstructions(global_text=global_text, project_text=project_text)

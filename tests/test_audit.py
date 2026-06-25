@@ -1,6 +1,8 @@
 """Tests for the JSONL audit log (design section 22)."""
 
 import json
+import os
+import stat
 from pathlib import Path
 
 from shellpilot.persistence.audit_store import AuditLogger
@@ -182,3 +184,53 @@ def test_audit_events_carry_updated_workspace_after_set_workspace(tmp_path: Path
     # The subsequent user_turn event must also carry the new workspace.
     turn_event = next(e for e in events if e.get("event") == "user_turn")
     assert turn_event["workspace"] == str(new_ws)
+
+
+# ---------------------------------------------------------------------------
+# F13: at-rest file permissions — audit log must be 0600, parent dir 0700
+# ---------------------------------------------------------------------------
+
+
+def test_audit_log_file_created_mode_0600(tmp_path: Path) -> None:
+    """A freshly created audit log file must have mode 0600 (owner-read/write only)."""
+    log_dir = tmp_path / "audit_dir"
+    logger = AuditLogger(
+        path=log_dir / "audit.jsonl",
+        session_id="s1",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    logger.write("session_start")
+    file_mode = stat.S_IMODE(os.stat(log_dir / "audit.jsonl").st_mode)
+    assert file_mode == 0o600, f"expected 0o600, got {oct(file_mode)}"
+
+
+def test_audit_log_parent_dir_created_mode_0700(tmp_path: Path) -> None:
+    """The parent directory created by AuditLogger.write must have mode 0700."""
+    log_dir = tmp_path / "fresh_audit_dir"
+    logger = AuditLogger(
+        path=log_dir / "audit.jsonl",
+        session_id="s2",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    logger.write("session_start")
+    dir_mode = stat.S_IMODE(os.stat(log_dir).st_mode)
+    assert dir_mode == 0o700, f"expected 0o700, got {oct(dir_mode)}"
+
+
+def test_audit_log_append_preserves_content(tmp_path: Path) -> None:
+    """Appended lines must accumulate; 0600 write must not truncate existing content."""
+    log_dir = tmp_path / "append_dir"
+    logger = AuditLogger(
+        path=log_dir / "audit.jsonl",
+        session_id="s3",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    logger.write("first_event", idx=0)
+    logger.write("second_event", idx=1)
+    lines = (log_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["event"] == "first_event"
+    assert json.loads(lines[1])["event"] == "second_event"

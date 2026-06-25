@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from shellpilot.llm.ollama import is_loopback_url
+
 VALID_PROFILES = ("supervised", "balanced")  # trusted-local arrives in v2
 
 TESTED_FAMILIES: Final[tuple[str, ...]] = ("gemma4", "qwen3.5")
@@ -13,6 +15,35 @@ TESTED_FAMILIES: Final[tuple[str, ...]] = ("gemma4", "qwen3.5")
 def is_tested_model(name: str) -> bool:
     """True when the model belongs to a family ShellPilot is qualified against."""
     return any(name.startswith(family) for family in TESTED_FAMILIES)
+
+
+def is_cloud_model(name: str) -> bool:
+    """True for an Ollama cloud model (the cloud tag, ``:cloud`` or ``<size>-cloud``).
+
+    Ollama proxies these through the local daemon, so the endpoint base_url
+    stays loopback while the prompt itself egresses to the provider. This is the
+    cloud-egress signal independent of base_url (design section 15.2).
+
+    Ollama tags cloud models two ways: un-sized as ``model:cloud`` and sized
+    variants as ``model:<size>-cloud`` (e.g. ``gemma4:31b-cloud``). Both are
+    matched on the tag (the segment after the final ``:``); missing either form
+    would class an egressing model as local, i.e. a silent egress, so detection
+    deliberately fails toward cloud.
+    """
+    tag = name.rsplit(":", 1)[-1]
+    return tag == "cloud" or tag.endswith("-cloud")
+
+
+def is_egressing(model: str, base_url: str) -> bool:
+    """True when a request for *model* on *base_url* leaves this device.
+
+    A request egresses when the endpoint base_url is non-loopback OR the model
+    is a cloud model (an Ollama ``cloud``-tagged name egresses to the provider
+    even through a localhost Ollama proxy). The single source of truth for the cloud/remote
+    locality signal, shared by the boot consent gate, the runtime egress
+    chokepoint, and the active-cloud UI indicator (design section 15.2).
+    """
+    return is_cloud_model(model) or not is_loopback_url(base_url)
 
 
 @dataclass(frozen=True)
@@ -24,6 +55,13 @@ class ModelSettings:
     reasoning: bool = True
     base_url: str = "http://localhost:11434"
     keep_alive: str = "5m"
+    # Master cloud-egress switch (v0.10.0). Off by default keeps the local-first
+    # posture intact: a cloud/remote model boots only when the user has flipped
+    # this (in config.toml or a confirm-gated /config set) AND granted per-session
+    # consent. High-stakes and boot-only (see loader.HIGH_STAKES_KEYS /
+    # BOOT_ONLY_KEYS) — never enabled via an env var; the per-session consent gate
+    # is the real egress boundary regardless of how it was set.
+    allow_cloud: bool = False
     # Verbatim Ollama request `options`, passed through untouched (e.g.
     # repeat_penalty, repeat_last_n, temperature, seed). ShellPilot does NOT
     # validate individual keys — Ollama validates and errors at request time.

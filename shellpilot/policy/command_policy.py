@@ -34,11 +34,13 @@ LOW_EXECUTABLES: Final = frozenset(
         "rg",
         "fgrep",
         "egrep",
-        "pytest",
         "true",
         "false",
         "ps",
     }
+)
+READER_EXECUTABLES: Final = frozenset(
+    {"cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "file", "stat", "du"}
 )
 GIT_READONLY_VERBS: Final = frozenset(
     {
@@ -57,6 +59,19 @@ GIT_READONLY_VERBS: Final = frozenset(
     }
 )
 GIT_HIGH: Final = frozenset({"reset", "clean"})
+GIT_BENIGN_GLOBALS: Final = frozenset({"--no-pager", "--literal-pathspecs"})
+GIT_TERMINAL_GLOBALS: Final = frozenset({"--exec-path"})
+GIT_GLOBALS_WITH_SPLIT_VALUES: Final = frozenset(
+    {
+        "-C",
+        "-c",
+        "--config-env",
+        "--git-dir",
+        "--namespace",
+        "--super-prefix",
+        "--work-tree",
+    }
+)
 SHELLS: Final = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh"})
 PACKAGE_MANAGERS: Final = frozenset(
     {
@@ -142,8 +157,8 @@ def sensitive_path_reason(path: Path) -> str | None:
     return None
 
 
-def _writes_outside_workspace(argv: list[str], workspace: Path) -> str | None:
-    """For write-ish commands, flag path arguments that resolve outside the workspace.
+def _path_arg_outside_workspace(argv: list[str], workspace: Path) -> str | None:
+    """Flag path arguments that resolve outside the workspace (reads or writes).
 
     Both absolute and relative tokens are checked. Bare non-path tokens (e.g.
     "git", "status", a commit message) resolve to workspace/<token>, which is
@@ -167,20 +182,68 @@ def _writes_outside_workspace(argv: list[str], workspace: Path) -> str | None:
     return None
 
 
+def _scan_git_verb(argv: list[str]) -> tuple[str, list[str], bool]:
+    conservative_global = False
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if not token.startswith("-"):
+            return token, argv[index + 1 :], conservative_global
+        if token not in GIT_BENIGN_GLOBALS:
+            conservative_global = True
+        if token in GIT_TERMINAL_GLOBALS:
+            return "", [], conservative_global
+        if token in GIT_GLOBALS_WITH_SPLIT_VALUES:
+            index += 2
+        else:
+            index += 1
+    return "", [], conservative_global
+
+
+def _is_git_branch_delete_flag(flag: str) -> bool:
+    if flag.startswith("--"):
+        option = flag.partition("=")[0]
+        return len(option) >= len("--dele") and "--delete".startswith(option)
+    return flag.startswith("-") and any(option in "dD" for option in flag[1:])
+
+
+def _is_git_force_with_lease_flag(flag: str) -> bool:
+    option = flag.partition("=")[0]
+    return len(option) >= len("--force-w") and "--force-with-lease".startswith(option)
+
+
+def _is_git_push_short_force_flag(flag: str) -> bool:
+    if flag.startswith("--"):
+        return False
+    for option in flag[1:]:
+        if option == "f":
+            return True
+        if option == "o":
+            return False
+    return False
+
+
 def _classify_git(argv: list[str]) -> CommandRisk:
-    verb = next((token for token in argv[1:] if not token.startswith("-")), "")
+    verb, verb_args, conservative_global = _scan_git_verb(argv)
     flags = [token for token in argv[1:] if token.startswith("-")]
     if verb in GIT_HIGH:
         return CommandRisk(RiskLevel.HIGH, (f"git {verb} can destroy local changes",))
-    if verb == "branch" and ("-D" in flags or "--delete" in flags):
+    if verb == "branch" and any(_is_git_branch_delete_flag(flag) for flag in flags):
         return CommandRisk(RiskLevel.HIGH, ("git branch deletion",))
     if verb == "push":
-        if "--force" in flags or "-f" in flags or "--force-with-lease" in flags:
+        if (
+            "--force" in flags
+            or any(_is_git_push_short_force_flag(flag) for flag in flags)
+            or any(_is_git_force_with_lease_flag(flag) for flag in flags)
+            or any(arg.startswith("+") for arg in verb_args)
+        ):
             return CommandRisk(RiskLevel.HIGH, ("force push rewrites remote history",))
         return CommandRisk(RiskLevel.MEDIUM, ("git push publishes commits",))
+    if conservative_global:
+        return CommandRisk(RiskLevel.MEDIUM, ("git uses a non-benign global option",))
     if verb in GIT_READONLY_VERBS and verb != "stash":
         return CommandRisk(RiskLevel.LOW, ())
-    if verb == "stash" and len(argv) > 2 and argv[2] in ("list", "show"):
+    if verb == "stash" and verb_args and verb_args[0] in ("list", "show"):
         return CommandRisk(RiskLevel.LOW, ())
     return CommandRisk(RiskLevel.MEDIUM, (f"git {verb or '?'} changes repository state",))
 
@@ -191,7 +254,7 @@ def _classify_rm(argv: list[str], workspace: Path) -> CommandRisk:
         return CommandRisk(RiskLevel.HIGH, ("recursive delete",))
     if any("*" in token for token in argv[1:]):
         return CommandRisk(RiskLevel.HIGH, ("glob delete",))
-    outside = _writes_outside_workspace(argv, workspace)
+    outside = _path_arg_outside_workspace(argv, workspace)
     if outside:
         return CommandRisk(RiskLevel.HIGH, ("deletes outside the workspace",))
     return CommandRisk(RiskLevel.MEDIUM, ("deletes a file",))
@@ -203,6 +266,12 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
         return CommandRisk(RiskLevel.BLOCKED, ("empty command",))
 
     executable = Path(argv[0]).name
+    if argv[0] != executable:
+        risk = classify_command([executable, *argv[1:]], workspace=workspace)
+        if risk.risk == RiskLevel.LOW:
+            return CommandRisk(RiskLevel.MEDIUM, ("path-qualified executable",))
+        return risk
+
     secret = _touches_secret_path(argv)
 
     if executable in HIGH_COMMANDS:
@@ -234,16 +303,29 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
     if executable in NETWORK_COMMANDS:
         return CommandRisk(RiskLevel.MEDIUM, (f"{executable} performs network activity",))
     if executable in WRITE_COMMANDS:
-        outside = _writes_outside_workspace(argv, workspace)
+        outside = _path_arg_outside_workspace(argv, workspace)
         if outside:
             return CommandRisk(RiskLevel.HIGH, (outside,))
         return CommandRisk(RiskLevel.MEDIUM, (f"{executable} writes to the workspace",))
     if executable == "kill":
         return CommandRisk(RiskLevel.MEDIUM, ("signals a process",))
     if executable in ("python", "python3"):
-        if argv[1:3] == ["-m", "pytest"] or "--version" in argv:
+        if argv[1:] == ["--version"]:
             return CommandRisk(RiskLevel.LOW, ())
         return CommandRisk(RiskLevel.MEDIUM, ("runs arbitrary python code",))
+    if executable in READER_EXECUTABLES:
+        # Unlike read_file (which honors allow_sensitive_reads via decide()),
+        # classify_command sees only a RiskLevel and run_command is
+        # SideEffect.VARIABLE, so out-of-workspace command reads escalate to
+        # HIGH unconditionally and never AUTO-run. A regex/pattern arg that
+        # looks path-like (e.g. grep "../x") can over-flag to HIGH; that is a
+        # safe over-ask (HIGH -> ASK), shared with the rm/WRITE branches.
+        outside = _path_arg_outside_workspace(argv, workspace)
+        if outside:
+            return CommandRisk(
+                RiskLevel.HIGH, (f"reads outside the workspace boundary: {outside}",)
+            )
+        # in-workspace readers fall through to the LOW return below
     if executable in LOW_EXECUTABLES:
         return CommandRisk(RiskLevel.LOW, ())
 

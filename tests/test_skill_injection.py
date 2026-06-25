@@ -170,6 +170,44 @@ def test_web_grounding_skill_injected_when_web_enabled(tmp_path: Path) -> None:
     assert "fetch only URLs from the search results" in system_text
 
 
+def test_workflow_skill_injected_and_listed_when_enabled(tmp_path: Path) -> None:
+    """Enabling a workflow builtin injects its body and lists its on-demand refs."""
+    settings = Settings(skills=SkillSettings(enabled=("debugging",)))
+    fake = FakeLLM(script=[answer("ok")])
+    ui = FakeUI()
+    runtime = _make_runtime(fake, ui, tmp_path, settings=settings, skills=_builtin_skills())
+
+    runtime.run_turn("there's a bug")
+
+    system_text = fake.calls[0].messages[0].content
+    # Body injected.
+    assert "## Skill: debugging" in system_text
+    assert "Debug by method" in system_text
+    assert "debugging" in system_text
+    # On-demand references advertised in the readable menu, not injected wholesale.
+    assert "Readable docs (open with skill_read)" in system_text
+    assert "method" in system_text
+    assert "common-traps" in system_text
+    # The deep reference text itself is NOT force-injected.
+    assert "The Debugging Loop" not in system_text
+
+
+def test_default_session_unaffected_by_workflow_skills(tmp_path: Path) -> None:
+    """A default session (no skills enabled) injects no workflow skill and no menu."""
+    fake = FakeLLM(script=[answer("ok")])
+    ui = FakeUI()
+    runtime = _make_runtime(fake, ui, tmp_path, skills=_builtin_skills())
+
+    runtime.run_turn("hello")
+
+    system_text = fake.calls[0].messages[0].content
+    for name in ("debugging", "verification", "code-review", "git-workflow"):
+        assert f"## Skill: {name}" not in system_text
+    assert "Readable docs" not in system_text
+    # Only the always-on builtin is loaded by default.
+    assert "Loaded skills: context-management." in system_text
+
+
 # ---------------------------------------------------------------------------
 # Readable menu (skills readable block) — Task 2 of v0.9.0
 # ---------------------------------------------------------------------------

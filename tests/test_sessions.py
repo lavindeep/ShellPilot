@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 from shellpilot.config.loader import load_config
@@ -428,3 +430,81 @@ def test_export_already_redacted_transcript_is_idempotent(tmp_path: Path) -> Non
     assert "x.py" in text
     # no spurious [REDACTED] markers introduced
     assert "[REDACTED]" not in text
+
+
+# ---------------------------------------------------------------------------
+# F13: at-rest file permissions — session file must be 0600, parent dir 0700
+# ---------------------------------------------------------------------------
+
+
+def test_session_file_created_mode_0600(tmp_path: Path) -> None:
+    """A freshly created session transcript must have mode 0600."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="hello"))
+    file_mode = stat.S_IMODE(os.stat(store.path).st_mode)
+    assert file_mode == 0o600, f"expected 0o600, got {oct(file_mode)}"
+
+
+def test_session_parent_dir_created_mode_0700(tmp_path: Path) -> None:
+    """The sessions directory created by SessionStore._append must have mode 0700."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="hello"))
+    dir_mode = stat.S_IMODE(os.stat(store.path.parent).st_mode)
+    assert dir_mode == 0o700, f"expected 0o700, got {oct(dir_mode)}"
+
+
+def test_session_append_preserves_content_at_0600(tmp_path: Path) -> None:
+    """Multiple appends must accumulate without truncating; file stays 0600."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="first"))
+    store.record_message(Message(role="assistant", content="second"))
+    loaded = SessionStore.load(store.path)
+    assert [m.content for m in loaded.messages] == ["first", "second"]
+    file_mode = stat.S_IMODE(os.stat(store.path).st_mode)
+    assert file_mode == 0o600, f"expected 0o600, got {oct(file_mode)}"
+
+
+# ---------------------------------------------------------------------------
+# recent() — banner data: newest-first (label, mtime), label from 1st user msg
+# ---------------------------------------------------------------------------
+
+
+def test_recent_empty_dir_returns_empty(tmp_path: Path) -> None:
+    assert SessionStore.recent(tmp_path / "sessions") == []
+
+
+def test_recent_label_is_first_user_message(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    store.record_message(Message(role="user", content="fix the off-by-one in parser"))
+    store.record_message(Message(role="assistant", content="done"))
+    recent = SessionStore.recent(store.path.parent)
+    assert len(recent) == 1
+    label, mtime = recent[0]
+    assert label == "fix the off-by-one in parser"
+    assert isinstance(mtime, float)
+
+
+def test_recent_label_truncated(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="x" * 50))
+    label, _ = SessionStore.recent(store.path.parent)[0]
+    assert label.endswith("…")
+    assert len(label) == 33  # 32 chars + ellipsis
+
+
+def test_recent_falls_back_to_model_when_no_user_message(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    label, _ = SessionStore.recent(store.path.parent)[0]
+    assert label == "gemma4:e4b"
+
+
+def test_recent_newest_first_and_capped(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    for i in range(5):
+        s = SessionStore(sessions, f"sess-{i}")
+        s.record_message(Message(role="user", content=f"msg {i}"))
+        os.utime(s.path, (1000.0 + i, 1000.0 + i))
+    recent = SessionStore.recent(sessions, limit=3)
+    assert [label for label, _ in recent] == ["msg 4", "msg 3", "msg 2"]

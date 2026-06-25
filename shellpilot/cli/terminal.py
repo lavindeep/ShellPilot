@@ -7,21 +7,27 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from rich.console import Console
 from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
-from shellpilot import __version__
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
+from shellpilot.cli.banner import render_banner
 from shellpilot.cli.input import PromptContext, make_input
-from shellpilot.cli.manual_shell import manual_shell_loop
-from shellpilot.cli.model_picker import choose_model, resolve_preselect, should_show_picker
+from shellpilot.cli.manual_shell import manual_shell_loop, run_manual_command
+from shellpilot.cli.model_picker import (
+    choose_model,
+    confirm_last_model,
+    resolve_preselect,
+    should_show_picker,
+)
 from shellpilot.cli.render import (
+    _sanitize_line,
     approval_cwd,
     approval_info,
-    banner,
     plan_panel,
     plan_step_line,
     render_diff,
@@ -32,28 +38,37 @@ from shellpilot.cli.render import (
 from shellpilot.cli.render import (
     tool_result as render_tool_result,
 )
-from shellpilot.cli.render import (
-    turn_stats as render_turn_stats,
-)
 from shellpilot.cli.slash import SlashAction, SlashDispatcher, command_words
-from shellpilot.cli.streaming import AviationSpinner, ResponseStream
+from shellpilot.cli.status_bar import ctx_percent
+from shellpilot.cli.streaming import AviationSpinner, DiffReveal, ResponseStream
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
-from shellpilot.config.loader import ConfigError, LoadedConfig, load_config
-from shellpilot.config.model import Settings
+from shellpilot.config.loader import HIGH_STAKES_KEYS, ConfigError, LoadedConfig, load_config
+from shellpilot.config.model import Settings, is_cloud_model, is_egressing
+from shellpilot.config.overrides import load_overrides, overrides_path
 from shellpilot.llm.ollama import OllamaClient, OllamaError
-from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
+from shellpilot.memory.agents_md import (
+    BehaviorInstructions,
+    load_behavior_instructions,
+    project_agents_md_digest,
+)
 from shellpilot.memory.redaction import redact_structure
 from shellpilot.memory.store import MemoryFormatError, MemoryStore, MemoryStores, project_id_for
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.paths import AppPaths, project_state_dir
 from shellpilot.persistence.sessions import SessionStore
-from shellpilot.persistence.workspace_state import load_last_model, save_last_model
-from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.persistence.workspace_state import (
+    load_last_model,
+    load_trusted_agents_digest,
+    save_last_model,
+    save_trusted_agents_digest,
+)
+from shellpilot.policy.approvals import ApprovalReply, ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import TurnStats
 from shellpilot.runtime.planner import TaskPlan
 from shellpilot.skills.loader import discover_skills
+from shellpilot.tools.base import workspace_display
 
 
 def should_discard_interrupt(
@@ -65,6 +80,100 @@ def should_discard_interrupt(
     return turn_just_ran and elapsed_seconds < window_seconds
 
 
+def _resolve_project_agents_trust(console: Console, workspace: Path, *, tty: bool) -> bool:
+    """Trust-on-first-use gate for the project ``<workspace>/AGENTS.md``.
+
+    The project AGENTS.md is injected as standing instructions with the same
+    authority as ShellPilot's own prompt, so a cloned/untrusted repo could
+    silently steer the assistant. Load it only when its current digest matches
+    a previously accepted one, or after the user accepts it this session.
+    A non-TTY session fails closed (not loaded). Global config-dir AGENTS.md is
+    unaffected — it is always trusted. (Design section 16.)
+    """
+    digest = project_agents_md_digest(workspace)
+    if digest is None:
+        return True  # no project AGENTS.md to gate
+    trusted = load_trusted_agents_digest(workspace)
+    if digest == trusted:
+        return True
+    if not tty:
+        console.print("[sp.dim]Project AGENTS.md not loaded (non-interactive; untrusted).[/sp.dim]")
+        return False
+    note = "changed since you last trusted it" if trusted is not None else "new"
+    console.print(
+        f"[yellow]Project AGENTS.md[/yellow] at "
+        f"[sp.faint]{escape(str(workspace / 'AGENTS.md'))}[/sp.faint] is {note}.\n"
+        "[sp.dim]It would be loaded as standing instructions with the same "
+        "authority as ShellPilot's own prompt.[/sp.dim]"
+    )
+    try:
+        answer = console.input("  Trust and load it? [sp.dim]\\[y/N][/sp.dim] ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        save_trusted_agents_digest(workspace, digest)
+        return True
+    console.print("[sp.dim]Project AGENTS.md not loaded (declined).[/sp.dim]")
+    return False
+
+
+# The honest disclosure shown before egressing to a cloud/remote model. It must
+# state plainly what leaves the device — this prompt IS the consent boundary
+# (design section 15.2). Best-effort redaction is defence-in-depth, not a
+# guarantee, so the text does not promise protection.
+CLOUD_CONSENT_DISCLOSURE = (
+    "[yellow]{model}[/yellow] is a cloud/remote model: it runs OFF this device.\n"
+    "[sp.dim]The ENTIRE prompt — file contents, command output, and any memory the "
+    "model reads — is sent to the provider and may be UNREDACTED. Under the balanced "
+    "profile, low-risk actions auto-run and can send data without a per-action prompt. "
+    "The provider's retention, training, and jurisdiction are outside ShellPilot's "
+    "control.[/sp.dim]"
+)
+
+
+def _resolve_cloud_consent(console: Console, settings: Settings, chosen: str, *, tty: bool) -> bool:
+    """Per-session consent gate for a cloud/remote (egressing) model.
+
+    The consent boundary for data leaving the device (design section 15.2).
+    Returns True to proceed, False to abort — the caller MUST NOT touch the
+    model (no preload, no metadata, no chat) when this returns False.
+
+    Fails closed on every uncertainty:
+    - A non-egressing local session proceeds with NO prompt (the common path).
+    - An egressing session with ``allow_cloud`` off is refused with a clear
+      message pointing at the config switch.
+    - An egressing session in a non-interactive (non-TTY) context is refused
+      — there is no way to obtain consent, so nothing egresses.
+    - Otherwise the user is shown an honest disclosure and a y/N prompt that
+      DEFAULTS TO NO; only an explicit yes proceeds (Enter/EOF/no decline).
+
+    Consent is per session — never persisted; every launch re-asks.
+    """
+    egressing = is_egressing(chosen, settings.model.base_url)
+    if not egressing:
+        return True
+    if not settings.model.allow_cloud:
+        console.print(
+            f"[red]{escape(chosen)} is a cloud/remote model; cloud egress is off.[/red] "
+            "Set [model] allow_cloud = true in config.toml to enable."
+        )
+        return False
+    if not tty:
+        console.print(
+            "[red]Cloud model requires interactive consent; refusing (non-interactive).[/red]"
+        )
+        return False
+    console.print(CLOUD_CONSENT_DISCLOSURE.format(model=escape(chosen)))
+    try:
+        answer = console.input("  Send this session to the cloud? [sp.dim]\\[y/N][/sp.dim] ")
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    console.print("[sp.dim]Cloud model declined; not started.[/sp.dim]")
+    return False
+
+
 class TerminalUI:
     """RuntimeUI implementation over a rich console."""
 
@@ -74,11 +183,18 @@ class TerminalUI:
         *,
         glyphs: Glyphs = UNICODE_GLYPHS,
         spinner: bool = True,
+        workspace: Path | None = None,
     ) -> None:
         self._console = console
         self._glyphs = glyphs
+        # Workspace for display-integrity (design section 14.5): when set, a
+        # `path` argument in the tool-call line is shown as its resolved,
+        # workspace-relative target — the SAME resolution the tool acts on.
+        self._workspace = workspace
         self._stream = ResponseStream(console)
         self._spinner = AviationSpinner(console, glyphs, enabled=spinner)
+        # The diff-reveal animation rides the same motion toggle as the spinner.
+        self._diff_reveal = DiffReveal(console, glyphs, enabled=spinner)
 
     def begin_response(self) -> None:
         self._spinner.start()
@@ -88,36 +204,47 @@ class TerminalUI:
         self._stream.finish()
 
     def turn_finished(self, stats: TurnStats) -> None:
-        self._console.print(
-            render_turn_stats(
-                stats.elapsed_s, stats.context_tokens, stats.context_pct, warn=stats.warn
-            )
-        )
+        # Context utilization now lives in the always-on bottom status bar
+        # (design section 32), so the turn no longer prints a per-response line.
+        # The method stays on the RuntimeUI protocol for the runtime to call.
+        return
 
     def stream_token(self, token: str) -> None:
         self._spinner.stop()
         self._stream.feed(token)
 
     def show_status(self, text: str) -> None:
-        self._console.print(f"[sp.dim]{escape(text)}[/sp.dim]")
+        self._console.print(f"[sp.dim]{escape(_sanitize_line(text))}[/sp.dim]")
 
     def show_error(self, text: str) -> None:
         self._spinner.stop()
-        self._console.print(f"[sp.error]{escape(text)}[/sp.error]")
+        self._console.print(f"[sp.error]{escape(_sanitize_line(text))}[/sp.error]")
 
     def show_tool_call(self, name: str, arguments: dict[str, object]) -> None:
         # Redact secrets in the summary line so auto-approved tool calls never
-        # expose credentials in the visible terminal channel.  The approval
-        # panel (ApprovalRequest.display built by executor._display_for) is
-        # intentionally left raw: the user approves exactly what will execute.
+        # expose credentials in the visible terminal channel. A `path` argument
+        # is shown as its resolved, workspace-relative target (the SAME
+        # resolution the tool acts on) so the displayed path cannot be spoofed
+        # and matches the file actually touched (design section 14.5); the
+        # approval panel applies the identical rule via executor._display_for.
         redacted = redact_structure(arguments)
         assert isinstance(redacted, dict)
-        summary = ", ".join(f"{key}={value!r}" for key, value in redacted.items())
+        summary = ", ".join(
+            f"{key}={self._tool_call_value(key, value)}" for key, value in redacted.items()
+        )
         if len(summary) > 80:
             summary = summary[:79] + self._glyphs.ellipsis
         self._console.print(render_tool_call(name, summary, self._glyphs))
-        label = Text.assemble(("running ", "sp.dim"), (name, "sp.emph"))
+        label = Text.assemble(("running ", "sp.dim"), (_sanitize_line(name), "sp.emph"))
         self._spinner.start(label=label)
+
+    def _tool_call_value(self, key: str, value: object) -> str:
+        # A `path` argument is shown as its resolved, workspace-relative target
+        # (display-integrity, design section 14.5). Without a workspace (legacy
+        # callers) the value renders verbatim.
+        if key == "path" and isinstance(value, str) and self._workspace is not None:
+            return repr(workspace_display(self._workspace, value))
+        return repr(value)
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
         self._spinner.stop()
@@ -125,7 +252,9 @@ class TerminalUI:
 
     def show_command_output(self, line: str) -> None:
         self._spinner.stop()
-        self._console.print("    " + line, style="sp.dim", markup=False, highlight=False)
+        self._console.print(
+            "    " + _sanitize_line(line), style="sp.dim", markup=False, highlight=False
+        )
 
     def show_plan_progress(self, plan: TaskPlan) -> None:
         self._spinner.stop()
@@ -136,32 +265,70 @@ class TerminalUI:
     def _plain_badges(self) -> bool:
         return self._console.no_color or not self._console.is_terminal
 
-    def ask_approval(self, request: ApprovalRequest) -> bool:
+    def ask_approval(self, request: ApprovalRequest) -> ApprovalReply:
         """Badge-block approval (section 31.5); high risk requires typing 'run'.
+
+        Three-way outcome (section 14.6): [y]es runs, [n]o declines, [e]dit
+        rejects-and-steers — the proposed action is NOT run; the user types
+        guidance that is fed back to the model, which re-proposes a corrected
+        action through the normal gate. Empty guidance is treated as a plain
+        decline (nothing runs). The HIGH-risk typed-"run" confirm is unchanged:
+        only the literal "run" executes; [e] steers without running.
 
         No head line here: the tool-call line printed just before the approval
         already names the action, so repeating it would duplicate output.
         """
+        # LIVE-ORDERING (load-bearing): stop the spinner FIRST. It joins its
+        # thread and stops its Live before returning, so DiffReveal's Live (below)
+        # never overlaps it — two concurrent rich Live on one Console corrupt the
+        # display. The reveal must start strictly after this call.
         self._spinner.stop()
         self._console.print()
         if request.diff:
-            self._console.print(Padding(render_diff(request.diff, self._glyphs), (0, 0, 0, 2)))
+            cap = DiffReveal.WINDOW_ROWS
+            long_diff = self._diff_reveal.row_count(request.diff) > DiffReveal.ANIMATE_THRESHOLD
+            # Long diffs scroll-reveal (motion only when enabled+TTY) then settle
+            # into a capped window; short diffs print the full panel unchanged.
+            self._diff_reveal.reveal(request.diff, max_rows=cap)
+            self._console.print(
+                Padding(
+                    render_diff(request.diff, self._glyphs, max_rows=cap if long_diff else None),
+                    (0, 0, 0, 2),
+                )
+            )
         self._console.print(approval_info(request, plain_badge=self._plain_badges()))
         self._console.print(approval_cwd(request))
         try:
             # The typed-"run" gate guards HIGH-risk *commands* only. A HIGH-risk
             # tool is a sensitive-path read (design section 15): it gets the
-            # standard y/n prompt, with the classifier reason already shown above.
+            # standard prompt, with the classifier reason already shown above.
             if request.risk is RiskLevel.HIGH and request.kind == "command":
                 answer = self._console.input(
                     '  Type [sp.risk.high]"run"[/sp.risk.high] to execute, '
-                    "or press Enter to cancel: "
-                )
-                return answer.strip().lower() == "run"
-            answer = self._console.input("  Approve? [sp.dim]\\[y/n][/sp.dim] ")
-            return answer.strip().lower() in ("y", "yes")
+                    "[sp.dim]\\[e]dit[/sp.dim] to steer, or press Enter to cancel: "
+                ).strip()
+                if answer.lower() == "run":
+                    return ApprovalReply(approved=True)
+                if answer.lower() in ("e", "edit"):
+                    return self._read_steer()
+                return ApprovalReply(approved=False)
+            answer = (
+                self._console.input("  Approve? [sp.dim]\\[y]es / \\[e]dit / \\[n]o[/sp.dim] ")
+                .strip()
+                .lower()
+            )
+            if answer in ("y", "yes"):
+                return ApprovalReply(approved=True)
+            if answer in ("e", "edit"):
+                return self._read_steer()
+            return ApprovalReply(approved=False)
         except (EOFError, KeyboardInterrupt):
-            return False
+            return ApprovalReply(approved=False)
+
+    def _read_steer(self) -> ApprovalReply:
+        """Read one line of steering guidance; empty input = plain decline."""
+        guidance = self._console.input("  Tell the model what to do instead:\n  > ").strip()
+        return ApprovalReply(approved=False, steer_text=guidance or None)
 
     def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
         self._spinner.stop()
@@ -196,6 +363,38 @@ def config_files(workspace: Path, env: dict[str, str], paths: AppPaths) -> tuple
     return user_file, project_state_dir(workspace) / "config.toml"
 
 
+def high_stakes_override_notice(config_dir: Path) -> str | None:
+    """One amber line naming any active high-stakes (egress/safety) override.
+
+    A confirmed ``/config set`` for an egress/safety key persists in
+    ``overrides.json`` and silently outranks ``config.toml`` every future boot,
+    so surface it on each launch — egress must not quietly stay enabled. Returns
+    ``None`` when no such override is present. Pure (no I/O beyond the read) so
+    it is unit-testable; it gates nothing — the cloud-consent gate (§15.2) is
+    the egress boundary.
+    """
+    overrides, _ = load_overrides(overrides_path(config_dir))
+    active = {k: v for k, v in overrides.items() if k in HIGH_STAKES_KEYS}
+    if not active:
+        return None
+    pairs = ", ".join(f"{k}={active[k]!r}" for k in sorted(active))
+    return (
+        f"⚠ Active overrides: {pairs} — these override config.toml; /config unset <key> to revert."
+    )
+
+
+def _relative_age(mtime: float, *, now: float | None = None) -> str:
+    """Compact relative age, e.g. "just now", "39m ago", "2h ago", "3d ago"."""
+    delta = max(0.0, (time.time() if now is None else now) - mtime)
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
 def run_interactive(
     workspace: Path, resume: str | None = None, model_override: str | None = None
 ) -> int:
@@ -220,6 +419,9 @@ def run_interactive(
         return 2
     for _warning in loaded.warnings:
         console.print(f"[dim]{escape(_warning)}[/dim]")
+    _override_notice = high_stakes_override_notice(user_file.parent)
+    if _override_notice is not None:
+        console.print(escape(_override_notice), style="sp.warn")
     settings = loaded.settings
     if settings.ui.no_color:
         console = build_console(settings)
@@ -240,19 +442,46 @@ def run_interactive(
     installed = {m.name for m in installed_models}
 
     tty = console.is_terminal and sys.stdin.isatty()
-    if should_show_picker(
+    if not should_show_picker(
         tty=tty,
         model_override=model_override,
         installed_count=len(installed_models),
     ):
-        preselect = resolve_preselect(settings.model.default, load_last_model(workspace), installed)
-        chosen = choose_model(console, installed_models, preselect)
-        save_last_model(workspace, chosen)
-    else:
         chosen = settings.model.default
+    else:
+        last = load_last_model(workspace)
+        if last is not None and last in installed:
+            # Every boot after the first: Enter flies the last model, any other
+            # key opens the full menu (preselected on the last model).
+            if confirm_last_model(console, last):
+                chosen = last
+            else:
+                chosen = choose_model(console, installed_models, last)
+        else:
+            # First boot, or the last model is no longer installed.
+            chosen = choose_model(
+                console,
+                installed_models,
+                resolve_preselect(settings.model.default, last, installed),
+            )
+        save_last_model(workspace, chosen)
 
-    if chosen not in installed:
+    # Cloud models are absent from the local /api/tags, so the availability gate
+    # is skipped for them (the typo-catch survives for local names).
+    if chosen not in installed and not is_cloud_model(chosen):
         console.print(f"[red]Model {chosen} is not installed.[/red] Try: ollama pull {chosen}")
+        return 1
+
+    # Cloud-egress consent boundary (design section 15.2): a cloud/remote model
+    # must clear allow_cloud + per-session consent BEFORE any prompt-bearing call
+    # touches it. Placed strictly before _preload — the first egress point — so a
+    # declined session performs no model load and no chat. (client.health/
+    # list_models above hit /api/tags on base_url only: for the primary
+    # cloud-model case base_url is loopback → no egress; a non-loopback base_url
+    # is a metadata-only probe to the user's own configured endpoint, documented
+    # as an accepted residual in DESIGN §15.2.)
+    egressing_session = is_egressing(chosen, settings.model.base_url)
+    if not _resolve_cloud_consent(console, settings, chosen, tty=tty):
         return 1
 
     # ------------------------------------------------------------------
@@ -278,7 +507,10 @@ def run_interactive(
     ctx = detected or 8192
     if settings.instructions.load_agents_md:
         cap = min(1500, ctx // 10)
-        behavior = load_behavior_instructions(paths.config_dir, workspace, max_tokens=cap)
+        project_trusted = _resolve_project_agents_trust(console, workspace, tty=tty)
+        behavior = load_behavior_instructions(
+            paths.config_dir, workspace, max_tokens=cap, project_trusted=project_trusted
+        )
     else:
         behavior = BehaviorInstructions(global_text=None, project_text=None)
 
@@ -296,8 +528,21 @@ def run_interactive(
         redact=settings.privacy.redact_secrets,
     )
     audit.write("session_start", model=chosen)
+    if egressing_session:
+        # Record that the user granted cloud-egress consent for this session
+        # (consent already happened above; logged now that the logger exists).
+        audit.write(
+            "cloud_consent_granted",
+            model=chosen,
+            host=(urlsplit(settings.model.base_url).hostname or "").rstrip("."),
+        )
 
     sessions_dir = SessionStore.sessions_dir(workspace)
+    # Capture prior sessions for the banner BEFORE this session's meta is
+    # written, so the current (empty) session never lists itself.
+    recent_sessions = [
+        (label, _relative_age(mtime)) for label, mtime in SessionStore.recent(sessions_dir)
+    ]
     restored = None
     if resume is not None:
         session_path = (
@@ -339,7 +584,7 @@ def run_interactive(
         console.print("[sp.dim]Continuing without stored memory this session.[/sp.dim]")
         memory = None
 
-    ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner)
+    ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner, workspace=workspace)
     runtime = ConversationRuntime(
         llm=client,
         settings=settings,
@@ -351,6 +596,7 @@ def run_interactive(
         session=session,
         memory=memory,
         skills=discovered_skills,
+        base_url=settings.model.base_url,
     )
     if restored is not None:
         runtime.restore_history(restored.messages)
@@ -371,9 +617,18 @@ def run_interactive(
         glyphs=glyphs,
         preload=_preload,
         attachments=attachments,
+        tty=tty,
     )
 
-    console.print(banner(__version__, runtime.model, settings.runtime.security_profile))
+    console.print(
+        render_banner(
+            runtime.model,
+            is_cloud=egressing_session,
+            profile=settings.runtime.security_profile,
+            skills=settings.skills.enabled,
+            recent_sessions=recent_sessions,
+        )
+    )
     if restored is not None:
         console.print(
             f"[sp.dim]Resumed session {escape(restored.session_id)} "
@@ -392,8 +647,18 @@ def run_interactive(
 
     while True:
         status = runtime.status()
+        # Persistent, unspoofable active-cloud indicator (design section 15.2),
+        # now folded into the always-on status bar rather than a separate header.
+        # Derived from the harness egress signal on the LIVE model, so a
+        # mid-session /model use to a cloud model turns it on and switching back
+        # turns it off. ctx% is the same calculation the runtime reports.
+        egressing_now = is_egressing(runtime.model, settings.model.base_url)
         context = PromptContext(
-            workspace=status.workspace, model=status.model, profile=status.profile
+            workspace=status.workspace,
+            model=status.model,
+            profile=status.profile,
+            is_cloud=egressing_now,
+            ctx_pct=ctx_percent(status.estimated_prompt_tokens, status.budget.model_context_tokens),
         )
         console.print()
         read_started = time.monotonic()
@@ -411,6 +676,19 @@ def run_interactive(
                 console.print("[sp.dim](Ctrl-C — use /exit to quit)[/sp.dim]")
             continue
         if not line:
+            continue
+        if line.startswith("!"):
+            # `!<cmd>` runs one command through the audited manual-shell path
+            # (raw shell=True, exactly like /shell); a bare `!` opens the shell
+            # loop. This is a human-only escape — model output never reaches this
+            # reader — so it carries the same trust as /shell. Live workspace
+            # honours a prior /cwd.
+            workspace = runtime.status().workspace
+            command = line[1:].strip()
+            if command:
+                run_manual_command(command, workspace, audit)
+            else:
+                manual_shell_loop(console, workspace, audit)
             continue
         if line.startswith("/"):
             action = dispatcher.handle(line)

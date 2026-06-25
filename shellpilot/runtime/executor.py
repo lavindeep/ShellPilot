@@ -15,7 +15,13 @@ from typing import Any
 from shellpilot.llm.messages import ToolCall, ToolDefinition
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.snapshots import SnapshotStore
-from shellpilot.policy.approvals import ApprovalRequest, Decision, decide
+from shellpilot.policy.approvals import (
+    DECLINE,
+    ApprovalReply,
+    ApprovalRequest,
+    Decision,
+    decide,
+)
 from shellpilot.policy.explanations import explain_risk
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.budget import estimate_tokens, truncate_to_tokens
@@ -25,10 +31,11 @@ from shellpilot.tools.base import (
     ToolResult,
     schema_reminder,
     validate_args,
+    workspace_display,
 )
 from shellpilot.tools.registry import ToolRegistry
 
-ApprovalAsker = Callable[[ApprovalRequest], bool]
+ApprovalAsker = Callable[[ApprovalRequest], ApprovalReply]
 
 
 @dataclass(frozen=True)
@@ -160,24 +167,48 @@ class ToolExecutor:
                 purpose=purpose,
                 diff=diff,
             )
-            approved = self._ask_approval(request) if self._ask_approval else False
+            reply = self._ask_approval(request) if self._ask_approval else DECLINE
+            steer = reply.steer_text if not reply.approved else None
             self._log(
                 "approval",
                 call,
                 display,
                 classification.risk,
                 explanation=purpose,
-                decision="approved" if approved else "rejected",
+                decision="approved" if reply.approved else ("steered" if steer else "rejected"),
             )
-            if not approved:
-                return ExecutionOutcome(
-                    model_text=(
+            if not reply.approved:
+                # Reject-and-steer: the un-approved action NEVER runs (design
+                # section 14.6). On a plain decline we tell the model not to
+                # retry; on a steer we feed the user's guidance back so the
+                # model re-proposes a corrected action, which re-enters this
+                # same classify->decide->gate flow as any tool call.
+                if steer:
+                    model_text = (
+                        f"tool: {call.name}\nstatus: declined\nsummary: the user declined "
+                        f"this action and asks you to do this instead: {steer}. "
+                        "Propose a corrected action."
+                    )
+                    summary = "steered by user"
+                else:
+                    model_text = (
                         f"tool: {call.name}\nstatus: declined\nsummary: the user declined "
                         "this action. Do not retry it; ask the user how to proceed if needed."
-                    ),
+                    )
+                    summary = "declined by user"
+                return ExecutionOutcome(
+                    model_text=model_text,
                     malformed=False,
-                    result=ToolResult(success=False, summary="declined by user", content=""),
+                    result=ToolResult(success=False, summary=summary, content=""),
                 )
+
+        # Egress visibility (F12): a NETWORK-side-effect tool sends a query/url
+        # off-box regardless of model locality. Record it here — after every
+        # gate has passed, immediately before the call actually leaves the box —
+        # so a blocked/declined call (which never ran) produces no egress
+        # record. The AuditLogger redacts the args (e.g. a secret in a URL).
+        if spec.side_effect is SideEffect.NETWORK and self._audit is not None:
+            self._audit.write("web_egress", tool=call.name, args=dict(call.arguments))
 
         try:
             result = spec.handler(context, call.arguments)
@@ -219,14 +250,24 @@ class ToolExecutor:
         if self._audit is not None:
             self._audit.write(event, tool=call.name, command=display, risk=risk.value, **fields)
 
-    @staticmethod
-    def _display_for(call: ToolCall) -> str:
+    def _display_for(self, call: ToolCall) -> str:
         if call.name == "run_command":
             argv = call.arguments.get("argv")
             if isinstance(argv, list):
                 return " ".join(str(token) for token in argv)
-        rendered = ", ".join(f"{key}={value!r}" for key, value in call.arguments.items())
+        rendered = ", ".join(
+            f"{key}={self._display_value(key, value)}" for key, value in call.arguments.items()
+        )
         return f"{call.name}({rendered})"
+
+    def _display_value(self, key: str, value: Any) -> str:
+        # Display-integrity (design section 14.5): a `path` argument is shown as
+        # the resolved, workspace-relative target — the SAME resolution the
+        # handler acts on — so the approval display can never diverge from the
+        # file actually touched. All other args render verbatim.
+        if key == "path" and isinstance(value, str):
+            return repr(workspace_display(self._workspace, value))
+        return repr(value)
 
     def _render(self, name: str, result: ToolResult) -> str:
         status = "ok" if result.success else "failed"

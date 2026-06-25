@@ -52,11 +52,15 @@ def test_env_overrides_project(tmp_path: Path) -> None:
     loaded = load_config(
         user_config_file=tmp_path / "missing.toml",
         project_config_file=project,
+        # SHELLPILOT_PROFILE is no longer mapped: the security posture is a
+        # config-file-only key, so an ambient env var must not set it.
         env={"SHELLPILOT_MODEL": "gemma4:e4b", "SHELLPILOT_PROFILE": "supervised"},
     )
     assert loaded.settings.model.default == "gemma4:e4b"
     assert loaded.sources["model.default"] == "env"
-    assert loaded.settings.runtime.security_profile == "supervised"
+    # The env var is ignored; the profile stays at its default.
+    assert loaded.settings.runtime.security_profile == "balanced"
+    assert loaded.sources["runtime.security_profile"] == "default"
 
 
 def test_cli_overrides_everything(tmp_path: Path) -> None:
@@ -464,11 +468,27 @@ def test_override_beats_project_config(tmp_path: Path) -> None:
     """An override value wins over the project config layer."""
     loaded = _cfg(
         tmp_path,
+        {"model.default": "gemma4:e4b"},
+        project_toml='[model]\ndefault = "gemma4:e2b"\n',
+    )
+    assert loaded.settings.model.default == "gemma4:e4b"
+    assert loaded.sources["model.default"] == "set"
+
+
+def test_override_security_profile_applies_over_project(tmp_path: Path) -> None:
+    """runtime.security_profile is a high-stakes overrides key: a persisted
+    override (written by a confirmed /config set) applies and outranks project.
+
+    The overrides layer wins over the project layer (source is 'set').
+    """
+    loaded = _cfg(
+        tmp_path,
         {"runtime.security_profile": "supervised"},
         project_toml='[runtime]\nsecurity_profile = "balanced"\n',
     )
     assert loaded.settings.runtime.security_profile == "supervised"
     assert loaded.sources["runtime.security_profile"] == "set"
+    assert not any("config-file only" in w for w in loaded.warnings)
 
 
 def test_env_beats_override(tmp_path: Path) -> None:
@@ -513,9 +533,20 @@ def test_override_model_options_skipped_with_warning(tmp_path: Path) -> None:
 
 def test_override_enum_violation_skipped_with_warning(tmp_path: Path) -> None:
     """An invalid enum value in overrides is skipped; a warning names the key."""
+    loaded = _cfg(tmp_path, {"workspace.boundary": "badvalue"})
+    assert loaded.warnings
+    assert any("workspace.boundary" in w for w in loaded.warnings)
+    assert loaded.settings.workspace.boundary == "start_cwd"
+
+
+def test_override_security_profile_invalid_value_self_heals(tmp_path: Path) -> None:
+    """An invalid runtime.security_profile override value is skipped-with-warning
+    by the normal enum validation (it is no longer short-circuited as
+    config-file-only); the default profile stands."""
     loaded = _cfg(tmp_path, {"runtime.security_profile": "badprofile"})
     assert loaded.warnings
     assert any("runtime.security_profile" in w for w in loaded.warnings)
+    assert not any("config-file only" in w for w in loaded.warnings)
     assert loaded.settings.runtime.security_profile == "balanced"
 
 
@@ -603,11 +634,20 @@ def test_validate_override_float_string_coercion(tmp_path: Path) -> None:
 
 def test_validate_override_valid_enum(tmp_path: Path) -> None:
     """A valid enum value passes validation."""
-    assert validate_override("runtime.security_profile", "supervised") == "supervised"
+    assert validate_override("privacy.allow_sensitive_reads", "never") == "never"
 
 
 def test_validate_override_bad_enum_raises(tmp_path: Path) -> None:
     """An invalid enum value raises ConfigError."""
+    with pytest.raises(ConfigError):
+        validate_override("privacy.allow_sensitive_reads", "root")
+
+
+def test_validate_override_security_profile_accepts(tmp_path: Path) -> None:
+    """runtime.security_profile is a high-stakes /config set key (confirm-gated
+    in the handler) — validate_override coerces a valid value and still rejects
+    an invalid enum value."""
+    assert validate_override("runtime.security_profile", "supervised") == "supervised"
     with pytest.raises(ConfigError):
         validate_override("runtime.security_profile", "root")
 
@@ -800,3 +840,262 @@ def test_validate_override_skills_enabled_raises(tmp_path: Path) -> None:
     """skills.enabled raises ConfigError (config-file only)."""
     with pytest.raises(ConfigError, match="skills.enabled"):
         validate_override("skills.enabled", ["x"])
+
+
+# ---------------------------------------------------------------------------
+# Egress / safety keys (tools.web, model.base_url, runtime.security_profile,
+# model.allow_cloud) are HIGH_STAKES_KEYS: settable via a confirm-gated
+# /config set (so they apply through the overrides layer) and via config.toml,
+# but never via an env var (the env invariant is load-bearing — see below).
+# ---------------------------------------------------------------------------
+
+
+def test_override_tools_web_applies(tmp_path: Path) -> None:
+    """tools.web set via a (confirmed) /config set applies through overrides."""
+    loaded = _cfg(tmp_path, {"tools.web": True})
+    assert not any("config-file only" in w for w in loaded.warnings)
+    assert loaded.settings.tools.web is True
+    assert loaded.sources["tools.web"] == "set"
+
+
+def test_validate_override_tools_web_accepts(tmp_path: Path) -> None:
+    """tools.web coerces via /config set (high-stakes, confirm-gated in handler)."""
+    assert validate_override("tools.web", "true") is True
+
+
+def test_override_base_url_applies(tmp_path: Path) -> None:
+    """model.base_url set via a (confirmed) /config set applies through overrides."""
+    loaded = _cfg(tmp_path, {"model.base_url": "http://127.0.0.1:9999"})
+    assert not any("config-file only" in w for w in loaded.warnings)
+    assert loaded.settings.model.base_url == "http://127.0.0.1:9999"
+    assert loaded.sources["model.base_url"] == "set"
+
+
+def test_validate_override_base_url_accepts(tmp_path: Path) -> None:
+    """model.base_url coerces via /config set (high-stakes, confirm-gated)."""
+    assert validate_override("model.base_url", "http://127.0.0.1:9999") == "http://127.0.0.1:9999"
+
+
+def test_env_base_url_ignored(tmp_path: Path) -> None:
+    """SHELLPILOT_OLLAMA_BASE_URL no longer redirects the endpoint via config."""
+    loaded = load_config(
+        user_config_file=tmp_path / "missing.toml",
+        project_config_file=tmp_path / "missing.toml",
+        env={"SHELLPILOT_OLLAMA_BASE_URL": "http://evil.example"},
+    )
+    assert loaded.settings.model.base_url == "http://localhost:11434"
+    assert loaded.sources["model.base_url"] == "default"
+
+
+def test_env_security_profile_ignored(tmp_path: Path) -> None:
+    """SHELLPILOT_PROFILE no longer downgrades the security profile via config."""
+    loaded = load_config(
+        user_config_file=tmp_path / "missing.toml",
+        project_config_file=tmp_path / "missing.toml",
+        env={"SHELLPILOT_PROFILE": "supervised"},
+    )
+    assert loaded.settings.runtime.security_profile == "balanced"
+    assert loaded.sources["runtime.security_profile"] == "default"
+
+
+# --- No-regression: config.toml (user/project layers) still apply all five ---
+
+
+def test_tools_web_config_toml_still_applies(tmp_path: Path) -> None:
+    """tools.web in user config.toml still enables egress (source 'user')."""
+    user = write_toml(tmp_path / "user.toml", "[tools]\nweb = true\n")
+    loaded = load_config(
+        user_config_file=user, project_config_file=tmp_path / "missing.toml", env={}
+    )
+    assert loaded.settings.tools.web is True
+    assert loaded.sources["tools.web"] == "user"
+
+
+def test_base_url_config_toml_still_applies(tmp_path: Path) -> None:
+    """model.base_url in project config.toml still redirects (source 'project')."""
+    project = write_toml(tmp_path / "proj.toml", '[model]\nbase_url = "http://127.0.0.1:9999"\n')
+    loaded = load_config(
+        user_config_file=tmp_path / "missing.toml", project_config_file=project, env={}
+    )
+    assert loaded.settings.model.base_url == "http://127.0.0.1:9999"
+    assert loaded.sources["model.base_url"] == "project"
+
+
+def test_security_profile_config_toml_still_applies(tmp_path: Path) -> None:
+    """runtime.security_profile in user config.toml still applies (source 'user')."""
+    user = write_toml(tmp_path / "user.toml", '[runtime]\nsecurity_profile = "supervised"\n')
+    loaded = load_config(
+        user_config_file=user, project_config_file=tmp_path / "missing.toml", env={}
+    )
+    assert loaded.settings.runtime.security_profile == "supervised"
+    assert loaded.sources["runtime.security_profile"] == "user"
+
+
+# --- Unchanged messages for the originally config-file-only keys ---
+
+
+def test_override_model_options_message_unchanged(tmp_path: Path) -> None:
+    """The model.options overrides warning is byte-identical after unification."""
+    loaded = _cfg(tmp_path, {"model.options": {"temperature": 0.9}})
+    assert (
+        "overrides: model.options is config-file only and cannot be set "
+        "via overrides — entry ignored"
+    ) in loaded.warnings
+
+
+def test_override_skills_enabled_message_unchanged(tmp_path: Path) -> None:
+    """The skills.enabled overrides warning is byte-identical after unification."""
+    loaded = _cfg(tmp_path, {"skills.enabled": ["x"]})
+    assert (
+        "overrides: skills.enabled is config-file only and cannot be set "
+        "via overrides — entry ignored"
+    ) in loaded.warnings
+
+
+def test_validate_override_model_options_message_unchanged(tmp_path: Path) -> None:
+    """The model.options /config set error is byte-identical after unification."""
+    with pytest.raises(
+        ConfigError,
+        match="^model.options is config-file only and cannot be set via /config set$",
+    ):
+        validate_override("model.options", {"temperature": 0.5})
+
+
+def test_validate_override_skills_enabled_message_unchanged(tmp_path: Path) -> None:
+    """The skills.enabled /config set error is byte-identical after unification."""
+    with pytest.raises(
+        ConfigError,
+        match="^skills.enabled is config-file only and cannot be set via /config set$",
+    ):
+        validate_override("skills.enabled", ["x"])
+
+
+# ---------------------------------------------------------------------------
+# model.allow_cloud: master cloud-egress switch (high-stakes, v0.10.0).
+# Settable via confirm-gated /config set + config.toml; never via env var.
+# ---------------------------------------------------------------------------
+
+
+def test_allow_cloud_defaults_off(tmp_path: Path) -> None:
+    """allow_cloud is False by default — local-first egress stays disabled."""
+    loaded = load_config(
+        user_config_file=tmp_path / "missing-user.toml",
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert loaded.settings.model.allow_cloud is False
+    assert loaded.sources["model.allow_cloud"] == "default"
+
+
+def test_allow_cloud_toml_override(tmp_path: Path) -> None:
+    """allow_cloud = true in config.toml flips it on and records the source."""
+    user = write_toml(tmp_path / "user.toml", "[model]\nallow_cloud = true\n")
+    loaded = load_config(
+        user_config_file=user, project_config_file=tmp_path / "missing.toml", env={}
+    )
+    assert loaded.settings.model.allow_cloud is True
+    assert loaded.sources["model.allow_cloud"] == "user"
+
+
+def test_allow_cloud_rejects_non_boolean(tmp_path: Path) -> None:
+    """allow_cloud must be a boolean; a string value is a fatal config error."""
+    user = write_toml(tmp_path / "user.toml", '[model]\nallow_cloud = "yes"\n')
+    with pytest.raises(ConfigError, match="model.allow_cloud"):
+        load_config(
+            user_config_file=user,
+            project_config_file=tmp_path / "missing.toml",
+            env={},
+        )
+
+
+def test_override_allow_cloud_applies(tmp_path: Path) -> None:
+    """allow_cloud set via a (confirmed) /config set applies through overrides.
+
+    The per-session cloud-consent gate (§15.2) still fires regardless of how
+    allow_cloud was set, so this opens no silent-egress vector.
+    """
+    loaded = _cfg(tmp_path, {"model.allow_cloud": True})
+    assert not any("config-file only" in w for w in loaded.warnings)
+    assert loaded.settings.model.allow_cloud is True
+    assert loaded.sources["model.allow_cloud"] == "set"
+
+
+def test_validate_override_allow_cloud_accepts(tmp_path: Path) -> None:
+    """allow_cloud coerces via /config set (high-stakes, confirm-gated)."""
+    assert validate_override("model.allow_cloud", "true") is True
+
+
+def test_allow_cloud_has_no_env_var(tmp_path: Path) -> None:
+    """No env var can enable cloud egress (allow_cloud is absent from ENV_MAP)."""
+    from shellpilot.config.loader import ENV_MAP
+
+    assert "model.allow_cloud" not in ENV_MAP.values()
+
+
+def test_allow_cloud_is_boot_only(tmp_path: Path) -> None:
+    """allow_cloud is a boot-only key (cannot toggle egress mid-session)."""
+    from shellpilot.config.loader import BOOT_ONLY_KEYS
+
+    assert "model.allow_cloud" in BOOT_ONLY_KEYS
+
+
+def test_high_stakes_keys_membership() -> None:
+    """HIGH_STAKES_KEYS holds exactly the four egress/safety keys, and the two
+    structural keys stay config-file-only and out of the high-stakes set."""
+    from shellpilot.config.loader import CONFIG_FILE_ONLY_KEYS, HIGH_STAKES_KEYS
+
+    assert HIGH_STAKES_KEYS == {
+        "tools.web",
+        "model.base_url",
+        "runtime.security_profile",
+        "model.allow_cloud",
+    }
+    assert CONFIG_FILE_ONLY_KEYS == {"model.options", "skills.enabled"}
+    assert HIGH_STAKES_KEYS.isdisjoint(CONFIG_FILE_ONLY_KEYS)
+
+
+def test_high_stakes_keys_absent_from_env_and_boot_only_except_live_profile() -> None:
+    """The load-bearing env invariant: every high-stakes key stays absent from
+    ENV_MAP (no ambient var can enable egress / downgrade the profile). The three
+    egress keys are boot-only; runtime.security_profile is the exception — it is
+    read per turn, so /config set lowers it this session (same live effect as
+    /profile use) and it is deliberately NOT in BOOT_ONLY_KEYS."""
+    from shellpilot.config.loader import BOOT_ONLY_KEYS, ENV_MAP, HIGH_STAKES_KEYS
+
+    for key in HIGH_STAKES_KEYS:
+        assert key not in ENV_MAP.values(), key
+    assert "runtime.security_profile" not in BOOT_ONLY_KEYS
+    for key in HIGH_STAKES_KEYS - {"runtime.security_profile"}:
+        assert key in BOOT_ONLY_KEYS, key
+
+
+def test_is_cloud_model_classification() -> None:
+    """is_cloud_model recognises the Ollama cloud tag: ':cloud' and '<variant>-cloud'."""
+    from shellpilot.config.model import is_cloud_model
+
+    # Ollama tags cloud models two ways; missing either form would be a silent
+    # egress (the model leaves the device while classed as local).
+    assert is_cloud_model("nemotron-3-super:cloud") is True  # un-sized ':cloud'
+    assert is_cloud_model("nemotron-3-nano:30b-cloud") is True  # sized '<size>-cloud'
+    assert is_cloud_model("gpt-oss:120b-cloud") is True
+    assert is_cloud_model("gemma4:e4b") is False
+    assert is_cloud_model("qwen3.5:4b-mlx") is False
+    assert is_cloud_model("") is False
+    # The cloud marker is the TAG, not the model name: 'cloud-runner' is local.
+    assert is_cloud_model("cloud-runner:7b") is False
+
+
+def test_is_egressing_combines_cloud_model_and_base_url() -> None:
+    """is_egressing is True for a cloud model OR a non-loopback endpoint."""
+    from shellpilot.config.model import is_egressing
+
+    loopback = "http://127.0.0.1:11434"
+    remote = "http://10.0.0.5:11434"
+    # Cloud model on a loopback endpoint still egresses (Ollama proxies it out).
+    assert is_egressing("x-cloud", loopback) is True
+    # A local model on a loopback endpoint stays local.
+    assert is_egressing("gemma4:e4b", loopback) is False
+    # A local model pointed at a non-loopback endpoint egresses.
+    assert is_egressing("gemma4:e4b", remote) is True
+    # Both signals firing is still egressing.
+    assert is_egressing("x-cloud", remote) is True

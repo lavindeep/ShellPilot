@@ -283,7 +283,7 @@ class ContextAssembler:
 
         # Build the readable menu: one line advertising on-demand docs for injected skills.
         # Gate mirrors skill_read registration: present only when enabled is non-empty.
-        # ponytail: not budget-counted — it's a bounded single line, not skill content.
+        # NOTE: not budget-counted — it's a bounded single line, not skill content.
         readable_block: ContextBlock | None = None
         if trigger_ctx.enabled and readable:
             parts = "; ".join(f"{name}: {', '.join(names)}" for name, names in readable)

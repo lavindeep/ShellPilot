@@ -341,9 +341,13 @@ def test_discover_builtin_root_resolves() -> None:
     )
     builtin_names = [s.name for s in skills if s.root == "builtin"]
     assert builtin_names == [
+        "code-review",
         "context-management",
+        "debugging",
+        "git-workflow",
         "planning",
         "skill-authoring",
+        "verification",
         "web-grounding",
     ]
 
@@ -432,13 +436,99 @@ def test_builtin_trigger_map_and_resources_by_folder_name() -> None:
     assert builtins["skill-authoring"].scripts == ()
 
 
+# ---------------------------------------------------------------------------
+# Workflow skills (v0.9.x — opt-in progressive-disclosure showcase)
+# ---------------------------------------------------------------------------
+
+WORKFLOW_SKILLS: dict[str, set[str]] = {
+    "debugging": {"method", "common-traps"},
+    "verification": {"checklist"},
+    "code-review": {"dimensions"},
+    "git-workflow": {"commits", "recovery"},
+}
+
+
+@pytest.mark.parametrize("name", sorted(WORKFLOW_SKILLS))
+def test_workflow_skill_valid_enabled_with_on_demand_references(name: str) -> None:
+    """Each workflow skill is valid, ENABLED-gated, with on-demand references only."""
+    skill = _builtin_skills()[name]
+    assert skill.valid is True
+    assert skill.error == ""
+    assert skill.triggers == (SkillTrigger.ENABLED,)
+    assert skill.body.strip(), "workflow skill body must not be empty"
+    # References are on-demand (no trigger) and match the expected set.
+    assert {r.name for r in skill.references} == WORKFLOW_SKILLS[name]
+    assert all(r.trigger is None for r in skill.references)
+    assert all(r.kind == "reference" for r in skill.references)
+    # These skills ship no templates or scripts.
+    assert skill.templates == ()
+    assert skill.scripts == ()
+
+
+@pytest.mark.parametrize("name", sorted(WORKFLOW_SKILLS))
+def test_workflow_skill_body_within_token_cap(name: str) -> None:
+    """The injected body is lean — well under the per-skill cap and the ~180-token aim."""
+    max_tokens = 800
+    skill = _builtin_skills(max_tokens=max_tokens)[name]
+    assert skill.est_tokens <= max_tokens
+    # Lean body: depth lives in on-demand references, not the injected text.
+    assert skill.est_tokens <= 200
+
+
+@pytest.mark.parametrize("name", sorted(WORKFLOW_SKILLS))
+def test_workflow_skill_body_routes_to_its_references(name: str) -> None:
+    """The body names skill_read and each of its on-demand references by name."""
+    skill = _builtin_skills()[name]
+    assert "skill_read" in skill.body
+    for resource_name in WORKFLOW_SKILLS[name]:
+        assert resource_name in skill.body, f"body of {name} should name reference {resource_name}"
+
+
+@pytest.mark.parametrize("name", sorted(WORKFLOW_SKILLS))
+def test_workflow_skill_references_readable_by_name(name: str) -> None:
+    """Each on-demand reference is readable through skill_read by its exact name."""
+    from shellpilot.tools.base import ToolContext
+    from shellpilot.tools.skill_tools import make_skill_read_tool
+
+    skills = tuple(s for s in _builtin_skills().values())
+    spec = make_skill_read_tool(skills)
+    ctx = ToolContext(workspace=Path("/nonexistent"), max_result_tokens=4000)
+    for resource_name in WORKFLOW_SKILLS[name]:
+        result = spec.handler(ctx, {"skill": name, "resource": resource_name})
+        assert result.success is True, f"{name}/{resource_name} should be readable"
+        assert result.content.strip()
+
+
+@pytest.mark.parametrize("name", sorted(WORKFLOW_SKILLS))
+def test_workflow_skill_body_names_no_bogus_tool(name: str) -> None:
+    """Guard the fabricated-tool-name class (v0.9.0): the search tool is
+    `search_text`, never a bare `search`. A SKILL body injects as authoritative
+    instruction, so it must name real registered tools."""
+    body = _builtin_skills()[name].body
+    assert "`search`" not in body, f"{name} body references a non-existent `search` tool"
+
+
 def test_builtin_layout_loads_with_importlib_resources() -> None:
     root = importlib.resources.files("shellpilot.skills.builtin")
     expected_files = {
+        "code-review": {
+            "SKILL.md",
+            "references/dimensions.md",
+        },
         "context-management": {
             "SKILL.md",
             "references/context-budgeting.md",
             "references/file-triage.md",
+        },
+        "debugging": {
+            "SKILL.md",
+            "references/method.md",
+            "references/common-traps.md",
+        },
+        "git-workflow": {
+            "SKILL.md",
+            "references/commits.md",
+            "references/recovery.md",
         },
         "planning": {
             "SKILL.md",
@@ -456,6 +546,10 @@ def test_builtin_layout_loads_with_importlib_resources() -> None:
             "references/trigger-writing.md",
             "templates/SKILL.md",
             "templates/skill-eval.md",
+        },
+        "verification": {
+            "SKILL.md",
+            "references/checklist.md",
         },
         "web-grounding": {"SKILL.md"},
     }

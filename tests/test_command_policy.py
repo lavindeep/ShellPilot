@@ -18,8 +18,7 @@ CASES: list[tuple[list[str], RiskLevel]] = [
     (["git", "diff", "--stat"], RiskLevel.LOW),
     (["git", "log", "--oneline"], RiskLevel.LOW),
     (["grep", "-R", "foo", "."], RiskLevel.LOW),
-    (["python", "-m", "pytest"], RiskLevel.LOW),
-    (["pytest", "-q"], RiskLevel.LOW),
+    (["python", "--version"], RiskLevel.LOW),
     (["uname", "-a"], RiskLevel.LOW),
     # Medium: workspace writes, packages, network, commits
     (["rm", "file.txt"], RiskLevel.MEDIUM),
@@ -57,11 +56,123 @@ CASES: list[tuple[list[str], RiskLevel]] = [
     (["cat", ".env"], RiskLevel.HIGH),
 ]
 
+GIT_PRE_VERB_CASES: list[tuple[list[str], RiskLevel]] = [
+    # Benign globals preserve read-only classification.
+    (["git", "--no-pager", "log"], RiskLevel.LOW),
+    (["git", "--literal-pathspecs", "diff"], RiskLevel.LOW),
+    # All other pre-verb globals are conservative, including recognized
+    # value-bearing options whose values must not be mistaken for verbs.
+    (["git", "--git-dir=/tmp/repo", "log"], RiskLevel.MEDIUM),
+    (["git", "--git-dir", "/tmp/repo", "log"], RiskLevel.MEDIUM),
+    (["git", "--work-tree", "../other", "log"], RiskLevel.MEDIUM),
+    (["git", "-C", "../other", "status"], RiskLevel.MEDIUM),
+    (["git", "-c", "core.pager=cat", "log"], RiskLevel.MEDIUM),
+    (["git", "-c=core.pager=cat", "log"], RiskLevel.MEDIUM),
+    (["git", "--future-global", "log"], RiskLevel.MEDIUM),
+    (["git", "--exec-path=/tmp", "log"], RiskLevel.MEDIUM),
+    (["git", "--git-dir", "reset", "log"], RiskLevel.MEDIUM),
+]
+
 
 @pytest.mark.parametrize(("argv", "expected"), CASES, ids=lambda case: str(case))
 def test_classification_table(argv: list[str], expected: RiskLevel) -> None:
     result = classify_command(argv, workspace=WS)
     assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+@pytest.mark.parametrize("argv", [["pytest", "-q"], ["python", "-m", "pytest"]])
+def test_pytest_requires_approval(argv: list[str]) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+
+
+def test_python_script_with_version_argument_requires_approval() -> None:
+    result = classify_command(["python", "script.py", "--version"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["grep", "pattern", "."], RiskLevel.LOW),
+        (["./grep", "pattern", "."], RiskLevel.MEDIUM),
+        (["/usr/bin/ls"], RiskLevel.MEDIUM),
+        (["/bin/rm", "-rf", "x"], RiskLevel.HIGH),
+        (["/usr/bin/sudo"], RiskLevel.HIGH),
+        (["/bin/cat", "/etc/passwd"], RiskLevel.HIGH),
+    ],
+)
+def test_path_qualified_executable_has_medium_floor(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+@pytest.mark.parametrize(("argv", "expected"), GIT_PRE_VERB_CASES, ids=lambda case: str(case))
+def test_git_pre_verb_global_classification(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+def test_git_benign_global_does_not_hide_destructive_verb() -> None:
+    result = classify_command(["git", "--no-pager", "reset"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["git", "branch", "-d", "topic"], RiskLevel.HIGH),
+        (["git", "branch", "-dr", "topic"], RiskLevel.HIGH),
+        (["git", "branch", "-rd", "topic"], RiskLevel.HIGH),
+        (["git", "branch", "--dele", "topic"], RiskLevel.HIGH),
+        (["git", "branch", "-r"], RiskLevel.LOW),
+        (["git", "branch", "--list", "topic"], RiskLevel.LOW),
+    ],
+)
+def test_git_branch_delete_forms_are_high(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+def test_git_bare_exec_path_does_not_treat_later_token_as_verb() -> None:
+    result = classify_command(["git", "--exec-path", "reset", "log"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+    assert result.reasons == ("git uses a non-benign global option",)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["git", "--no-pager", "stash", "list"],
+        ["git", "--literal-pathspecs", "stash", "show"],
+    ],
+)
+def test_git_benign_global_preserves_readonly_stash(argv: list[str]) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["git", "push", "--force-with-lease=main:deadbeef"],
+        ["git", "push", "--force-w"],
+        ["git", "push", "--force-with-l"],
+        ["git", "push", "--force-with-l=main:deadbeef"],
+        ["git", "push", "origin", "+main"],
+        ["git", "push", "-f"],
+        ["git", "push", "-uf"],
+        ["git", "push", "-fu"],
+    ],
+)
+def test_git_force_push_forms_are_high(argv: list[str]) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+
+
+def test_git_push_option_value_containing_f_is_not_force() -> None:
+    result = classify_command(["git", "push", "-ofoo"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
 
 
 def test_write_outside_workspace_is_high() -> None:
@@ -133,6 +244,77 @@ def test_ls_with_relative_escape_unchanged() -> None:
 
 
 # -- end relative-path boundary tests ------------------------------------------
+
+
+# -- reader-command workspace-boundary checks (F1 fix, v0.10.0) ----------------
+
+
+def test_cat_absolute_outside_is_high() -> None:
+    result = classify_command(["cat", "/etc/passwd"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_tail_relative_escape_is_high() -> None:
+    result = classify_command(["tail", "../sibling"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_grep_recursive_outside_is_high() -> None:
+    result = classify_command(["grep", "-r", "password", "/Users"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_head_absolute_outside_is_high() -> None:
+    result = classify_command(["head", "/tmp/x"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_cat_inside_workspace_stays_low() -> None:
+    result = classify_command(["cat", "./README.md"], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_grep_recursive_inside_stays_low() -> None:
+    result = classify_command(["grep", "-r", "TODO", "."], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_wc_relative_inside_stays_low() -> None:
+    result = classify_command(["wc", "-l", "src/foo.py"], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_bare_ls_no_path_stays_low() -> None:
+    # ls is not a reader executable; no path arg, no boundary check
+    result = classify_command(["ls"], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_cat_secret_marker_still_high() -> None:
+    # regression: marker-bearing reads stay HIGH via _touches_secret_path
+    result = classify_command(["cat", ".env"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+
+
+def test_rm_outside_behavior_unchanged_after_rename() -> None:
+    # regression guard for the _writes_outside_workspace -> _path_arg_outside_workspace rename
+    result = classify_command(["rm", "-rf", "/tmp/x"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert "recursive delete" in result.reasons
+
+
+def test_mv_outside_behavior_unchanged_after_rename() -> None:
+    # regression guard for the rename: WRITE_COMMANDS branch reason unchanged
+    result = classify_command(["mv", "x", "/etc/y"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace boundary" in reason for reason in result.reasons)
+
+
+# -- end reader-command boundary tests ----------------------------------------
 
 
 def test_reasons_are_present_for_risky_commands() -> None:

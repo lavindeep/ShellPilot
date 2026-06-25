@@ -1,16 +1,16 @@
 # ShellPilot Design
 
-Status: Current implementation design through v0.8.0, with historical rebuild notes retained
-Date: 2026-06-14
+Status: Current implementation design through v0.10.0, with historical rebuild notes retained
+Date: 2026-06-21
 Repository: `/Users/lavin/Projects/ShellPilot`
 
 ## 1. Purpose
 
-This document defines ShellPilot's design as a modular, local-first Python AI harness. Early sections retain the original rebuild rationale from 2026-06-10; later release-settled sections describe the current implementation through v0.8.0.
+This document defines ShellPilot's design as a modular, local-first Python AI harness. Early sections retain the original rebuild rationale from 2026-06-10; later release-settled sections describe the current implementation through v0.10.0.
 
 The rebuilt project should feel closer to a local coding and shell partner than a menu-driven chatbot. The user should be able to open one CLI conversation, ask questions, ask for project inspection, request command execution, approve plans for complex work, and use a manual shell when they want direct control.
 
-The system remains local-only through Ollama. Gemma 4 is the default and primary supported model family. The design intentionally avoids broad multi-provider abstractions in the first version because different model families vary widely in tool calling, reasoning behavior, streaming, and instruction following.
+The system is local-first through Ollama: by default every model call is local, and cloud/remote models are an explicit, off-by-default opt-in (section 15.2). Gemma 4 is the default and primary supported model family. The design intentionally avoids broad multi-provider abstractions in the first version because different model families vary widely in tool calling, reasoning behavior, streaming, and instruction following.
 
 ## Safety Scope
 
@@ -18,7 +18,7 @@ This project is a local developer productivity harness. Security-related feature
 
 ## 2. Original Repo Baseline
 
-This section is historical context from the initial rebuild plan. The repository has since shipped the rebuilt architecture through v0.8.0, but these observations explain why the current boundaries exist.
+This section is historical context from the initial rebuild plan. The repository has since shipped the rebuilt architecture through v0.10.0, but these observations explain why the current boundaries exist.
 
 The pre-rebuild repository already proved several valuable ideas:
 
@@ -97,7 +97,7 @@ Recommendation (superseded by the settled name):
 
 ### 5.1 Local First
 
-All model calls happen through local Ollama. No telemetry, cloud sync, or hosted API is part of the product. The only network egress is the optional, off-by-default web grounding tools: they contact only the search provider and pages the user approves per request, with no API keys.
+By default, all model calls happen through local Ollama. No telemetry, cloud sync, or automatic upload is part of the product. Cloud/remote models are an explicit opt-in, off by default behind the `[model] allow_cloud` switch (changeable only by a deliberate act — a `config.toml` edit or a confirm-gated `/config set`, never an env var) plus per-session consent (section 15.2) — local-first stays the default and the only full-privacy posture. The only other network egress is the optional, off-by-default web grounding tools: they contact only the search provider and pages the user approves per request, with no API keys.
 
 ### 5.2 Gemma 4 First
 
@@ -573,7 +573,7 @@ Planning is NOT required (do the action directly) when:
 
 - The task is a direct answer or single read-only inspection.
 - The task is a single command or a single file edit.
-- The task is a simple low-risk command like `pwd` or `python -m pytest`.
+- The task is a simple low-risk command like `pwd` or `git status`.
 
 ### 11.2 Plan Shape
 
@@ -1217,7 +1217,7 @@ Examples:
 | Pattern | Risk |
 |---|---|
 | `ls`, `pwd`, `git status` | Low |
-| `python -m pytest` | Low or medium depending on config |
+| `python -m pytest` | Medium (runs arbitrary project Python) |
 | `pip install` | Medium |
 | `git commit` | Medium |
 | `git push` | Medium or high depending on config |
@@ -1257,13 +1257,27 @@ File writes should be limited to the workspace unless:
 
 The boundary must be clear in the UI. Relative paths are resolved against the workspace before the boundary test, and `rm` targets are boundary-checked in the same way as other write commands (v0.5.2).
 
+**Display-integrity invariant (v0.10.0).** Every user-facing path display — the tool-call line, the approval-panel head, and the write/patch diff-panel title — is derived from the *same* `resolve_in_workspace` result the tool acts on, never from the raw model argument. A spoofing path (`..` segments, `./x/../y`, symlink, trailing junk) is shown as its resolved, workspace-relative target, so the file the user approves is always the file actually touched; a path that escapes the boundary renders an honest `<outside workspace>` marker rather than a fabricated-looking in-workspace path. The single helper `workspace_display(workspace, raw_path)` (`tools/base.py`) is the one display formatter, layered over the canonical resolver — there is no second, divergent resolution. This is a display-only change: the boundary checks and the resolution the action uses are unchanged.
+
+### 14.6 Approval Outcomes And Reject-And-Steer
+
+An approval prompt has three outcomes, not two — `[y]es / [e]dit / [n]o` (`ApprovalReply`, `policy/approvals.py`):
+
+- **`[y]es`** — approve and run the action.
+- **`[n]o`** (or Enter) — plain decline; the action does not run and the model is told not to retry it.
+- **`[e]dit` — reject-and-steer.** The proposed action is **rejected and never runs**; the user types one line of free-text guidance ("Tell the model what to do instead:") which is fed back to the model as the declined tool call's result ("the user declined this action and asks you to do this instead: `<guidance>`. Propose a corrected action."). The model then proposes a **corrected** action, which re-enters the normal `classify → decide → gate` flow like any other tool call.
+
+This is *reject-and-steer*, not inline-edit-and-run: the user never edits a command that then executes under the badge it was approved under. **Safety is automatic** because the un-approved action is dropped and the correction is a fresh tool call that is independently classified and re-gated — steering can never smuggle a higher-risk action past the prompt. The outcome is uniform across every approval-gated tool (commands and file writes alike); no per-tool editing logic exists because nothing is edited in place.
+
+**The HIGH-risk typed-`run` confirm is unchanged.** A HIGH-risk command still requires typing the literal `run` to execute; `[e]` is an additional option at that same prompt that steers without running, and Enter still cancels. Empty guidance after `[e]` is treated as a plain decline (nothing runs). A steered approval is audited as `decision="steered"` on the `approval` event (alongside `approved`/`rejected`).
+
 ## 15. Privacy
 
 The product must stay local by default.
 
 Privacy requirements:
 
-- No cloud model calls. No telemetry. No remote logging. No automatic upload of files.
+- No cloud model calls by default. No telemetry. No remote logging. No automatic upload of files. Cloud/remote models are opt-in and off by default; enabling one is gated by `[model] allow_cloud` plus per-session consent, with an active-cloud indicator and an egress audit as the boundary (section 15.2).
 - Web grounding is off by default; when enabled, every request is individually approved
   and audit-logged (query/URL, redacted).
 - No reading sensitive paths unless relevant and approved.
@@ -1288,6 +1302,43 @@ Reads of these are gated deterministically, never by model judgement. The `read_
 - `"always"` — the read runs automatically.
 
 `search_text` applies the same gate to directory traversal: files whose path components name a secret are skipped (their contents are never read) unless `allow_sensitive_reads = "always"`, and the tool result appends a deterministic note naming up to three skipped files and pointing at `read_file` or the `"always"` setting. An explicit sensitive path passed as the search root is gated by the classifier exactly like `read_file`; once that gate authorizes it (auto under `"always"`, on approval under `"ask"`, never under `"never"`), the approved sensitive root is searched in full — the traversal skip applies only to sensitive files encountered incidentally under a non-sensitive root. Listing directory names (`list_dir`) is not a content read and is never gated.
+
+### 15.1 Egress Chokepoint (v0.10.0)
+
+When the model endpoint is **remote**, the entire prompt (system prompt, AGENTS.md, memory, file contents, command output) leaves the device — the prompt itself is an exfiltration channel that no per-action approval gate intercepts. The runtime owns a single locality signal (`_is_egressing()`, which delegates to the shared `is_egressing(model, base_url)` predicate in `config/model.py` — true when the model `base_url` is not loopback **or** the model is a cloud model — `is_cloud_model(name)`, the Ollama cloud tag (`:cloud`, or a sized `<size>-cloud` such as `:31b-cloud`, matched on the tag after the final `:`), which egresses to the provider even through a localhost Ollama proxy) and applies two controls at the one chokepoint where every **conversational** model request passes (`conversation.py` tool loop):
+
+- **Outbound redaction (best-effort defence-in-depth, not a guarantee).** On an egressing turn, when `privacy.redact_secrets` is on, a **redacted copy** of the outbound messages is sent (`redact_secrets` on content, `redact_structure` on tool-call arguments) — the in-memory history is never mutated. A **loopback turn is sent byte-identical** (no copy, zero behaviour change). This is regex-based and conservative: **novel secret formats are missed**, and **image/base64 data is not redactable here and egresses unredacted**. It reduces accidental credential leakage to a provider; it is not a confidentiality guarantee. Local-first remains the only full privacy posture.
+- **Egress visibility (audit).** Every egressing model request emits a `model_request` audit event (host/model/counts only — never message bodies; section 22), and every `SideEffect.NETWORK` tool call that actually runs emits a `web_egress` event. Together these record *what left the device* without recording its contents.
+
+**Accepted residual — `/memory compact`.** One model call bypasses this chokepoint: the `/memory compact` preference optimization (`SlashDispatcher._memory_compact`, `slash.py`) calls the Ollama client directly, outside the `conversation.py` tool loop, so on an egressing session it carries no `model_request` audit event and no outbound-redaction pass. This is an **accepted residual**, not a consent failure: per-session consent (§15.2) is granted before any model call, so this call is already covered by the boundary; and what it sends is stored preferences only (short behaviour strings — not history, file contents, or command output), which §16.4 already requires must not contain secrets. The open gap is audit-completeness (a silent egress the trail does not count) and the missing best-effort redaction pass. Routing `_memory_compact` through the chokepoint to close the audit-undercount gap is a planned hardening follow-up. (Context compaction — `/compact`, §20.2 — is unaffected: it makes no model call, only in-memory message dropping.)
+
+### 15.2 Cloud Models — Opt-in Egress Consent (v0.10.0)
+
+Cloud/remote models are **opt-in and off by default**: the local-first posture is the product's core promise, so enabling a model that egresses is a deliberate, security-gated act. A default localhost session is byte-identical to the pre-v0.10.0 program — no new prompt, no `allow_cloud` needed, the system prompt unchanged.
+
+A session **egresses** when the model is a cloud model (`is_cloud_model(name)` — the Ollama cloud tag, `:cloud` or a sized `<size>-cloud`, matched on the segment after the final `:` so both forms are caught; the prompt leaves the device even though the daemon proxies it through localhost) **or** the endpoint `base_url` is non-loopback (`is_loopback_url` in `llm/ollama.py`). This combined predicate is `is_egressing(model, base_url)` in `config/model.py` — one source of truth shared by the boot consent gate, the runtime egress chokepoint, the active-cloud UI indicator, and `/status`, so every trigger agrees on what counts as off-box. The cloud-models case is the primary feature: `base_url` stays `localhost`; only the model name signals egress.
+
+Three layered controls form the consent boundary:
+
+- **`[model] allow_cloud` — the master egress switch (default `false`).** It is **high-stakes and boot-only** (in both `HIGH_STAKES_KEYS` and `BOOT_ONLY_KEYS`, absent from `ENV_MAP`): it is settable via a `config.toml` edit or a confirm-gated `/config set` (which persists through the program-managed `overrides.json`; boot-only, so the effect is next launch) — but **never via an env var**, and never via overrides written by anything but an explicit user `/config set`. The same invariant applies to `tools.web` and `model.base_url`. Whatever the setter, the per-session consent gate below is the real boundary. With `allow_cloud` off, a cloud/remote model is refused at boot with a message pointing at the switch; no model is loaded.
+- **Per-session consent (re-asked every launch, never persisted).** With `allow_cloud` on, an egressing session shows an honest disclosure — the model runs off the device; the entire prompt (file contents, command output, memory the model reads) is sent to the provider and may be **unredacted**; under the `balanced` profile low-risk actions auto-run and can send data without a per-action prompt; the provider's retention/training/jurisdiction are outside ShellPilot's control — followed by a simple **y/N prompt that defaults to No** (Enter, EOF, or anything but an explicit yes declines). The session keeps the `balanced` profile (no profile change); the disclosure discloses that risk rather than silently downgrading capability.
+- **Fail-closed ordering.** The consent gate (`_resolve_cloud_consent`, a testable module-level helper mirroring the AGENTS.md trust gate) runs at boot **strictly before** the first prompt-bearing call (`_preload` → `model_context_length` → `chat`). A decline (or a non-interactive/non-TTY session, which fails closed because consent cannot be obtained) returns before any model load — **no prompt data egresses**. The local availability gate (`chosen not in installed`) is skipped for cloud names, since cloud models are absent from the local `/api/tags`; the typo-catch survives for local names. `/model use <name>` mid-session mirrors the same gate: a cloud/remote target requires `allow_cloud` and fresh consent before `set_model`/`_preload`; on reject it neither switches nor preloads.
+
+**System-prompt honesty.** The base prompt's claim that ShellPilot runs "entirely on this machine" with "no independent network access" is **false when egressing**, so it is conditional: a non-egressing (local) session keeps the byte-identical line (zero regression on the gemma4 baseline); an egressing session replaces it with an honest line stating the session's content leaves the device (`build_system_prompt(is_egressing=...)`, threaded from `_is_egressing()`; `PROMPT_VERSION` 5).
+
+**Active-cloud indicator (unspoofable).** Three UI surfaces show the locality, all derived from `is_egressing` on the *live* model — never from model output, so the model cannot fake or hide it:
+
+- **Boot banner** (§31.10) styles the model name amber when the boot session egresses.
+- **Persistent status bar** (§31.11). The always-on bar above the prompt carries the locality segment: `☁ CLOUD` (amber, bold) with an amber emphasis across the whole bar when egressing, `● local` (green) otherwise. Each REPL iteration recomputes `is_egressing(runtime.model, base_url)` on the live model and feeds it as the bar's `is_cloud`, so a mid-session `/model use <cloud>` turns it on and switching back to a local model turns it off. The bar's `dir`/`model`/`profile`/`ctx%` come from `runtime.status()`, never from model output, and the user-controlled workspace path is sanitized (§36.2) before render. The chevron also turns amber when egressing. (This replaced an earlier separate bold-amber header line; the indicator now lives in one place — the bar.)
+- **`/status` locality line.** After Model/Profile, `/status` shows `Locality: REMOTE — <host>` in amber when egressing (the non-loopback host, or `cloud` for a cloud-tagged model on a loopback endpoint) or `Locality: local` in dim otherwise.
+
+The status bar is rendered as the input's `bottom_toolbar` with explicit per-fragment colors (prompt_toolkit's default reverse-video toolbar styling is cleared), so the locality segment renders in color in the live terminal. The non-TTY `PlainInput` path has no bar — it cannot egress (consent fails closed off a TTY), so there is nothing to indicate there.
+
+**Audit.** When the AuditLogger is constructed (after the gate, by which point consent has already been granted), an egressing session records a single `cloud_consent_granted` event (`model`, endpoint `host`) — the consent record alongside the per-turn `model_request` egress-visibility events.
+
+**Boundary, not guarantee.** Consent is *the* boundary: once granted, the prompt egresses. The best-effort outbound redaction from §15.1 is defence-in-depth layered behind it, not a confidentiality guarantee (regex-based, misses novel secret formats, leaves image/base64 unredacted). The disclosure says so plainly; **local-first remains the only full privacy posture.**
+
+**Accepted residual — metadata probe before consent.** At boot, `client.health()` and `list_models()` issue `GET /api/tags` against `base_url` *before* the consent gate. For the primary cloud-model case `base_url` is loopback, so this is a purely local call and nothing egresses (Ollama proxies only the actual model load, which is gated). For a **non-loopback `base_url`** these are a **metadata-only probe** (no prompt content) to the endpoint the user *deliberately configured in `config.toml`*, made before consent. This is documented and accepted: it carries no prompt/file/memory data, and the user already chose that endpoint by a deliberate act (a `config.toml` edit or a confirm-gated `/config set` of `base_url`). All **prompt-data** egress remains consent-gated from `_preload` onward.
 
 ## 16. Memory System (v2)
 
@@ -1333,6 +1384,17 @@ Human-editable files:
 ~/.config/<app>/AGENTS.md
 <project>/AGENTS.md
 ```
+
+#### 16.2.1 Project AGENTS.md trust-on-first-use
+
+The project `<workspace>/AGENTS.md` is injected as standing "Project instructions" with the same authority as ShellPilot's own system prompt. Cloning or running inside an untrusted repository would otherwise silently load attacker-authored standing instructions (and, under opt-in cloud, egress them). The project file is therefore trust-on-first-use (TOFU):
+
+- The **global** `<config-dir>/AGENTS.md` is always trusted and loaded — it is the user's own file.
+- The **project** `<workspace>/AGENTS.md` is loaded only after the user accepts it. Acceptance is recorded in `.shellpilot/state.json` as the `trusted_agents_md` SHA-256 digest of the file's raw bytes.
+- On boot, the current digest is compared to the recorded one. If they match, the file loads without prompting. If it is new or its content has changed since it was last trusted (any byte change flips the digest), the user is re-prompted (default No) and the file is loaded only on acceptance.
+- A **non-TTY** session fails closed: the project file is not loaded (no way to obtain consent).
+
+Storing the digest never clobbers the recorded last-selected model; both keys coexist in `state.json` via read-merge-write.
 
 Structured memory:
 
@@ -1445,6 +1507,26 @@ Project config:<repo>/.<app>/config.toml
 
 On macOS and Windows, use platform-native equivalents via `platformdirs`.
 
+#### Starter config on first edit
+
+`/config edit` prints the user config path. When no user `config.toml` exists
+yet, it first writes a commented **starter template** at that path (creating the
+config directory if needed, owner-only `0600`), so the printed path is real and
+immediately editable instead of pointing at a missing file. Every key in the
+template is commented out, so it is valid TOML that `load_config` accepts and
+that resolves to the built-in defaults — an effectively empty config. The
+template's comments are honest about the egress/safety model: which keys are
+config-file-only (`model.options`, `skills.enabled`) versus high-stakes
+(`tools.web`, `model.base_url`, `model.allow_cloud`, `runtime.security_profile`,
+settable here or via a confirm-gated `/config set`, never via an env var).
+
+When a `config.toml` already exists, `/config edit` only prints the path and
+**never** rewrites or overwrites it — config.toml stays user-owned (only the
+program-managed `overrides.json` is ever written by the program). Writing a
+starter happens solely on the explicit `/config edit` action and only when the
+file is absent (using `O_EXCL`, so a concurrently-created file is never
+clobbered).
+
 #### Workspace harness state
 
 `.shellpilot/state.json` stores harness-internal state for a workspace — it is
@@ -1531,12 +1613,46 @@ This is the opposite of `config.toml` handling: hand-edited TOML is
 user-owned and fails loudly with `ConfigError` exactly as today.  The
 harness never writes TOML (`tomllib` is read-only by design).
 
-**`model.options` exclusion**
+**Two-tier setter invariant (egress / security)**
 
-`model.options` cannot be set via the overrides layer.  It is config-file only
-(same rationale as `tools.web` — a sampling change must be an explicit config
-act).  An entry for `model.options` in `overrides.json` is silently skipped
-with a warning.
+Two named sets in `config/loader.py` constrain how a key may be set:
+
+*Config-file-only keys (`CONFIG_FILE_ONLY_KEYS`)* — structural tables/lists
+with no scalar CLI representation, settable only by editing `config.toml`
+(the user or project layer); never via an env var, the program-managed
+`overrides.json`, or `/config set`:
+
+- `model.options` — a sampling-options table; a sampling change must be an
+  explicit config act.
+- `skills.enabled` — the active-skill list must be an explicit config act.
+
+An entry for either in `overrides.json` is silently skipped with a warning;
+`/config set` rejects it with a `ConfigError`; neither has an env-var mapping.
+
+*High-stakes keys (`HIGH_STAKES_KEYS`)* — egress/safety keys whose runtime
+change materially affects whether data leaves the device or the local approval
+posture. They are settable via `config.toml` **or** a confirm-gated
+`/config set` (which persists through the overrides layer), but are
+**deliberately absent from `ENV_MAP`** — an ambient env var is not a
+deliberate act, so it can never enable egress or downgrade the security
+posture. This env-absence claim is load-bearing.
+
+- `tools.web` — enables network egress (web search/fetch).
+- `model.base_url` — redirects the Ollama endpoint to a different host.
+- `model.allow_cloud` — the master cloud-egress switch (default `false`).
+  Enabling cloud/remote models is also boot-only. See §15.2.
+- `runtime.security_profile` — downgrading the security posture (e.g.
+  `supervised` → `balanced`). Unlike the egress keys this is **live**: the
+  profile is read per turn, so a confirm-gated `/config set` lowers it this
+  session (same effect as `/profile use`, the unsaved session-only switch).
+
+The relaxation rationale: the model can neither type slash commands nor write
+`overrides.json` (it lives in the config dir, outside the workspace), and the
+per-session cloud-consent gate (§15.2) still fires regardless of how
+`allow_cloud` was set — so a confirm-gated `/config set` opens no model/
+injection vector while the amber confirm preserves deliberateness. Because a
+high-stakes override persists and outranks `config.toml`, a boot notice lists
+any active high-stakes override on every launch (§36.3).
 
 **Slash commands**
 
@@ -1553,11 +1669,24 @@ Three slash commands manage the overrides file at runtime:
   keep_alive preload, etc.); for those a dim note is appended: "takes effect
   next session".  For `model.default` specifically the note adds "use
   `/model use <name>` to switch now".
+  Setting a **high-stakes key** (`HIGH_STAKES_KEYS` — `tools.web`,
+  `model.base_url`, `runtime.security_profile`, `model.allow_cloud`) first
+  prints an amber warning naming the specific risk (cloud egress / changes the
+  model endpoint / lowers the safety profile / enables web egress), when it
+  takes effect (the three egress keys are boot-only → "next session";
+  `runtime.security_profile` is read per turn → "this session (next turn)", so a
+  live safety downgrade is never falsely deferred), and that it persists in
+  `overrides.json` until `/config unset <key>`; it then requires an explicit
+  confirm. A decline saves nothing and prints a dim "unchanged."  For
+  `runtime.security_profile` the warning also points at `/profile use <profile>`
+  for an unsaved, session-only change. The structural config-file-only keys
+  (`model.options`, `skills.enabled`) are still rejected outright by
+  `validate_override`.
 
 - `/config unset <key>` — remove the override for `<key>`.  If no override
   exists the command is a silent no-op with a message.  After removal the
   value reverts to the next layer down (project, user, or default), and the
-  source is shown.  `/config reset <key>` is an alias.
+  source is shown.
 
 - `/config reset` (no key) — clear **all** overrides after y/N confirmation
   (default No).  Reports `cleared N override(s).`  All values revert to the
@@ -1670,15 +1799,20 @@ web = false
 Recommended environment variables:
 
 ```text
-SHELLPILOT_OLLAMA_BASE_URL
 SHELLPILOT_MODEL
-SHELLPILOT_PROFILE
 SHELLPILOT_CONFIG
 SHELLPILOT_NO_COLOR
 SHELLPILOT_UI_GLYPHS
 ```
 
 Do not require environment variables for normal use.
+
+There is deliberately **no** environment variable for the egress / security
+keys (`model.base_url`, `runtime.security_profile`, `tools.web`,
+`model.allow_cloud`).  An ambient env var (e.g. an inherited `.envrc`) must not
+be able to redirect the Ollama endpoint, downgrade the security profile, or
+enable network/cloud egress — those require a deliberate act (a `config.toml`
+edit or a confirm-gated `/config set`; see the high-stakes keys above).
 
 #### `--model` flag
 
@@ -1853,13 +1987,12 @@ Slash commands are user controls for the harness itself. They should not be the 
 
 Commands should be predictable, composable, and safe. Destructive app-state commands should ask for confirmation.
 
-Planned commands:
+Commands:
 
 | Command | Purpose |
 |---|---|
 | `/help` | Show available slash commands and short examples. |
 | `/exit` | Exit the harness. |
-| `/quit` | Alias for `/exit`. |
 | `/clear` | Clear conversation history after confirmation; also cancels the active plan and resets snapshots, diffs, and failure state. |
 | `/status` | Show current model, profile, cwd, context usage, active plan, and pending approvals. |
 | `/doctor` | Check Python version, Ollama reachability, model availability, config paths, and workspace access. |
@@ -1869,8 +2002,11 @@ Planned commands:
 | `/profile` | Show active security profile. |
 | `/profile use <supervised|balanced>` | Switch security profile for this session only (reverts on restart; set `[runtime] security_profile` in config.toml to make it permanent). `trusted-local` arrives in v2. |
 | `/config show` | Print resolved config with source layers. |
-| `/config edit` | Open or print the user config path for editing. |
+| `/config edit` | Print the user config path for editing; if no `config.toml` exists yet, first write a commented starter template (resolving to defaults) at that path. Never overwrites an existing file (§17.2). |
 | `/config reload` | Reload config from disk. |
+| `/config set <key> <value>` | Validate and persist a single override to `overrides.json`; high-stakes keys require an amber-gated confirmation (§17.3). |
+| `/config unset <key>` | Remove the override for `<key>` (§17.3). |
+| `/config reset` | Clear all overrides after `y/N` confirmation (§17.3). |
 | `/cwd` | Show current workspace boundary and process cwd. |
 | `/cwd set <path>` | Change workspace cwd/boundary after confirmation. |
 | `/tools` | List available tools and whether each is enabled by the active profile. |
@@ -1886,19 +2022,17 @@ Planned commands:
 | `/context` | Show the per-block context breakdown (block name, source, token estimate, injected flag, and skip reason) plus tool schemas, history, and a total against the model context and compact-at thresholds. Reads the same `ContextSnapshot` the live prompt is built from (section 10.5). |
 | `/logs` | Show recent local audit/session events. |
 | `/export <path>` | Export this session's transcript to markdown (default `.shellpilot/exports/<session-id>.md`). |
-| `/memory show` | Show project and behavior memory summaries with entry ids. |
+| `/memory show` | Show project and behavior memory with entry ids; preferences are annotated with their (scope, source) and the store file paths are printed. |
 | `/memory add <text>` | Add a global behavior preference after confirmation. |
 | `/memory forget <id>` | Remove a memory entry after confirmation. |
 | `/memory compact` | Model-assisted preference optimization, approved before saving (section 16.4). |
-| `/prefs show` | Show behavior preferences. |
-| `/prefs edit` | Show the memory file paths for hand-editing; `/memory show` reloads. |
 | `/shell` | Enter Manual Shell mode. |
 | `/exit-shell` | Return from Manual Shell mode to the assistant. |
 | `/attach <path>` | Stage an image file to send with the next user message (vision-capable models only). Path is validated eagerly; bytes are re-read at send time. *(v0.5.0)* |
 | `/attach` | List currently staged images, or report "No attachments staged." *(v0.5.0)* |
 | `/skills` | List all discovered skills with root, trigger declarations, enabled/builtin/disabled/invalid status, decision-derived active state, resource/script summaries, skip reasons, and advisory warnings. *(v0.7.0)* |
 
-All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped and appear in the table above.
+All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped. `/prefs` was retired in v0.10.0 — it had converged with `/memory show`, which now lists preferences with their (scope, source) and prints the store paths.
 
 `/context show` (a redacted dump of the assembled prompt) is deliberately deferred. The `/context` status table does not fully solve prompt inspection — it shows per-block sizes, not the prompt's actual text — but a verbatim dump must not leak secrets. When `show` lands it must reuse the v0.5.2 redaction helpers before printing any block content.
 
@@ -1979,6 +2113,8 @@ The AI is not controlling this mode.
 Type /exit-shell to return.
 ```
 
+A `!` prefix is a one-shot escape into the same audited manual-shell path: `!<cmd>` runs a single command (raw shell, identical to `/shell`) without entering the shell loop, while a bare `!` opens the loop. It is a human-only escape — the prefix is recognized only at the interactive prompt reader, so model output can never reach it.
+
 ## 22. Logging And Audit
 
 Audit logs should be local and structured.
@@ -1996,6 +2132,9 @@ Events:
 - (v2) Memory update.
 - Config change.
 - Error.
+- **`model_request`** (v0.10.0) — emitted only on an **egressing** turn (a non-loopback model endpoint *or* a cloud model; §15.2). Records *that* a prompt left the device and to where, with **counts only, never message bodies**: `host`, `model`, `locality` ("remote"), `message_count`, `approx_bytes`, `image_count`. A purely local turn emits nothing. This is the egress-visibility record (F10/F12) for what leaves the box.
+- **`web_egress`** (v0.10.0) — emitted by the executor when a `SideEffect.NETWORK` tool (`web_search`/`web_fetch`) actually runs (after every gate passes, immediately before the call leaves the box). Records `tool` and the redacted `args` (the AuditLogger redacts a secret in a query/URL). A blocked or user-declined call never ran and emits nothing.
+- **`cloud_consent_granted`** (v0.10.0) — emitted once per egressing session, after the user has granted per-session cloud consent at boot (or via `/model use`; §15.2). Records `model` and the endpoint `host` only — the consent record for a session that may egress prompt data.
 
 Log entry shape:
 
@@ -2174,6 +2313,8 @@ Progressive disclosure lets the model read a skill's deeper docs on demand rathe
 **Registration.** `skill_read` is registered in the runtime only when `settings.skills.enabled` is non-empty. A default session (empty `enabled`) gets no `skill_read` tool, leaving the baseline unchanged. `discover_skills` returns valid *and* invalid skills, so the runtime filters to valid skills before building the tool **and** the handler independently skips any non-valid skill (omitting it from the available-names listing). Invalid and reserved skills are therefore unreadable through `skill_read` — closing the only path that could otherwise expose them, since the injection/assembler path is valid-skills-only. The tool reads **any valid skill by name**, not only the `enabled`-named ones, so the model can consult any active skill's docs; this scope is intentional — all such resources are local, non-secret skill content.
 
 **`Readable:` menu.** After the skills-index block, the assembler injects a one-line `"skills readable"` block advertising the on-demand docs of every injected skill: `Readable docs (open with skill_read): <skill>: <name>, <name>; <skill>: <name>`. Only skills with ≥1 on-demand resource appear; names are references before templates, deduped per skill. The block is injected only when `trigger_ctx.enabled` is non-empty (mirroring the `skill_read` registration gate exactly — see Registration above), so a default session with no opted-in skills sees no menu and the baseline system text is unchanged. The block is not budget-counted; it is a bounded single line, not skill body content.
+
+**Workflow skills (opt-in showcase, v0.10.0).** Four `ENABLED`-gated builtins exercise progressive disclosure: `debugging` (reproduce → hypothesize → isolate/bisect → fix the cause → verify; refs `method`, `common-traps`), `verification` (run the real check before claiming done; ref `checklist`), `code-review` (correctness/security/clarity/tests/scope; ref `dimensions`), and `git-workflow` (inspect-before-commit, atomic commits, safe undo; refs `commits`, `recovery`). Each ships a lean injected body (~175–185 est tokens) that routes by name to on-demand `references/*.md` the model reads via `skill_read` when relevant — depth without standing context cost. They are opt-in (enable via `[skills] enabled`), so a default session is byte-identical to before. The `git-workflow` guidance is accurate to the policy classifier: `git reset`/`git clean`, branch deletion, and force-push are `RiskLevel.HIGH` (section 14), a plain `git push` is medium.
 
 ## 24. Operational Edge Cases
 
@@ -2578,14 +2719,14 @@ Colors are truecolor values; rich downgrades automatically on 256/16-color termi
 
 ### 31.2 Prompt
 
-Two-line prompt replacing `[AI] >`:
+A bold accent-green `❯` over a persistent status bar (§31.11):
 
 ```text
-~/Projects/test_project · gemma4:e4b · balanced
+~/Projects · gemma4:e4b · balanced · ● local      12% ctx
 ❯
 ```
 
-Line one is dim ambient context (workspace with `~` abbreviation and middle truncation for long paths, then model, then profile). Line two is a bold accent-green `❯`. Input is provided by `prompt_toolkit`: persistent up-arrow history (state dir `history` file) and tab-completion for slash commands. Plain `input()` fallback when stdin is not a TTY.
+Input is provided by `prompt_toolkit`: persistent up-arrow history (state dir `history` file), tab-completion for slash commands, and the always-on status bar rendered as the session's `bottom_toolbar`. The chevron is accent-green for a local session and turns **amber** when egressing (a second at-a-glance cloud cue alongside the bar's locality segment). The non-TTY `PlainInput` fallback (pipes, tests) prints the dim `context_line` (`~/Projects · model · profile`) above a plain `input()` — the bar is a TTY feature, and a non-TTY session cannot egress (cloud consent fails closed off a TTY, §15.2).
 
 ### 31.3 Activity lines
 
@@ -2593,7 +2734,9 @@ Tool calls render as `⏺` + bold tool name + dim `(args) · summary`. Results a
 
 ### 31.4 Diffs
 
-Diffs render in a rich `Panel` titled with the filename: line-number gutter, full-line subtle red/green backgrounds for removals/additions, and brighter word-level highlight spans on the changed words. Word-level highlighting applies only when a removed/added line pair is similar (`difflib.SequenceMatcher` ratio >= 0.5); pure additions/removals get the full-line background only. Long lines wrap with the background following the text and a blank gutter on continuation rows. Tabs are expanded and control characters sanitized before rendering.
+Diffs render in a rich `Panel` titled with the filename: line-number gutter, full-line subtle red/green backgrounds for removals/additions, and brighter word-level highlight spans on the changed words. A changed line is always laid out the conventional unified-diff way — the old text on its own red removal row, then the new text on the next green addition row (removals before additions within a hunk), each carrying its own line-number gutter; the two are never paired onto one visual line. Every removal/addition fills its colored background to a uniform width (the widest changed-line content in the diff), so each renders as a distinct full-width bar rather than a short colored fragment. Word-level highlighting applies only when a removed/added line pair is similar (`difflib.SequenceMatcher` ratio >= 0.5); pure additions/removals get the full-line background only. Long lines wrap with the background following the text and a blank gutter on continuation rows. Tabs are expanded and control characters sanitized before rendering.
+
+When a file write/edit is proposed, the approval diff appears with a brief scrolling reveal before the prompt: `DiffReveal` (cli/streaming.py) opens a transient `Live` (`vertical_overflow="crop"`) on the main thread and progressively shows the diff rows, scaling the chunk size so the whole reveal finishes within a fixed `TOTAL_DURATION` (~0.6 s) regardless of length — a huge diff adds no real latency. It clears the region before stopping (same clear-before-stop as `ResponseStream.finish`) so a tall reveal never leaks into scrollback. The reveal rides the same motion toggle as the spinner (`[ui] spinner`): it is a no-op when motion is off, on a non-terminal, or for a short diff (at or below `ANIMATE_THRESHOLD = 20` rendered rows), and it never starts until the spinner's own `Live` has fully stopped — two concurrent `Live` on one Console would corrupt the display. After the reveal, the settled panel prints. A long diff settles into a bounded window of `WINDOW_ROWS = 24` rows with a single `… (+N more)` footer (`render_diff(..., max_rows=...)`, `sp.faint`, mirroring `output_truncation`); a short diff prints in full unchanged. The approval semantics are unchanged: the diff is shown, then the y/n (or typed-`run`) prompt, then the write applies only on approval. The source diff is already capped upstream at `MAX_PREVIEW_LINES = 60` (tools/patch.py), so the window/footer is a second display layer on an already-bounded preview.
 
 ### 31.5 Approvals
 
@@ -2603,7 +2746,7 @@ Badge blocks: an inverse chip anchors the request, followed by the dim reason or
 - ` HIGH ` — white on red `#c14949`; keeps the typed-`run` flow, with `"run"` in red.
 - ` BLOCKED ` — black on amber; used by the roadblock protocol (section 11.6).
 
-The yes/no question is `Approve? [y/n]` — uniform lowercase. It accepts `y`/`yes`/`n`/`no` case-insensitively and **Enter means no**; default-deny semantics are unchanged, only the shouty capital is gone. When color is unavailable, chips degrade to plain `[MEDIUM]` text.
+The approval question is `Approve? [y]es / [e]dit / [n]o` — uniform lowercase. It accepts `y`/`yes`/`n`/`no` case-insensitively and **Enter means no**; default-deny semantics are unchanged. `[e]dit` rejects-and-steers: it does not run the action but prompts `Tell the model what to do instead:` for one line of guidance fed back to the model (section 14.6); empty guidance is a plain decline. A HIGH-risk command keeps its typed-`run` gate, with `[e]dit` offered alongside (`Type "run" to execute, [e]dit to steer, or press Enter to cancel`). When color is unavailable, chips degrade to plain `[MEDIUM]` text.
 
 ### 31.6 Plans
 
@@ -2628,7 +2771,7 @@ Model responses render as rich Markdown, updated live while tokens stream (`rich
 
   Rationale: random pick within an ordered, never-regressing phase progression — coherent story within a turn, variety across turns; no approach/landing phrases because completion time is unknowable.
 
-- After each turn: a faint stats line — `2.1s · 1.4k tokens · ctx 18%`. The ctx percentage turns amber once estimated usage crosses `compact_at_tokens` (section 10.5).
+- Context utilization is no longer printed after each turn. It lives in the always-on status bar (§31.11), color-coded as it fills, so the reading is visible at the prompt at all times rather than only on the turn it was emitted. `turn_finished` stays on the `RuntimeUI` protocol (the runtime still computes `TurnStats`) but the terminal UI no longer prints a per-response line.
 
 **Labeled spinner states (A10, settled 2026-06-11):** `AviationSpinner.start(label=...)` accepts an optional label (plain `str` or rich `Text`). When set, every frame renders a breathing-beacon glyph (`·` / `✧` / `✦` cycling) in `sp.accent` followed by the label with its rich styling preserved (no longer flattened to plain text), then the dim elapsed suffix. Two specific labels are used:
 
@@ -2644,21 +2787,47 @@ No-label behaviour (flight-phase phrases) is the default. The `ui.spinner = fals
 - Glyph fallback: `ui.glyphs = "auto" | "unicode" | "ascii"`. The glyph set (`⏺ ⎿ ❯ ✈ ✦ ✧ ☐ ✓ ▶`) maps to ASCII equivalents; `auto` selects ASCII on terminals that cannot encode the Unicode set.
 - Snapshot tests (section 26.1) cover plan, approval, and diff rendering.
 
+### 31.10 Boot banner
+
+The boot banner is a bounded-width (`expand=False`) rich `Panel` (`cli/banner.py:render_banner(model, *, is_cloud, profile, skills=(), recent_sessions=())`), printed once after preload and consent resolve. It is laid out as two columns split by a full-height vertical divider. The **left column** centers a welcome line, the block-art fighter-jet logo, the active model name, and a dim sub-line `"<profile> · <local|cloud>"`. The **right column** stacks sectioned cheat-sheets separated by dim horizontal rules: **Commands** (`/help`, `/plan`, `/skills`, `/status`), **Tips** (`/`, `!`, typing `"run"`), **Workflow skills** (the enabled skill names, or — when none are enabled — the available builtins dim plus a `"/skills to enable"` hint), and **Recent sessions** (up to three prior sessions as `label (age)`, the whole section omitted when there are none). The panel title is `ShellPilot v<version>`.
+
+The model name is styled **green** for a local session and **amber** for an egressing (cloud/remote) one — `is_cloud` is the boot-time `egressing_session` value (see §15.2), making the banner the first locality cue of the session, reinforced by the sub-line's `local`/`cloud` word. `profile` and `skills` come from `settings.runtime.security_profile` and `settings.skills.enabled`; `recent_sessions` is built from `SessionStore.recent(sessions_dir)` (newest-first `(label, mtime)` pairs, label = a truncated first-user-message snippet or the session's model name) with mtimes mapped to compact relative ages (`_relative_age`). The recent list is captured *before* the current session's metadata is written so a session never lists itself.
+
+**Jet symmetry:** the jet is rendered as one fixed-width (28-cell) left-aligned `Text` block and centered as a unit via `Align.center(..., width=28)` — never per line with `justify="center"`, which Rich would skew because it strips trailing whitespace, leaving narrow jet rows lopsided in a live terminal. A regression test pins per-row left/right symmetry.
+
+This sectioned layout replaced the earlier two-column command-only banner.
+
+### 31.11 Persistent status bar
+
+A one-line status bar is pinned at the input as `prompt_toolkit`'s `bottom_toolbar`, so it stays static and refreshes on every render. It is the at-a-glance complement to `/status` (§15.2 detailed readout). Layout:
+
+```text
+~/Projects · gemma4:e4b · balanced · ● local      12% ctx
+```
+
+- **Left:** `<dir> · <model> · <profile> · <locality>`, joined by faint `·` separators. `dir` is the workspace, home-abbreviated. `model` is **green** local / **amber** egressing. `locality` is `● local` (green) or `☁ CLOUD` (amber, bold).
+- **Right:** `<pct>% ctx` — context utilization, color-coded **green** (`< 50`) → **amber** (`50–79`) → **red** (`>= 80`).
+- **Cloud emphasis:** when egressing, the bar's separators carry a faint amber tint (the prototype's amber "wash" adapted to the terminal) so the whole line reads as cloud at a glance, distinct from a local (faint-grey) bar — alongside the amber model name, the `☁ CLOUD` locality, and the amber chevron.
+
+`status_bar(...)` (`cli/status_bar.py`) is a **pure** builder mirroring `cli/banner.py`: it takes `workspace`/`model`/`profile`/`is_cloud`/`ctx_pct` and returns a `prompt_toolkit` `FormattedText`, with no I/O. Every field is sourced from runtime/session state (`runtime.status()`), never from model output. The `is_cloud` field is the caller's real `is_egressing(runtime.model, base_url)` value (recomputed each REPL iteration on the live model), keeping the active-cloud indicator unspoofable and harness-rendered (§15.2). `ctx_pct` reuses the runtime's own utilization formula via `ctx_percent(used, total)`. The workspace path is user-controlled, so it is run through the shared `_sanitize_line` control/ANSI strip before render (§36.2) — a crafted directory name cannot repaint the bar. The bar consolidates two readouts that previously printed separately each loop: the cloud indicator (was a bold-amber header line) and context utilization (was a per-turn stats line, §31.8).
+
 ## 32. Model Selection And Preload
 
 ### 32.1 Boot Model Picker
 
 Settled 2026-06-11. On every interactive boot, ShellPilot presents a numbered list of all models installed in the local Ollama instance so the user can choose which model to run for the session.
 
-**When the picker is shown:** the picker appears when all three conditions hold: the session is interactive (the console is a TTY and `sys.stdin.isatty()` is true), no `--model` flag was passed on the command line, and more than one model is installed. When any condition fails the session model is `settings.model.default` without prompting.
+**When the picker is shown:** the picker runs when all three conditions hold: the session is interactive (the console is a TTY and `sys.stdin.isatty()` is true), no `--model` flag was passed on the command line, and more than one model is installed. When any condition fails the session model is `settings.model.default` without prompting.
+
+**Compact confirm vs full menu:** the first boot in a workspace (no recorded last model, or the last model is no longer installed) shows the full numbered menu, preselected on the last model if present else `settings.model.default`. Every boot after that shows a one-line confirm — `✈ Last flight: <model>` then `Enter to fly · any other key for the menu` — so the common case (keep flying the same model) is a single Enter. Empty input / EOF / `KeyboardInterrupt` flies the last model; any non-empty key opens the full menu preselected on it. Whichever path resolves, `save_last_model` persists the choice, and the chosen model flows unchanged into the availability gate and the cloud-egress consent gate (§15.2).
 
 **List layout:** one row per model — row number, chevron marking the preselected row (`❯` in accent green, a space otherwise), model name in emphasis style, size in GB in dim style, and a dim `untested` tag for any model not in `TESTED_FAMILIES` (see `shellpilot/config/model.py`). Rich named styles from the §31 theme are used throughout; no inline hex.
 
 **Preselection:** the row highlighted by default is the last model the user chose in this workspace (from `.shellpilot/state.json`), falling back to `settings.model.default` if the last model is absent from the current install list.
 
-**Input:** the prompt reads `Select a model [Enter = <preselect>]`. Accepted input: empty Enter (returns preselect), a 1-based row number, or an exact model name. Anything else re-prompts. `EOFError` and `KeyboardInterrupt` return the preselect silently. After a selection `save_last_model` persists the choice for the next boot.
+**Input:** the menu prompt reads `Select a model [Enter = <preselect>]`. Accepted input: empty Enter (returns preselect), a 1-based row number, or an exact model name. Anything else re-prompts. `EOFError` and `KeyboardInterrupt` return the preselect silently. After a selection `save_last_model` persists the choice for the next boot.
 
-**Module:** `shellpilot/cli/model_picker.py` — three pure functions (`should_show_picker`, `resolve_preselect`, `choose_model`) with console injected for testability.
+**Module:** `shellpilot/cli/model_picker.py` — four pure functions (`should_show_picker`, `resolve_preselect`, `confirm_last_model`, `choose_model`) with console injected for testability.
 
 ### 32.2 Model Preload And keep_alive
 
@@ -2711,11 +2880,11 @@ Search quality is a known watch item: DDG HTML results vary by region, UA, and p
 - Hostname must be non-empty.
 - Blocked by name: `localhost`, any `*.localhost` subdomain, `0.0.0.0`.
 - Trailing dots are stripped from the hostname before all checks (e.g. `localhost.` normalises to `localhost`); a hostname consisting entirely of dots is treated as empty and rejected.
-- IP literals (including IPv6) are rejected if `is_loopback`, `is_private`, `is_link_local`, or `is_reserved`.  Legacy short-dotted numeric forms (e.g. `127.1`) that `ipaddress` cannot parse are retried via `socket.inet_aton` and subjected to the same checks.
+- IP literals (including IPv6) are rejected when `not addr.is_global`, covering loopback, private, link-local, reserved, and CGNAT/shared ranges (matching §36.6).  Legacy short-dotted numeric forms (e.g. `127.1`) that `ipaddress` cannot parse are retried via `socket.inet_aton` and subjected to the same checks.
 
 **Per-hop redirect re-check:** redirects are followed manually (up to `MAX_REDIRECTS = 10` hops). Every redirect destination passes through the same guard before the next connection is made, so a public URL that 302s to a private IP is blocked at the second hop.
 
-**Known limitation:** the guards act on the URL hostname before DNS resolution. A public-looking domain that resolves to a private IP (DNS rebinding) is not caught. DNS pinning is not implemented; the guards cover accidental cases, not adversarial ones. Users requiring stronger SSRF protection should layer a network-level egress filter outside ShellPilot.
+**Known limitation:** every hostname is resolved and each resolved address is validated before connecting (§36.6), but the connection is not pinned to the validated IP — pinning would break TLS SNI/cert verification for arbitrary HTTPS. The narrow resolve-then-reconnect rebinding window therefore remains open; users requiring stronger SSRF protection should layer a network-level egress filter outside ShellPilot.
 
 **No `robots.txt` by design:** each fetch is an individually user-approved action that behaves like a direct browser visit. Automatic robots.txt compliance would add latency and complexity for no meaningful benefit in a single-user harness where every request is manually gate-kept.
 
@@ -2801,3 +2970,55 @@ The specific incidents that motivated the sandbox idea are addressed without OS 
 ### 35.3 Revisit Condition
 
 Real user demand for running ShellPilot in untrusted directories — for example, reviewing unknown repositories or executing agent tasks against code from external sources — would reopen this question with fresh eyes. In that scenario the threat model shifts meaningfully and OS-level confinement becomes more defensible despite the maintenance cost. A future decision should evaluate the sandboxing options available at that time rather than assuming the current Seatbelt or Apple container landscape is unchanged.
+
+## 36. Security Hardening (v0.10.0)
+
+v0.10.0 introduces opt-in cloud models (section 15.2), so it shipped with a deliberate, red-team-audited hardening pass and a dedicated security review before release. The audit lens reflects the new threat model. ShellPilot's existing safety layers — deterministic risk classification, per-action approval, the workspace boundary, the sensitive-read gate — exist to protect **the machine from the model**: even a hijacked or prompt-injected model cannot harm the host without passing a gate. Cloud egress adds a second axis: protecting **the user's data from the provider**. The prompt is itself an egress channel that no per-action gate intercepts, so the hardening below closes the gaps that the new axis exposes, alongside fixes to the existing machine-protection layers that the audit surfaced. The fixes are categorized below; exploit mechanics are deliberately omitted. This is hardening for a single-user local tool run in trusted directories — defence-in-depth, not a confinement boundary (section 35).
+
+### 36.1 Command Classifier — Read-Path Boundary
+
+The dedicated `read_file`/`search_text` tools enforce the workspace boundary and the sensitive-read gate (section 15); the audit found the `run_command` reader path was a parallel, ungated file-read channel. Hardened in `policy/command_policy.py`:
+
+- **Reader executables now honour the boundary.** A reader executable (`cat`/`head`/`tail`/`grep`/`rg`/`wc`/`file`/`stat`/`du`) whose path argument resolves **outside the workspace**, or names a secret marker, is escalated to `RiskLevel.HIGH` (always-ask) instead of returning LOW/auto-run. Because reader commands carry `SideEffect.VARIABLE` they can never auto-run silently, so the deterministic over-ask (HIGH → ASK) is the conservative match for the file tools' boundary, rather than threading the `allow_sensitive_reads` setting through the command path.
+- **`git` global options feed classification.** A `git` invocation carrying a non-benign global option before the verb (`--git-dir`/`--work-tree`/`--exec-path`/`-C`/`-c` and the like) is treated as at least MEDIUM (ASK), closing an out-of-workspace read primitive that the previous first-non-dash-token verb derivation skipped past. Only `--no-pager`/`--literal-pathspecs` remain benign.
+- **`pytest` requires approval.** `pytest` and `python -m pytest` execute arbitrary project Python (conftest/collected modules) at collection time, so the previous LOW carve-out is removed: they now classify MEDIUM (ASK in `balanced`), symmetric with `python script.py`.
+- **Path-qualified basenames are distrusted.** When `argv[0]` contains a path separator (`./grep`, `/abs/grep`), the bare-name LOW allowlist no longer applies; a path-qualified executable is classified at least MEDIUM, so a workspace-staged file sharing a trusted command's name cannot auto-run.
+
+### 36.2 Terminal Output Sanitization
+
+The active-cloud indicator (section 15.2) is only trustworthy if the model — or untrusted data it surfaces — cannot repaint the terminal over it. Control characters and ANSI escape sequences are now stripped at **every** output sink via the shared `_sanitize_line`/`_CONTROL_CHARS` helper (`cli/render.py`), not only in the diff panel: streamed model text (`cli/streaming.py`), raw command output (`show_command_output`), tool-call/tool-result summaries (`cli/render.py`), and status/error lines (`cli/terminal.py`). Tab and newline are preserved; ESC and C0/DEL bytes are removed before anything reaches the screen, so neither model output nor auto-run command output can forge a status region or spoof an approval prompt.
+
+### 36.3 Egress / Safety Setter Invariant
+
+Anything that controls whether data leaves the device, or the local approval posture, is a **deliberate** act — never reachable from an **ambient environment variable**. `config/loader.py` defines `HIGH_STAKES_KEYS` = {`tools.web`, `model.base_url`, `runtime.security_profile`, `model.allow_cloud`}: every one is **absent from `ENV_MAP`** (the `SHELLPILOT_OLLAMA_BASE_URL` and `SHELLPILOT_PROFILE` env redirects were dropped), so no ambient env var can enable egress, redirect the endpoint, or downgrade the profile. This env-absence claim is the load-bearing invariant and holds uniformly across all four keys.
+
+The four keys are settable two deliberate ways: a `config.toml` edit, or a runtime `/config set` gated by an amber warning + explicit confirmation (the `HIGH_STAKES_KEYS` gate in `SlashDispatcher._config_set`). A confirmed `/config set` persists through the program-managed `overrides.json` and applies at the key's reload time (the three egress keys are boot-only, so the effect is next launch; `runtime.security_profile` is read per turn, so it applies this session — the same live effect as `/profile use`). This is a deliberate relaxation of the stricter original form (which also forbade `/config set` and the overrides layer) for a reasoned trade-off: the model can neither type slash commands nor write `overrides.json` (it lives in the config dir, outside the workspace), and the per-session cloud-consent gate (§36.8 control 2) still fires regardless of how `allow_cloud` was set — so the relaxation opens no model/injection vector, while the amber confirm preserves the deliberateness the invariant exists to guarantee. The two **structural** config-file-only keys (`CONFIG_FILE_ONLY_KEYS` = {`model.options`, `skills.enabled`}) remain fully config-file-only: rejected by `validate_override`, skipped-with-warning in the overrides loop, and absent from `ENV_MAP`.
+
+Because a high-stakes override persists in `overrides.json` and silently outranks `config.toml`, a confirmed runtime relax would otherwise quietly stay enabled. As a residual-risk mitigation, the boot path (`run_interactive`, after config load) prints one amber line listing any active high-stakes override — e.g. `⚠ Active overrides: model.allow_cloud=true, tools.web=true — these override config.toml; /config unset <key> to revert.` — built by the pure, testable `high_stakes_override_notice` helper. It gates nothing (the consent gate remains the egress barrier); it ensures a set-and-forget egress override is visible on every launch.
+
+### 36.4 Project AGENTS.md Trust-on-First-Use
+
+A project `AGENTS.md` is injected as standing instructions with the same authority as ShellPilot's own prompt, so cloning and running in an untrusted repo could load attacker-authored instructions every turn (and, under cloud, egress them turn one). The project (workspace) `AGENTS.md` is now gated behind per-workspace **trust-on-first-use**: its SHA-256 content digest (`project_agents_md_digest`, `memory/agents_md.py`) is recorded in program-managed workspace state (`.shellpilot/state.json`) once the user accepts it. A non-TTY session fails closed (the file is skipped), and because the gate keys on the content digest, **any change to the file re-prompts** before the new content is trusted. The global config-dir `AGENTS.md` stays trusted (it is the user's own).
+
+### 36.5 Egress Chokepoint and Audit
+
+A single locality predicate, `is_egressing(model, base_url)` (`config/model.py`), is the one source of truth for whether a session is off-box — true for a cloud model (the Ollama cloud tag — `:cloud` or a sized `<size>-cloud` — via `is_cloud_model`) or a non-loopback `base_url` (`is_loopback_url`, `llm/ollama.py`). At the conversational chokepoint (`conversation.py` tool loop; the `/memory compact` residual is noted in section 15.1):
+
+- **Best-effort outbound redaction** runs on egressing turns when `privacy.redact_secrets` is on — a **redacted copy** of the outbound messages is sent (the in-memory history is never mutated); a loopback turn is sent byte-identical. It is regex-based defence-in-depth (misses novel formats, cannot redact image/base64), not a confidentiality guarantee.
+- **Egress-visibility audit** emits a `model_request` event per egressing turn (host/model/counts only — never message bodies) and a `web_egress` event before each `SideEffect.NETWORK` tool call (section 22), recording *what left the device* without its contents.
+
+### 36.6 DNS-Rebinding SSRF Defense in `web_fetch`
+
+The `web_fetch` fetcher previously validated only literal IP addresses, so a hostname resolving to a loopback/private/link-local/metadata address bypassed the guard. `_check_url` (`web/fetch.py`) now resolves every hostname (`socket.getaddrinfo`) and validates **each** resolved address with a single `not addr.is_global` check (covering loopback, RFC-1918 private, link-local, and CGNAT/shared metadata ranges), on the initial URL and on **every redirect hop**. Accepted residual, documented in code: the connection is not pinned to the validated IP (pinning would break TLS SNI/cert verification for arbitrary HTTPS), so the narrow resolve-then-reconnect rebinding window is not closed — acceptable on a single-user box where `web_fetch` is `SideEffect.NETWORK` (always-ask) in every profile.
+
+### 36.7 At-Rest File-Permission Parity
+
+The two highest-value at-rest artifacts — session transcripts and the audit log — were created world/group-readable (0644) under the default umask while lower-value state (memory/overrides) was already 0600. Both now create their file at mode 0600 and parent directory at 0700 (`os.open(..., O_CREAT, 0o600)`, `persistence/sessions.py` and `audit_store.py`), bringing parity. Exploitation requires a co-resident second local user — absent from the single-user laptop deployment — so this is local-first-acceptable hardening, but the split was clearly unintended and the fix is trivial.
+
+### 36.8 Cloud Consent Triad
+
+The opt-in cloud feature (section 15.2) rests on four enforced controls, summarized here as the security spine: (1) `[model] allow_cloud` defaults to **`false`** and can be enabled only by a deliberate act — a `config.toml` edit or a confirm-gated `/config set`, never an ambient env var (section 36.3); (2) a **fail-closed per-session consent gate** (`_resolve_cloud_consent`) runs at boot strictly before any prompt-bearing call and declines on a non-TTY, EOF, Enter, or anything but an explicit yes — so a decline egresses no prompt data; (3) an **unspoofable active-cloud indicator** (boot banner, persistent bottom status bar [§31.11], `/status` locality) derived from `is_egressing` on the live model, never from model output, with the bar's user-controlled workspace path sanitized at the render sink (§36.2); and (4) a `cloud_consent_granted` audit event recording the consent. Consent is *the* boundary: once granted, the prompt egresses, with the best-effort redaction above layered behind it. Local-first remains the only full-privacy posture.
+
+### 36.9 Approval-Path Display Integrity
+
+An approval is only meaningful if the path it shows is the path that will be acted on. The audit found the user-facing path display was the **raw model argument**: the tool-call line and approval-panel head rendered `arguments["path"]` verbatim (`executor._display_for`, `show_tool_call`), and the diff-panel title showed only the resolved *basename* (`unified_diff` used `path.name`). A model could therefore pass an argument that *displays* as one in-workspace file while `resolve_in_workspace` *acts on* another (`..` segments, `./x/../y`, symlink, trailing junk) — the user approves a write under a misleading path. The boundary itself was never weak (the action was always resolved and bounded); the gap was cosmetic, within-workspace, and it is exactly the trust an approval rests on. Closed by the **display-integrity invariant** (section 14.5): all three displays now derive from the single `workspace_display` helper, which is layered over the canonical `resolve_in_workspace` — so the displayed path is always the resolved, workspace-relative target the action uses, and a boundary-escaping path shows an honest `<outside workspace>` marker, never a fabricated-looking path. Display-only change: the resolution and boundary checks are untouched. (`run_command` shows its literal `argv` — not a resolution case — and is unchanged.)

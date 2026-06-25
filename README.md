@@ -6,7 +6,7 @@ A local-first AI shell harness: one terminal conversation that can answer, inspe
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-ShellPilot runs a small local model through [Ollama](https://ollama.com) and gives it a tight set of structured tools — file reads, anchored edits, command execution, planning, memory, and optional web grounding. The model proposes; you approve. Command risk is classified by a deterministic policy engine, not by asking the model whether something is safe. Nothing leaves your machine: no cloud model calls, no accounts, no API keys, no telemetry. Web access is off by default, and when enabled, every request is approved one at a time.
+ShellPilot runs a small local model through [Ollama](https://ollama.com) and gives it a tight set of structured tools — file reads, anchored edits, command execution, planning, memory, and optional web grounding. The model proposes; you approve. Command risk is classified by a deterministic policy engine, not by asking the model whether something is safe. By default, nothing leaves your machine: local Ollama only, no accounts, no API keys, no telemetry. Cloud models are opt-in and off by default, gated behind an explicit config switch and a per-session consent prompt. Web access is off by default, and when enabled, every request is approved one at a time.
 
 It is built for and tested against `gemma4:e4b` — a model that fits on modest hardware — so the design assumes a capable-but-fallible local model and treats recovery as the main loop, not an edge case.
 
@@ -16,7 +16,7 @@ It is built for and tested against `gemma4:e4b` — a model that fits on modest 
 
 **Deterministic safety and command approval.** Every command is classified by a policy engine that inspects the executable, arguments, shell metacharacters, file targets, the workspace boundary, and known destructive patterns. The classification — and the plain-language explanation of *why* a command is risky — is produced by code, not the model, so the model can never talk a `rm -rf` down to "low risk." Agent commands always run with `shell=False`; the model never gets a raw shell. High-risk commands require you to type `run`.
 
-**Local-first and private.** The only model backend is local Ollama. Sessions, memory, logs, plans, and audit trails stay on disk where you can read them. There is no telemetry and no hosted call path. The single optional source of network egress — web grounding — is off until you set it in config, and every search and page fetch is individually approved in every profile.
+**Local-first by default and private.** The default model backend is local Ollama — sessions, memory, logs, plans, and audit trails stay on disk where you can read them. There is no telemetry. Cloud models are opt-in, off by default, and require an explicit config change and per-session consent before anything leaves the device. The single optional source of network egress in a local session — web grounding — is off until you set it in config, and every search and page fetch is individually approved in every profile.
 
 Beyond the spotlight:
 
@@ -85,20 +85,16 @@ ShellPilot is developed and tested on **macOS** (Apple Silicon) and is **continu
 
 ## A session
 
-A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text):
+A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text). On launch, ShellPilot v0.10.0 prints a panel banner — a block-art logo alongside Commands, Tips, Workflow-skills, and Recent-sessions sections — then drops to the prompt; the transcript below picks up there:
 
 ```text
-ShellPilot 0.9.0
-gemma4:e4b · balanced · /help for commands
-
-~/my-project · gemma4:e4b · balanced
+~/my-project · gemma4:e4b · balanced · ● local   6% ctx
 ❯ what does this repo do?
 
   This is a CLI that counts lines in source files. The entry point is
   src/cli.py, which calls count_lines() in src/counter.py ...
-  3.1s · 0.4k tokens · ctx 6%
 
-~/my-project · gemma4:e4b · balanced
+~/my-project · gemma4:e4b · balanced · ● local   11% ctx
 ❯ fix the off-by-one in count_lines and run the tests
 
   ╭─ Plan · 20260620-141502-fix-off-by-one ───────────╮
@@ -121,18 +117,21 @@ gemma4:e4b · balanced · /help for commands
     +    for i in range(0, len(lines)):
      MEDIUM  tool
     CWD: ~/my-project
-  Approve? [y/n] y
+  Approve? [y]es / [e]dit / [n]o y
   ⎿ ✓ applied 1 change
 
   ⏺ run_command(argv=['python', '-m', 'pytest'])
+
+     MEDIUM  command · runs arbitrary python code
+    CWD: ~/my-project
+  Approve? [y]es / [e]dit / [n]o y
   ⎿ ✓ 14 passed in 0.31s
 
   All steps complete. Fixed the off-by-one (the loop skipped the first line)
   and the suite passes.
-  9.4s · 1.2k tokens · ctx 11%
 ```
 
-Read-only tools and low-risk commands (like `pytest`) run automatically under `balanced`; a write asks first and shows the diff. A high-risk command is different again — it carries the deterministic purpose explanation and refuses a plain `y`:
+Read-only tools and low-risk commands (`ls`, `git status`, an in-workspace `cat`) run automatically under `balanced`; anything that runs code or writes — including a test run — asks first, and a write shows the diff. A high-risk command is different again — it carries the deterministic purpose explanation and refuses a plain `y`:
 
 ```text
   ⏺ run_command(argv=['rm', '-rf', 'build/'])
@@ -152,11 +151,11 @@ Read-only tools and low-risk commands (like `pytest`) run automatically under `b
 | **Tools** | `read_file`, `list_dir`, `search_text`, `write_file`, `patch_file` (anchored edits), `run_command` (`shell=False`), `env_info`, plus planning (`propose_plan`, `update_plan`), memory (`memory_read`, `memory_propose_update`), and `view_image`. Flat schemas, kept few on purpose — small models degrade as tool count and schema complexity grow. |
 | **Security profiles** | `supervised` asks before every side-effecting tool and command; `balanced` (default) auto-runs read-only tools and low-risk commands and asks for writes, installs, deletes, network, and anything risky. |
 | **Planning** | Tasks needing three or more steps produce a visible plan file under `.shellpilot/tasks/`, approved before execution, updated as work progresses, with a single end-of-plan summary. |
-| **Skills** | Trigger-driven markdown guidance injected only when relevant (a plan is live, web is enabled, always-on, or opted in). Built-ins cover planning, context management, web grounding, and skill authoring. |
+| **Skills** | Trigger-driven markdown guidance injected only when relevant (a plan is live, web is enabled, always-on, or opted in). Built-ins cover planning, context management, web grounding, and skill authoring. Opt-in workflow skills: `debugging`, `verification`, `code-review`, `git-workflow` — each with a lean injected body routing to deeper on-demand docs via `skill_read`. |
 | **Progressive disclosure** | Deeper skill docs are read on demand through the `skill_read` tool rather than injected into every prompt; active skills advertise their readable docs in a one-line menu. New in v0.9.0. |
 | **Web grounding** | Opt-in `web_search` and `web_fetch`, off by default, network-approved per request in every profile. The model is guided to fetch sources before asserting facts and to re-search rather than invent URLs. |
 | **Memory** | Global and project memory as plain JSON; the model proposes, you approve each change. Secrets are redacted before disk. |
-| **Manual shell** | `/shell` opens a raw `shell=True` session the model is not part of; `/exit-shell` returns. |
+| **Manual shell** | `/shell` opens a raw `shell=True` session the model is not part of; `/exit-shell` returns. `!<cmd>` runs one command through the same audited path without entering the loop; bare `!` opens the loop. |
 | **Image input** | `/attach <path>` stages a PNG/JPG/GIF/WebP image for the next message when the active model supports vision. |
 | **Sessions & audit** | Conversations journal to `.shellpilot/sessions/`; `--resume` restores them (active plan included); `/export` writes markdown. Approvals, commands, edits, and config changes log as redacted JSONL. |
 
@@ -190,7 +189,6 @@ Inside a session, plain language is the primary interface; slash commands contro
 | `/context` | Per-block context breakdown: each system-prompt block with source, token estimate, and injection state. |
 | `/compact`, `/compact status`, `/compact auto on\|off` | Compact context now; show usage; toggle auto-compaction. |
 | `/memory show`, `/memory add <text>`, `/memory forget <id>`, `/memory compact` | Inspect and curate stored memory. |
-| `/prefs show`, `/prefs edit` | Inspect behavior preferences; show memory file paths. |
 | `/config show`, `/config edit`, `/config reload` | Print resolved config; show the config path; reload from disk. |
 | `/config set <key> <value>`, `/config unset <key>`, `/config reset` | Set, remove, or clear runtime overrides (persisted in `overrides.json`). |
 | `/cwd`, `/cwd set <path>` | Show or change the workspace boundary. |
@@ -198,14 +196,15 @@ Inside a session, plain language is the primary interface; slash commands contro
 | `/export <path>` | Export this session's transcript to markdown. |
 | `/attach <path>` | Stage an image for your next message; bare `/attach` lists staged images. |
 | `/shell`, `/exit-shell` | Enter and leave Manual Shell. |
+| `!<cmd>`, `!` | Run one command through the audited manual-shell path (raw shell, same as `/shell`) without entering the loop; bare `!` opens the Manual Shell loop. |
 | `/doctor` | Run the doctor checks from within a session. |
-| `/exit`, `/quit` | Exit ShellPilot. |
+| `/exit` | Exit ShellPilot. |
 
 ## Configuration
 
 Config is a user-owned TOML file. ShellPilot never rewrites it — only the program-managed `overrides.json` (set via `/config set`) is self-healing. The file lives in the platform-native config directory via `platformdirs`: on macOS `~/Library/Application Support/shellpilot/`, on Linux `~/.config/shellpilot/`. `shellpilot config edit` prints the exact paths. A `<repo>/.shellpilot/config.toml` can override the user file per project.
 
-Settings resolve highest-wins: CLI flags → a fixed set of `SHELLPILOT_*` env vars (model, profile, Ollama URL, color, glyphs) → `overrides.json` → project config → user config → defaults. Most keys — including `tools.web` — have no env override by design.
+Settings resolve highest-wins: CLI flags → a fixed set of `SHELLPILOT_*` env vars (model, color, glyphs) → `overrides.json` → project config → user config → defaults. Egress and safety keys (`tools.web`, `model.base_url`, `model.allow_cloud`, `runtime.security_profile`) have no env override by design — an ambient env var must never enable network egress or downgrade the safety posture.
 
 ```toml
 [model]
@@ -232,7 +231,27 @@ theme = "default"
 glyphs = "auto"          # auto | unicode | ascii
 ```
 
-`[tools] web` and `[skills] enabled` are config-file-only by design: enabling network egress or activating skills must be a deliberate edit, not something an env var or `/config set` can flip. User skills live in `<config_dir>/skills/<name>/SKILL.md`. ShellPilot also reads behavior instructions from `AGENTS.md` in your config directory (global) and the workspace root (project) at session start; it follows them and never writes those files.
+`[skills] enabled` (and `[model.options]`) are config-file-only: they can only be changed by editing `config.toml`, never via an env var, `overrides.json`, or `/config set`. Egress and safety keys (`[tools] web`, `[model] base_url`, `[model] allow_cloud`, `[runtime] security_profile`) can be set in `config.toml` or via a confirm-gated `/config set` — never silently by an env var. `/config set` shows an amber warning and requires explicit confirmation before persisting any of these to `overrides.json`. User skills live in `<config_dir>/skills/<name>/SKILL.md`. ShellPilot also reads behavior instructions from `AGENTS.md`: the one in your config directory (global) is always loaded, while the workspace-root one (project) is gated behind a trust-on-first-use prompt shown the first time it is seen or whenever its contents change. It follows them and never writes those files.
+
+### Cloud models (opt-in)
+
+Cloud models are **off by default**. To use an Ollama cloud model (any model whose name ends in `-cloud`, e.g. `nemotron-3-nano:30b-cloud`), add this to your `config.toml`:
+
+```toml
+[model]
+allow_cloud = true
+default = "nemotron-3-nano:30b-cloud"
+```
+
+`[model] allow_cloud` has **no environment-variable override** — an ambient env var must never enable cloud egress. It can be set in `config.toml` or via a confirm-gated `/config set` (which shows an amber warning and persists to `overrides.json`); enabling it must be a deliberate act either way. Whichever way it was set, the per-session consent prompt below is the real egress boundary.
+
+With `allow_cloud = true`, ShellPilot shows an honest disclosure prompt before any data leaves the device and asks for explicit **y/N** consent (defaulting to **N**). Declining — or running non-interactively — fails closed and the session does not start. Consent is per-session and never persisted; every launch re-asks.
+
+**What the disclosure covers:** when a cloud model is active, the entire prompt — file contents, command output, memory the model reads — is sent to the provider. Best-effort outbound redaction runs, but it is regex-based and not a confidentiality guarantee (novel secret formats and image data may egress unredacted). The provider's data retention, training, and jurisdiction are outside ShellPilot's control. ShellPilot records a `cloud_consent_granted` event and per-turn `model_request` audit events locally so you can audit what sessions egressed.
+
+**Local-first (the default) remains the only full-privacy posture.**
+
+The same gate fires if you switch models mid-session with `/model use <cloud-name>`: fresh consent is required before anything loads, and on decline the model does not switch.
 
 ## Troubleshooting
 
@@ -240,14 +259,14 @@ glyphs = "auto"          # auto | unicode | ascii
 - **`Ollama binary: not on PATH`** — Ollama is not installed. Get it from [ollama.com](https://ollama.com).
 - **`Models: none installed`** — pull the default model: `ollama pull gemma4:e4b`.
 - **First turn is slow** — the model cold-starts on the first prompt. ShellPilot preloads the selected model at boot and `keep_alive` keeps it warm between turns; subsequent turns are much faster.
-- **Web tools missing** — `web_search`/`web_fetch` only register when `[tools] web = true` in `config.toml`. There is no env-var or runtime toggle for it.
+- **Web tools missing** — `web_search`/`web_fetch` only register when `[tools] web = true`. Set it in `config.toml`, or via a confirm-gated `/config set tools.web true` (it takes effect next session). There is no env-var toggle for it.
 - **A command was rejected before any prompt** — a command that can't start (missing executable, packed shell line, stray shell operator) is rejected deterministically and never spends an approval; correct the arguments and retry. Look for a `did you mean` suggestion.
 
 ## Design principles
 
 - **Determinism where it earns its place.** Safety, correctness, and control flow are deterministic — risk classification, the approval gate, anchored read-before-write, pre-flight command checks, plan completion. The model's general capability is not babysat; the harness scaffolds the structure of the interaction, not the model's every output.
 - **Fix problems in the harness, not the prompt.** Bad behavior is corrected by deterministic mechanism, never by telling the model "don't do that."
-- **Local-first, no account.** Ollama is the only backend. State stays on disk; the only optional egress is per-request-approved web grounding with no keys.
+- **Local-first by default, no account.** Local Ollama is the default and recommended backend. State stays on disk; the only optional egress in a local session is per-request-approved web grounding with no keys. Cloud models are opt-in, off by default, and require explicit per-session consent.
 - **Small-model focus.** Built and validated on `gemma4:e4b` on an 8 GB machine. Prompts, tool schemas, retries, and grounding guidance are sized for that baseline, with room to dial scaffolding down as models improve.
 - **Docs as spec.** [`docs/DESIGN.md`](docs/DESIGN.md) is the spec of record and ships in the same commit as the behavior it describes.
 
@@ -265,13 +284,14 @@ python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 
 ## Status and roadmap
 
-Current release: **v0.9.0** — skill progressive disclosure. Recent milestones:
+Current release: **v0.10.0** — opt-in cloud models. Recent milestones:
 
 - **v0.7.x** — Skills v2 with trigger-driven built-in guidance and read-only resources; instant high-risk approvals generated deterministically from classifier reasons.
 - **v0.8.x** — web-grounding quality and hardening for small local models: fetch-before-answer, discover-first query shaping, fetch-recovery, current-generation checks; planner hardening for a single end-of-plan summary and idempotent re-proposals.
 - **v0.9.0** — progressive disclosure: a `skill_read` tool and a readable-docs menu let skills carry depth without inflating every prompt.
+- **v0.10.0** — security hardening pass (policy tightening, terminal-output sanitization, DNS rebinding guard, audit/session file modes, config-key hardening, AGENTS.md TOFU); opt-in cloud models behind `[model] allow_cloud` with a per-session consent gate, fail-closed non-TTY path, best-effort outbound redaction, `cloud_consent_granted` and `model_request` audit events, honest system-prompt when egressing, and an unmistakable active-cloud indicator (☁ status bar + amber model name + `/status` locality); a persistent status bar (directory · model · profile · locality + context %); four opt-in workflow skills (debugging, verification, code-review, git-workflow); boot banner with cheat-sheet and amber/green model-locality color; streamlined one-key boot picker; reject-and-steer `[e]dit` tool/command approvals; a `!` one-shot manual-shell escape; resolved-path display in approval panels; full-width diff bars; `/config` command consolidation; approval diff scrolling reveal for long diffs.
 
-Later candidates include richer workflow skills (debugging, verification, review, git), controlled skill-script execution under its own safety design, opt-in cloud models behind an explicit per-session consent gate, a `trusted-local` profile, and `/undo`.
+Next up is **v0.10.1** — a full-screen TUI input dock (framed input box, queueable input, completion-menu integration) deferred from v0.10.0. Later candidates include controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
 
 ## License
 

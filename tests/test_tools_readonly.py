@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from shellpilot.llm.messages import ToolCall
-from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.policy.approvals import APPROVE, DECLINE, ApprovalReply, ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.executor import ToolExecutor
 from shellpilot.tools.base import ToolContext, WorkspaceBoundaryError, resolve_in_workspace
@@ -185,9 +185,9 @@ class _SpyAsker:
         self.approve = approve
         self.requests: list[ApprovalRequest] = []
 
-    def __call__(self, request: ApprovalRequest) -> bool:
+    def __call__(self, request: ApprovalRequest) -> ApprovalReply:
         self.requests.append(request)
-        return self.approve
+        return APPROVE if self.approve else DECLINE
 
 
 def _executor(

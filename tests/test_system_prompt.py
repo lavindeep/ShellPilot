@@ -99,7 +99,7 @@ def test_base_prompt_retains_proposal_rules() -> None:
 
 
 def test_prompt_version_bumped() -> None:
-    assert PROMPT_VERSION == 4
+    assert PROMPT_VERSION == 5
 
 
 def test_prompts_planning_module_has_no_live_content() -> None:
@@ -112,8 +112,15 @@ def test_prompts_planning_module_has_no_live_content() -> None:
 
 
 def test_prompt_network_statement_is_accurate() -> None:
+    # Local (default) session: the "no independent network access" claim is true.
     prompt = build_system_prompt(workspace=Path("/work"), profile="balanced")
     assert "no independent network access" in prompt.lower()
+    # Egressing session: the false "entirely on this machine / no network" claim
+    # must be dropped and replaced with an honest one (design section 15.2).
+    remote = build_system_prompt(workspace=Path("/work"), profile="balanced", is_egressing=True)
+    assert "no independent network access" not in remote.lower()
+    assert "entirely on this machine" not in remote.lower()
+    assert "leaves this device" in remote.lower()
 
 
 def test_planning_skill_triggers_are_plan_states() -> None:

@@ -10,16 +10,18 @@ Ctrl-C.
 
 from __future__ import annotations
 
+import math
 import random
 import threading
 import time
-from typing import NamedTuple
+from typing import ClassVar, NamedTuple
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
+from shellpilot.cli.render import _diff_rows, _sanitize_line
 from shellpilot.cli.theme import Glyphs
 
 _PHRASE_SECONDS = 10
@@ -126,10 +128,11 @@ class ResponseStream:
     def _tail_markdown(self) -> Markdown:
         max_lines = max(4, self._console.size.height - 4)
         tail = "\n".join(self._buffer.splitlines()[-max_lines:])
-        return Markdown(tail)
+        return Markdown(_sanitize_line(tail))
 
     def feed(self, token: str) -> None:
         if not self._console.is_terminal:
+            token = _sanitize_line(token)
             self._console.print(token, end="", markup=False, highlight=False, soft_wrap=True)
             self._buffer += token
             return
@@ -165,8 +168,89 @@ class ResponseStream:
             self._live.stop()
             self._live = None
         if self._buffer:
-            self._console.print(Markdown(self._buffer))
+            self._console.print(Markdown(_sanitize_line(self._buffer)))
         self._buffer = ""
+
+
+class DiffReveal:
+    """Transient scrolling reveal for a long approval diff (design section 31.4).
+
+    Synchronous and main-thread (unlike :class:`AviationSpinner`): the approval
+    prompt is already waiting on user input, so blocking through a brief reveal
+    is safe and avoids a second background Live. ``reveal()`` is a no-op when
+    motion is disabled, on a non-terminal, or for a short diff — the caller then
+    just prints the settled panel.
+
+    LIVE-ORDERING (load-bearing): two concurrent ``rich.live.Live`` on one
+    Console corrupt the display. The caller (``TerminalUI.ask_approval``) MUST
+    stop the spinner — ``self._spinner.stop()`` joins its thread and stops its
+    Live before returning — strictly BEFORE invoking ``reveal()``, so this Live
+    only ever opens after the spinner's is fully gone.
+    """
+
+    # A diff shorter than this never animates (a 3-line patch ≈ 6 rows). Constant,
+    # not console height: height is unknown/0 in tests and this is a UX heuristic.
+    ANIMATE_THRESHOLD: ClassVar[int] = 20
+    # Rows visible in the reveal window AND the settled-panel cap. Same value so
+    # the last reveal frame equals the settled panel; the footer reports the rest.
+    WINDOW_ROWS: ClassVar[int] = 24
+    # Total reveal time, bounded regardless of length: a huge diff adds no real
+    # latency (chunk size scales with row count to keep within this budget).
+    TOTAL_DURATION: ClassVar[float] = 0.6
+    # NOTE: tools/patch.py unified_diff already caps the source at
+    # MAX_PREVIEW_LINES = 60, so request.diff is <=~60 lines and these row-level
+    # bounds are a second display layer — no need to re-cap beyond WINDOW_ROWS.
+
+    def __init__(self, console: Console, glyphs: Glyphs, *, enabled: bool) -> None:
+        self._console = console
+        self._glyphs = glyphs
+        self._enabled = enabled and console.is_terminal
+
+    def row_count(self, diff_text: str) -> int:
+        """Number of rendered diff rows — pure, cheap, no Panel built."""
+        rows, _ = _diff_rows(diff_text, self._glyphs)
+        return len(rows)
+
+    def reveal(self, diff_text: str, *, max_rows: int) -> None:
+        """Animate a scrolling reveal of *diff_text*, then return.
+
+        No-op when motion is off, on a non-terminal, or for a diff at or below
+        ``ANIMATE_THRESHOLD`` rows. The caller prints the settled (capped) panel
+        next regardless — capping is a display choice, not part of the motion.
+        """
+        rows, _ = _diff_rows(diff_text, self._glyphs)
+        if not self._enabled or len(rows) <= self.ANIMATE_THRESHOLD:
+            return
+        total = len(rows)
+        ticks = max(1, math.floor(self.TOTAL_DURATION / _REFRESH_SECONDS))
+        chunk = max(1, math.ceil(total / ticks))
+        live = Live(
+            self._frame(rows, chunk, max_rows),
+            console=self._console,
+            transient=True,
+            auto_refresh=False,
+            vertical_overflow="crop",
+        )
+        live.start()
+        try:
+            revealed = chunk
+            while revealed < total:
+                time.sleep(_REFRESH_SECONDS)
+                revealed += chunk
+                live.update(self._frame(rows, revealed, max_rows), refresh=True)
+        finally:
+            # Clear before stop so Live.stop()'s forced vertical_overflow="visible"
+            # repaint renders nothing — same clear-before-stop as
+            # ResponseStream.finish(), preventing a tall reveal from leaking into
+            # scrollback and double-rendering under the settled panel.
+            live.update("", refresh=False)
+            live.stop()
+
+    def _frame(self, rows: list[Text], revealed: int, max_rows: int) -> Group:
+        """A reveal frame: the last ``max_rows`` of the rows revealed so far."""
+        shown = rows[: min(revealed, len(rows))]
+        window = shown[-max_rows:]
+        return Group(*window)
 
 
 class AviationSpinner:

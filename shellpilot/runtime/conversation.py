@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from shellpilot.config.model import Settings
+from shellpilot.config.model import Settings, is_egressing
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
-from shellpilot.llm.ollama import encode_tool
+from shellpilot.llm.ollama import encode_tool, is_loopback_url
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.memory.redaction import redact_secrets, redact_structure
 from shellpilot.memory.store import MemoryStores
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.sessions import SessionStore
@@ -39,7 +42,7 @@ TOOL_DIGEST_HEAD = 200
 TOOL_DIGEST_TAIL = 200
 MAX_PLAN_NUDGES = 2
 MAX_EMPTY_NUDGES = 2
-# ponytail: tunable ceiling separating a real end-of-plan summary from a terse
+# NOTE: tunable ceiling separating a real end-of-plan summary from a terse
 # "done." When a completing reply already carries content this long, the streamed
 # prose IS the single summary and the redundant re-summary round is skipped.
 MIN_SUMMARY_CHARS = 80
@@ -124,12 +127,17 @@ class ConversationRuntime:
         session: SessionStore | None = None,
         memory: MemoryStores | None = None,
         skills: Sequence[Skill] | None = None,
+        base_url: str = "http://localhost:11434",
     ) -> None:
         self._audit = audit
         self._session = session
         self._memory = memory
         self._llm = llm
         self._settings = settings
+        # The model endpoint URL — the egress-locality signal. The default is
+        # loopback, so every existing caller and test (FakeLLM) is non-egressing
+        # and behaviour is byte-identical.
+        self._base_url = base_url
         self._workspace = workspace
         self._behavior = behavior
         self._ui = ui
@@ -267,6 +275,54 @@ class ConversationRuntime:
         self._settings = settings
         self.budget = self._resolve_budget()
 
+    def _endpoint_host(self) -> str:
+        """Host of the model endpoint (for audit); empty when unparseable."""
+        return (urlsplit(self._base_url).hostname or "").rstrip(".")
+
+    def _endpoint_is_loopback(self) -> bool:
+        """True when the model endpoint is on this box (loopback = local).
+
+        Delegates to the shared ``is_loopback_url`` helper so the runtime egress
+        chokepoint and the CLI boot consent gate use one definition of off-box.
+        """
+        return is_loopback_url(self._base_url)
+
+    def _is_egressing(self) -> bool:
+        """True when a model request leaves this device.
+
+        Delegates to the shared ``is_egressing`` predicate so the runtime egress
+        chokepoint, the boot consent gate, and the active-cloud UI indicator all
+        agree on what counts as off-box (design section 15.2).
+        """
+        return is_egressing(self._model, self._base_url)
+
+    def _redacted_for_egress(self, messages: list[Message]) -> list[Message]:
+        """Best-effort redacted COPY of *messages* for a remote send.
+
+        Defence-in-depth, NOT a guarantee: regex redaction misses novel secret
+        formats, and image/base64 data is left as-is (not redactable here — this
+        is disclosed, not protected). Never mutates ``self._history``: each
+        Message is rebuilt via dataclasses.replace with its content run through
+        redact_secrets and any tool-call arguments through redact_structure.
+        """
+        out: list[Message] = []
+        for message in messages:
+            redacted_calls = tuple(
+                dataclasses.replace(
+                    call,
+                    arguments=redact_structure(call.arguments),  # type: ignore[arg-type]
+                )
+                for call in message.tool_calls
+            )
+            out.append(
+                dataclasses.replace(
+                    message,
+                    content=redact_secrets(message.content),
+                    tool_calls=redacted_calls,
+                )
+            )
+        return out
+
     def clear_history(self) -> None:
         self._history.clear()
         self.plan_manager.cancel()
@@ -286,6 +342,7 @@ class ConversationRuntime:
         base_prompt = build_system_prompt(
             workspace=self._workspace,
             profile=self._settings.runtime.security_profile,
+            is_egressing=self._is_egressing(),
         )
         memory_block = ""
         if self._memory is not None:
@@ -507,11 +564,31 @@ class ConversationRuntime:
                 Message(role="system", content=self._system_message_text()),
                 *self._history,
             ]
+            egressing = self._is_egressing()
+            if egressing and self._audit is not None:
+                # Egress visibility (F10/F12): record THAT a request left the
+                # device, to where, and how much — counts and host/model only,
+                # never message bodies. AuditLogger stamps workspace/session/ts.
+                self._audit.write(
+                    "model_request",
+                    host=self._endpoint_host(),
+                    model=self._model,
+                    locality="remote",
+                    message_count=len(messages),
+                    approx_bytes=sum(len(m.content or "") for m in messages),
+                    image_count=sum(len(m.images) for m in messages if m.images),
+                )
+            # Outbound redaction (F3) — best-effort DiD applied ONLY to remote
+            # turns: a loopback send is passed byte-identical (no copy). Images
+            # and novel-format secrets are NOT redactable here and still egress.
+            send_messages = messages
+            if egressing and self._settings.privacy.redact_secrets:
+                send_messages = self._redacted_for_egress(messages)
             self._ui.begin_response()
             try:
                 reply = self._llm.chat(
                     self._model,
-                    messages,
+                    send_messages,
                     tools=tools,
                     num_ctx=self.budget.model_context_tokens,
                     options=self._settings.model.options,

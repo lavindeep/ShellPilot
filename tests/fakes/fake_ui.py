@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from shellpilot.policy.approvals import APPROVE, DECLINE, ApprovalReply
+
 if TYPE_CHECKING:
     from shellpilot.policy.approvals import ApprovalRequest
     from shellpilot.runtime.events import TurnStats
@@ -24,6 +26,9 @@ class FakeUI:
     command_lines: list[str] = field(default_factory=list)
     approval_requests: list[ApprovalRequest] = field(default_factory=list)
     approve_actions: bool = True
+    # When set, every approval is STEERED with this guidance (overrides
+    # approve_actions): the action is rejected and the text is fed to the model.
+    steer_text: str | None = None
     plan_approvals: list[tuple[str, str]] = field(default_factory=list)
     plan_answer: tuple[str, str] = ("y", "")
     plan_progress: list[list[str]] = field(default_factory=list)
@@ -55,9 +60,11 @@ class FakeUI:
     def show_command_output(self, line: str) -> None:
         self.command_lines.append(line)
 
-    def ask_approval(self, request: ApprovalRequest) -> bool:
+    def ask_approval(self, request: ApprovalRequest) -> ApprovalReply:
         self.approval_requests.append(request)
-        return self.approve_actions
+        if self.steer_text is not None:
+            return ApprovalReply(approved=False, steer_text=self.steer_text)
+        return APPROVE if self.approve_actions else DECLINE
 
     def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
         self.plan_approvals.append((plan.task_id, path))

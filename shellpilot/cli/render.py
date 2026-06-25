@@ -12,6 +12,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from rich import box
+from rich.cells import cell_len
 from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
@@ -31,13 +32,6 @@ _BADGE_STYLES = {
     "high": "sp.badge.high",
     "blocked": "sp.badge.blocked",
 }
-
-
-def banner(version: str, model: str, profile: str) -> Group:
-    return Group(
-        Text(f"ShellPilot {version}", style="sp.emph"),
-        Text(f"{model} · {profile} · /help for commands", style="sp.dim"),
-    )
 
 
 def _abbreviate_home(path: Path, home: Path) -> str:
@@ -70,8 +64,8 @@ def context_line(
 def tool_call(name: str, args_summary: str, glyphs: Glyphs) -> Text:
     return Text.assemble(
         (f"{glyphs.bullet} ", ""),
-        (name, "sp.emph"),
-        (f"({args_summary})", "sp.dim"),
+        (_sanitize_line(name), "sp.emph"),
+        (f"({_sanitize_line(args_summary)})", "sp.dim"),
     )
 
 
@@ -80,7 +74,7 @@ def tool_result(success: bool, summary: str, glyphs: Glyphs) -> Text:
     return Text.assemble(
         (f"  {glyphs.elbow} ", "sp.dim"),
         (mark, style),
-        (f" {summary}", "sp.dim"),
+        (f" {_sanitize_line(summary)}", "sp.dim"),
     )
 
 
@@ -141,10 +135,19 @@ def _diff_row(
     base_style: str | None,
     word_style: str | None,
     ranges: list[tuple[int, int]] | None,
+    *,
+    pad_width: int = 0,
 ) -> Text:
     row = Text()
     row.append(f"{number:>{width}} ", style="sp.diff.gutter")
     prefix = len(row) + 2  # gutter + marker + space
+    # Pad the content under the colored background so a changed line renders as a
+    # full-width red/green bar (DESIGN section 31.4 full-line backgrounds): the
+    # removal and its addition then read as two distinct rows, never one. The
+    # padding rides inside base_style so the fill is colored; word ranges sit at
+    # the content start and are unaffected by trailing spaces.
+    if base_style is not None and pad_width:
+        content = content + " " * max(0, pad_width - cell_len(content))
     row.append(f"{marker} {content}", style=base_style)
     if ranges and word_style:
         for start, end in ranges:
@@ -152,10 +155,25 @@ def _diff_row(
     return row
 
 
-def render_diff(diff_text: str, glyphs: Glyphs) -> Panel:
-    """Claude-Code-style diff panel: gutter, line backgrounds, word highlights."""
+def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
+    """Parse a unified diff into rendered rows plus the panel title name.
+
+    Shared by :func:`render_diff` and the streaming ``DiffReveal`` so the reveal
+    animation and the settled panel never drift in how a diff is rendered.
+    """
     lines = [_sanitize_line(line) for line in diff_text.splitlines()]
     width = _gutter_width(lines)
+    # Widest changed-line content, so every removal/addition fills its colored
+    # background to a uniform width (full-line red/green bars, DESIGN 31.4).
+    pad_width = max(
+        (
+            cell_len(line[1:])
+            for line in lines
+            if (line.startswith("-") and not line.startswith("---"))
+            or (line.startswith("+") and not line.startswith("+++"))
+        ),
+        default=0,
+    )
     title_name = "diff"
     rows: list[Text] = []
     old_no = new_no = 0
@@ -201,6 +219,7 @@ def render_diff(diff_text: str, glyphs: Glyphs) -> Panel:
                         "sp.diff.remove",
                         "sp.diff.remove_word",
                         old_words.get(idx),
+                        pad_width=pad_width,
                     )
                 )
                 old_no += 1
@@ -214,11 +233,16 @@ def render_diff(diff_text: str, glyphs: Glyphs) -> Panel:
                         "sp.diff.add",
                         "sp.diff.add_word",
                         new_words.get(idx),
+                        pad_width=pad_width,
                     )
                 )
                 new_no += 1
         elif line.startswith("+"):
-            rows.append(_diff_row(new_no, width, "+", line[1:], "sp.diff.add", None, None))
+            rows.append(
+                _diff_row(
+                    new_no, width, "+", line[1:], "sp.diff.add", None, None, pad_width=pad_width
+                )
+            )
             new_no += 1
             i += 1
         elif line.startswith("\\") or line.startswith("... ("):
@@ -230,6 +254,22 @@ def render_diff(diff_text: str, glyphs: Glyphs) -> Panel:
             old_no += 1
             new_no += 1
             i += 1
+    return rows, title_name
+
+
+def render_diff(diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None) -> Panel:
+    """An editor-style diff panel: gutter, line backgrounds, word highlights.
+
+    When *max_rows* is set and the rendered diff exceeds it, the panel keeps the
+    first ``max_rows`` rows and appends one ``… (+N more)`` footer (``sp.faint``,
+    mirroring :func:`output_truncation`). ``max_rows=None`` (the default at every
+    existing call site) renders the full diff unchanged.
+    """
+    rows, title_name = _diff_rows(diff_text, glyphs)
+    if max_rows is not None and len(rows) > max_rows:
+        hidden = len(rows) - max_rows
+        rows = rows[:max_rows]
+        rows.append(Text(f"{glyphs.ellipsis} (+{hidden} more)", style="sp.faint"))
     body: Group | Text = Group(*rows) if rows else Text("(no changes)", style="sp.dim")
     return Panel(
         body,
@@ -276,21 +316,22 @@ def approval_block(request: ApprovalRequest, glyphs: Glyphs, *, plain_badge: boo
 
 
 def plan_step_line(index: int, step: PlanStep, glyphs: Glyphs) -> Text:
+    title = _sanitize_line(step.title)
     if step.status == "completed":
         return Text.assemble(
             (f"{glyphs.check} {index}", "sp.success"),
-            (f"  {step.title}", "sp.dim"),
+            (f"  {title}", "sp.dim"),
         )
     if step.status == "active":
-        return Text(f"{glyphs.current} {index}  {step.title}", style="sp.emph")
+        return Text(f"{glyphs.current} {index}  {title}", style="sp.emph")
     if step.status == "skipped":
-        return Text(f"{glyphs.skip} {index}  {step.title}", style="sp.dim")
-    return Text(f"{glyphs.todo} {index}  {step.title}", style="sp.dim")
+        return Text(f"{glyphs.skip} {index}  {title}", style="sp.dim")
+    return Text(f"{glyphs.todo} {index}  {title}", style="sp.dim")
 
 
 def plan_panel(plan: TaskPlan, glyphs: Glyphs) -> Panel:
     rows: list[Text] = [
-        Text.assemble(("Goal: ", "sp.dim"), (plan.goal, "")),
+        Text.assemble(("Goal: ", "sp.dim"), (_sanitize_line(plan.goal), "")),
         Text(""),
     ]
     rows.extend(plan_step_line(i, step, glyphs) for i, step in enumerate(plan.steps, 1))
@@ -302,18 +343,6 @@ def plan_panel(plan: TaskPlan, glyphs: Glyphs) -> Panel:
         border_style="sp.faint",
         expand=False,
         padding=(0, 1),
-    )
-
-
-def _format_tokens(tokens: int) -> str:
-    return f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
-
-
-def turn_stats(elapsed_s: float, tokens: int, ctx_pct: int, *, warn: bool) -> Text:
-    stats = f"  {elapsed_s:.1f}s · {_format_tokens(tokens)} tokens · "
-    return Text.assemble(
-        (stats, "sp.faint"),
-        (f"ctx {ctx_pct}%", "sp.warn" if warn else "sp.faint"),
     )
 
 

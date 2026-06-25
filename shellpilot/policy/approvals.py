@@ -28,6 +28,27 @@ class ApprovalRequest:
     diff: str = ""
 
 
+@dataclass(frozen=True)
+class ApprovalReply:
+    """The three-way outcome of an approval prompt (design section 14.6).
+
+    approved=True            -> run the action.
+    approved=False, steer=None -> plain decline; the action does not run.
+    approved=False, steer=text -> reject-and-steer: the action does NOT run and
+        the user's guidance is fed back to the model, which re-proposes a
+        corrected action through the normal classify->decide->gate flow. Steering
+        never executes the un-approved action; safety is automatic because the
+        re-proposal re-enters the gate like any tool call.
+    """
+
+    approved: bool
+    steer_text: str | None = None
+
+
+APPROVE = ApprovalReply(approved=True)
+DECLINE = ApprovalReply(approved=False)
+
+
 def decide(
     profile: str,
     side_effect: SideEffect,

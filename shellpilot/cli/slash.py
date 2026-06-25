@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import base64
+import os
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.render import plan_panel, render_diff
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs
-from shellpilot.config.loader import BOOT_ONLY_KEYS, ConfigError, LoadedConfig, validate_override
+from shellpilot.config.loader import (
+    BOOT_ONLY_KEYS,
+    HIGH_STAKES_KEYS,
+    ConfigError,
+    LoadedConfig,
+    validate_override,
+)
+from shellpilot.config.model import (
+    TESTED_FAMILIES,
+    is_cloud_model,
+    is_egressing,
+    is_tested_model,
+)
 from shellpilot.config.overrides import load_overrides, overrides_path, save_overrides
 from shellpilot.llm.client import LLMClient
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -28,7 +42,7 @@ class SlashAction(Enum):
 
 HELP_ROWS: list[tuple[str, str]] = [
     ("/help", "Show available commands."),
-    ("/exit, /quit", "Exit ShellPilot."),
+    ("/exit", "Exit ShellPilot."),
     ("/clear", "Clear the visible conversation after confirmation."),
     ("/status", "Show model, profile, workspace, and context usage."),
     ("/model", "Show the active model and context metadata."),
@@ -58,12 +72,10 @@ HELP_ROWS: list[tuple[str, str]] = [
     ("/logs", "Show recent audit events for this session."),
     ("/logs all", "Show recent audit events across all sessions."),
     ("/export <path>", "Export this session's transcript to markdown."),
-    ("/memory show", "Show stored preferences and project facts with ids."),
+    ("/memory show", "Show preferences (scope/source) and facts with ids, plus file paths."),
     ("/memory add <text>", "Add a global behavior preference after confirmation."),
     ("/memory forget <id>", "Remove a memory entry after confirmation."),
     ("/memory compact", "Model-assisted preference cleanup, approved before saving."),
-    ("/prefs show", "Show behavior preferences."),
-    ("/prefs edit", "Show the memory file paths for hand-editing."),
     ("/shell", "Enter Manual Shell mode (raw shell, user-typed)."),
     ("/attach <path>", "Stage an image to send with your next message (vision models only)."),
     ("/attach", "List currently staged images."),
@@ -98,6 +110,60 @@ def _default_confirm(prompt: str) -> bool:
     return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
 
 
+# Per-key risk phrasing for the HIGH_STAKES_KEYS confirm-gate in /config set.
+_HIGH_STAKES_RISK: dict[str, str] = {
+    "model.allow_cloud": "enables cloud egress — model calls may leave the device",
+    "tools.web": "enables web egress — searches and fetches leave the device",
+    "model.base_url": "changes the model endpoint — requests go to a different host",
+    "runtime.security_profile": "lowers the local safety profile — low-risk commands may auto-run",
+}
+
+# Starter config written by `/config edit` ONLY when no config.toml exists yet.
+# Every key is commented out, so the file is valid TOML that load_config accepts
+# and that resolves to the built-in defaults — i.e. an effectively empty config.
+# It is never written over an existing file (config.toml is user-owned; the
+# program never rewrites it). Keep it concise: common keys plus the egress/safety
+# keys, with honest notes on which are config-file-only vs high-stakes.
+_STARTER_CONFIG = """\
+# ShellPilot config — starter template (every key is commented out, so it
+# resolves to the built-in defaults). Uncomment and edit the keys you want.
+# ShellPilot never rewrites this file; it is yours to edit by hand.
+#
+# Boot-only keys (model.*, ui.*, instructions.*, tools.web) take effect next
+# session. Runtime-settable keys can also be changed live with /config set.
+# Egress/safety keys (tools.web, model.base_url, model.allow_cloud,
+# runtime.security_profile) are settable here OR via a confirm-gated /config set,
+# but NEVER via an environment variable. The structural keys model.options and
+# skills.enabled are config-file-only: edit them here, never via /config set.
+
+[model]
+# default = "gemma4:e4b"
+# keep_alive = "5m"               # how long Ollama keeps the model warm
+# base_url = "http://localhost:11434"  # high-stakes: changes the endpoint
+# allow_cloud = false             # high-stakes: master cloud-egress switch
+
+# [model.options]                 # config-file-only: verbatim Ollama options
+# repeat_penalty = 1.3            # num_ctx is reserved and ignored here
+
+[runtime]
+# security_profile = "balanced"   # high-stakes: "balanced" | "supervised"
+# auto_compact = true
+
+[tools]
+# web = false                     # high-stakes: registers web_search + web_fetch
+
+[skills]
+# enabled = ["my-skill"]          # config-file-only: skill folders to activate
+
+[privacy]
+# allow_sensitive_reads = "ask"   # ask | never | always
+
+[ui]
+# theme = "default"
+# glyphs = "auto"                 # auto | unicode | ascii
+"""
+
+
 class SlashDispatcher:
     """Parses and executes slash commands against the running session."""
 
@@ -114,6 +180,7 @@ class SlashDispatcher:
         glyphs: Glyphs = UNICODE_GLYPHS,
         preload: Callable[[str], None] | None = None,
         attachments: AttachmentQueue | None = None,
+        tty: bool = True,
     ) -> None:
         self._runtime = runtime
         self._client = client
@@ -125,12 +192,13 @@ class SlashDispatcher:
         self._glyphs = glyphs
         self._preload = preload
         self._attachments = attachments
+        self._tty = tty
 
     def handle(self, line: str) -> SlashAction:
         parts = line.strip().split()
         command, args = parts[0].lower(), parts[1:]
 
-        if command in ("/exit", "/quit"):
+        if command == "/exit":
             return SlashAction.EXIT
         if command == "/shell":
             return SlashAction.MANUAL_SHELL
@@ -166,8 +234,6 @@ class SlashDispatcher:
             self._export(args)
         elif command == "/memory":
             self._memory(args)
-        elif command == "/prefs":
-            self._prefs(args)
         elif command == "/attach":
             self._attach(args)
         elif command == "/skills":
@@ -197,6 +263,7 @@ class SlashDispatcher:
         status = self._runtime.status()
         self._console.print(f"Model: {status.model}")
         self._console.print(f"Profile: {status.profile}")
+        self._console.print(self._locality_line(status.model))
         self._console.print(f"Workspace: {status.workspace}")
         self._console.print(
             f"Context: ~{status.estimated_prompt_tokens} of "
@@ -210,6 +277,26 @@ class SlashDispatcher:
             self._console.print("Active plan: none")
         self._console.print("Pending approvals: none")
 
+    def _locality_line(self, model: str) -> Text:
+        """Honest one-line locality readout derived from the egress signal.
+
+        REMOTE in amber names the off-box host (the configured non-loopback
+        endpoint, or 'cloud' for a -cloud model proxied through loopback);
+        local in dim otherwise (design section 15.2).
+        """
+        from urllib.parse import urlsplit
+
+        from shellpilot.llm.ollama import is_loopback_url
+
+        base_url = self._loaded.settings.model.base_url
+        if not is_egressing(model, base_url):
+            return Text("Locality: local", style="sp.dim")
+        if not is_loopback_url(base_url):
+            host = (urlsplit(base_url).hostname or "").rstrip(".") or base_url
+        else:
+            host = "cloud" if is_cloud_model(model) else base_url
+        return Text(f"Locality: REMOTE — {host}", style="sp.warn")
+
     def _model(self, args: list[str]) -> None:
         if not args:
             status = self._runtime.status()
@@ -219,8 +306,6 @@ class SlashDispatcher:
             )
             return
         if args[0] == "list":
-            from shellpilot.config.model import TESTED_FAMILIES, is_tested_model
-
             models = self._client.list_models()
             table = Table(title="Local models")
             table.add_column("Name")
@@ -240,13 +325,27 @@ class SlashDispatcher:
                 )
             return
         if args[0] == "use" and len(args) > 1:
-            from shellpilot.config.model import TESTED_FAMILIES, is_tested_model
             from shellpilot.persistence.workspace_state import save_last_model
 
             name = args[1]
             installed = {model.name for model in self._client.list_models()}
-            if name not in installed:
+            # Cloud models are absent from /api/tags — skip the availability gate
+            # for them (the typo-catch survives for local names).
+            if name not in installed and not is_cloud_model(name):
                 self._console.print(f"[red]{name} is not installed.[/red] See /model list.")
+                return
+            # Cloud-egress consent boundary (design section 15.2): switching to a
+            # cloud/remote model mid-session requires allow_cloud + per-session
+            # consent BEFORE set_model/_preload touch it. On reject: no switch,
+            # no preload, no egress.
+            from shellpilot.cli.terminal import _resolve_cloud_consent
+            from shellpilot.config.model import is_egressing
+
+            base_url = self._loaded.settings.model.base_url
+            egressing = is_egressing(name, base_url)
+            if not _resolve_cloud_consent(
+                self._console, self._loaded.settings, name, tty=self._tty
+            ):
                 return
             self._runtime.set_model(name)
             workspace = self._runtime.status().workspace
@@ -256,6 +355,14 @@ class SlashDispatcher:
                 self._console.print(f"[dim]Warning: could not save model choice: {exc}[/dim]")
             if self._preload is not None:
                 self._preload(name)
+            if egressing and self._runtime.audit is not None:
+                from urllib.parse import urlsplit
+
+                self._runtime.audit.write(
+                    "cloud_consent_granted",
+                    model=name,
+                    host=(urlsplit(base_url).hostname or "").rstrip("."),
+                )
             self._console.print(f"Switched to {name}.")
             if not is_tested_model(name):
                 families = ", ".join(TESTED_FAMILIES)
@@ -272,12 +379,7 @@ class SlashDispatcher:
         if action == "show":
             render_config(self._loaded, self._console)
         elif action == "edit":
-            self._console.print(f"User config: {self._user_config_file}")
-            self._console.print("Edit the file, then run /config reload.")
-            self._console.print(
-                "[dim]Tip: use /config set <key> <value> "
-                "to make persistent changes in-program.[/dim]"
-            )
+            self._config_edit()
         elif action == "reload":
             try:
                 self._loaded = self._reload_config()
@@ -289,7 +391,7 @@ class SlashDispatcher:
             self._print_config_warnings()
         elif action == "set":
             self._config_set(args[1:])
-        elif action in ("unset", "reset") and len(args) > 1:
+        elif action == "unset" and len(args) > 1:
             self._config_unset(args[1])
         elif action == "reset" and len(args) == 1:
             self._config_reset_all()
@@ -298,8 +400,32 @@ class SlashDispatcher:
                 "Usage: /config show | /config edit | /config reload"
                 " | /config set <key> <value>"
                 " | /config unset <key>"
-                " | /config reset [<key>]"
+                " | /config reset"
             )
+
+    def _config_edit(self) -> None:
+        path = self._user_config_file
+        created = False
+        if not path.exists():
+            # No user config yet: write a commented starter so the printed path
+            # is real and editable. NEVER touch an existing config.toml — it is
+            # user-owned and the program never rewrites it.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(_STARTER_CONFIG)
+            created = True
+        self._console.print(f"User config: {path}")
+        if created:
+            self._console.print(
+                "[dim]Created a starter config (every key commented out, so it "
+                "resolves to defaults). Uncomment and edit the keys you want.[/dim]"
+            )
+        self._console.print("Edit the file, then run /config reload.")
+        self._console.print(
+            "[dim]Boot-only keys take effect next session; runtime-settable keys "
+            "can also use /config set <key> <value>.[/dim]"
+        )
 
     def _overrides_path(self) -> Path:
         return overrides_path(self._user_config_file.parent)
@@ -326,6 +452,31 @@ class SlashDispatcher:
         except ConfigError as exc:
             self._console.print(f"[red]Config error:[/red] {exc}")
             return
+        # Egress / safety keys: amber warning + explicit confirm before persisting.
+        if key in HIGH_STAKES_KEYS:
+            risk = _HIGH_STAKES_RISK[key]
+            self._console.print(Text(f"⚠ {key} {risk}.", style="sp.warn"))
+            # security_profile is read per turn (conversation.py), so a set
+            # applies this session; the egress keys are boot-only. Never defer a
+            # live safety downgrade to "next session".
+            when = "next session" if key in BOOT_ONLY_KEYS else "this session (next turn)"
+            self._console.print(
+                Text(
+                    f"It takes effect {when} and persists in overrides.json "
+                    f"until /config unset {key}.",
+                    style="sp.warn",
+                )
+            )
+            if key == "runtime.security_profile":
+                self._console.print(
+                    Text(
+                        "Use /profile use <profile> for an unsaved, session-only change.",
+                        style="sp.warn",
+                    )
+                )
+            if not self._confirm(f"Persist {key} = {coerced!r} to overrides?"):
+                self._console.print("[dim]unchanged.[/dim]")
+                return
         # Capture old effective value before overwrite.
         old_value = self._resolve_setting_value(self._loaded, key)
         # Read → mutate → save (atomic).
@@ -342,7 +493,8 @@ class SlashDispatcher:
         self._runtime.update_settings(self._loaded.settings)
         new_value = self._resolve_setting_value(self._loaded, key)
         self._console.print(f"{key}: {old_value!r} → {new_value!r}")
-        if key in BOOT_ONLY_KEYS:
+        # High-stakes keys already printed their own when/persist note above.
+        if key in BOOT_ONLY_KEYS and key not in HIGH_STAKES_KEYS:
             note = "(saved — takes effect next session)"
             if key == "model.default":
                 note += " — use /model use <name> to switch now"
@@ -527,7 +679,7 @@ class SlashDispatcher:
         if action == "show":
             stores.global_store.reload()
             stores.project_store.reload()
-            block = stores.render(max_tokens=4000)
+            block = stores.render(max_tokens=4000, meta=True)
             if block:
                 self._console.print(block, markup=False, highlight=False)
             else:
@@ -656,34 +808,6 @@ class SlashDispatcher:
             store.replace_all(new_preferences, list(store.facts))
         self._audit_memory(f"compact {len(all_preferences)} -> {kept}")
         self._console.print(f"Memory compacted: {len(all_preferences)} -> {kept} preferences.")
-
-    def _prefs(self, args: list[str]) -> None:
-        stores = self._runtime.memory
-        if stores is None:
-            self._console.print("[dim]Memory is not available this session.[/dim]")
-            return
-        action = args[0] if args else "show"
-        if action == "show":
-            preferences = list(stores.global_store.preferences) + list(
-                stores.project_store.preferences
-            )
-            if not preferences:
-                self._console.print("[dim]No behavior preferences stored.[/dim]")
-                return
-            for preference in preferences:
-                self._console.print(
-                    f"[{preference.id}] ({preference.scope}, {preference.source}) "
-                    f"{preference.text}",
-                    markup=False,
-                    highlight=False,
-                )
-            return
-        if action == "edit":
-            self._console.print(f"Global memory: {stores.global_store.path}")
-            self._console.print(f"Project memory: {stores.project_store.path}")
-            self._console.print("Edit by hand, then run /memory show to reload.")
-            return
-        self._console.print("Usage: /prefs show | /prefs edit")
 
     def _tools(self) -> None:
         profile = self._runtime.settings.runtime.security_profile

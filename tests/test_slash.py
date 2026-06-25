@@ -53,10 +53,11 @@ class Harness:
         return self.console.export_text()
 
 
-def test_exit_and_quit(tmp_path: Path) -> None:
+def test_exit_only_quit_dropped(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     assert harness.dispatcher.handle("/exit") is SlashAction.EXIT
-    assert harness.dispatcher.handle("/quit") is SlashAction.EXIT
+    # /quit was dropped (one exit command); it is now an unknown command.
+    assert harness.dispatcher.handle("/quit") is SlashAction.CONTINUE
 
 
 def test_help_lists_commands(tmp_path: Path) -> None:
@@ -92,6 +93,18 @@ def test_status_shows_model_and_context(tmp_path: Path) -> None:
     assert "gemma4:e4b" in out
     assert "balanced" in out
     assert "8192" in out
+    # Default loopback session with a local model reports a local locality.
+    assert "Locality: local" in out
+
+
+def test_status_locality_remote_for_cloud_model(tmp_path: Path) -> None:
+    """A live cloud model flips the /status locality line to REMOTE."""
+    harness = Harness(tmp_path)
+    harness.runtime.set_model("nemotron-3-nano:30b-cloud")
+    harness.dispatcher.handle("/status")
+    out = harness.output()
+    assert "Locality: REMOTE" in out
+    assert "cloud" in out
 
 
 def test_model_list_shows_all_models_with_tags(tmp_path: Path) -> None:
@@ -185,6 +198,60 @@ def test_config_reload_calls_loader(tmp_path: Path) -> None:
     harness.dispatcher.handle("/config reload")
     assert harness.reloads == 1
     assert "reloaded" in harness.output().lower()
+
+
+def test_config_edit_creates_starter_when_absent(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    config_file = tmp_path / "config.toml"
+    assert not config_file.exists()
+
+    harness.dispatcher.handle("/config edit")
+
+    # The starter template now exists at the printed path...
+    assert config_file.is_file()
+    out = harness.output()
+    # Rich may wrap the long tmp path across lines; rejoin before matching.
+    flat = "".join(out.split())
+    assert str(config_file) in flat
+    assert "starter" in out.lower()
+    # ...is valid TOML that load_config accepts and resolves to defaults
+    # (every key commented out => no override of the built-in defaults).
+    loaded = load_config(
+        user_config_file=config_file,
+        project_config_file=tmp_path / "missing-project.toml",
+        env={},
+    )
+    assert (
+        loaded.settings
+        == load_config(
+            user_config_file=tmp_path / "missing-user.toml",
+            project_config_file=tmp_path / "missing-project.toml",
+            env={},
+        ).settings
+    )
+
+
+def test_config_edit_starter_has_owner_only_perms(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    config_file = tmp_path / "config.toml"
+    harness.dispatcher.handle("/config edit")
+    assert config_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_config_edit_does_not_overwrite_existing(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    original = '[model]\ndefault = "gemma4:e4b"\n'
+    config_file.write_text(original, encoding="utf-8")
+    before_mtime = config_file.stat().st_mtime_ns
+
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/config edit")
+
+    assert config_file.read_text(encoding="utf-8") == original
+    assert config_file.stat().st_mtime_ns == before_mtime
+    out = harness.output()
+    assert str(config_file) in "".join(out.split())
+    assert "starter" not in out.lower()
 
 
 def test_compact_status_shows_thresholds(tmp_path: Path) -> None:
@@ -639,6 +706,101 @@ def test_config_set_model_options_rejected(tmp_path: Path) -> None:
     assert not (tmp_path / "overrides.json").exists()
 
 
+def _overrides_data(tmp_path: Path) -> dict:
+    import json
+
+    path = tmp_path / "overrides.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def test_config_set_security_profile_confirmed_persists(tmp_path: Path) -> None:
+    """/config set runtime.security_profile is high-stakes AND live: an amber
+    warning + confirm gates it; a yes persists the override and lowers the
+    profile THIS session (the profile is read per turn, unlike the boot-only
+    egress keys). The warning must not falsely defer a safety downgrade to next
+    session, and points the user at /profile use for an unsaved session-only
+    change."""
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle("/config set runtime.security_profile supervised")
+    out = harness.output()
+    assert "lowers the local safety profile" in out
+    assert "/profile use" in out
+    # Live: the downgrade applies now, so the warning must NOT claim next session.
+    assert "next session" not in out
+    assert _overrides_data(tmp_path).get("runtime.security_profile") == "supervised"
+    # Applied to the running session, not merely persisted for next boot.
+    assert harness.runtime.settings.runtime.security_profile == "supervised"
+
+
+def test_config_set_security_profile_declined_not_persisted(tmp_path: Path) -> None:
+    """Declining the confirm leaves overrides.json untouched and the profile as-is."""
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set runtime.security_profile supervised")
+    out = harness.output()
+    assert "unchanged" in out.lower()
+    assert not (tmp_path / "overrides.json").exists()
+    assert harness.runtime.settings.runtime.security_profile == "balanced"
+
+
+def test_config_set_tools_web_confirmed_persists(tmp_path: Path) -> None:
+    """/config set tools.web is high-stakes: confirmed → persisted with an
+    egress warning + boot-only note."""
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle("/config set tools.web true")
+    out = harness.output()
+    assert "enables web egress" in out
+    assert "next session" in out
+    assert _overrides_data(tmp_path).get("tools.web") is True
+
+
+def test_config_set_tools_web_declined_not_persisted(tmp_path: Path) -> None:
+    """Declining the tools.web confirm persists nothing and leaves web off."""
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set tools.web true")
+    assert "unchanged" in harness.output().lower()
+    assert not (tmp_path / "overrides.json").exists()
+    assert harness.runtime.settings.tools.web is False
+
+
+def test_config_set_base_url_confirmed_persists(tmp_path: Path) -> None:
+    """/config set model.base_url is high-stakes: confirmed → persisted with an
+    endpoint-change warning."""
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle("/config set model.base_url http://127.0.0.1:9999")
+    out = harness.output()
+    assert "changes the model endpoint" in out
+    assert _overrides_data(tmp_path).get("model.base_url") == "http://127.0.0.1:9999"
+
+
+def test_config_set_base_url_declined_not_persisted(tmp_path: Path) -> None:
+    """Declining the model.base_url confirm persists nothing."""
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set model.base_url http://127.0.0.1:9999")
+    assert "unchanged" in harness.output().lower()
+    assert not (tmp_path / "overrides.json").exists()
+
+
+def test_config_set_allow_cloud_confirmed_persists(tmp_path: Path) -> None:
+    """/config set model.allow_cloud is high-stakes: confirmed → persisted with
+    a cloud-egress warning (the consent gate still fires at boot regardless)."""
+    harness = Harness(tmp_path, confirm_answer=True)
+    harness.dispatcher.handle("/config set model.allow_cloud true")
+    out = harness.output()
+    assert "enables cloud egress" in out
+    assert _overrides_data(tmp_path).get("model.allow_cloud") is True
+
+
+def test_config_set_allow_cloud_declined_not_persisted(tmp_path: Path) -> None:
+    """Declining the model.allow_cloud confirm persists nothing."""
+    harness = Harness(tmp_path, confirm_answer=False)
+    harness.dispatcher.handle("/config set model.allow_cloud true")
+    assert "unchanged" in harness.output().lower()
+    assert not (tmp_path / "overrides.json").exists()
+    assert harness.runtime.settings.model.allow_cloud is False
+
+
 def test_config_unset_existing_reverts(tmp_path: Path) -> None:
     """/config unset removes the override and shows the reverted source."""
     import json
@@ -668,13 +830,18 @@ def test_config_unset_absent_key_reports_noop(tmp_path: Path) -> None:
     assert "no override" in out.lower()
 
 
-def test_config_reset_alias_for_unset(tmp_path: Path) -> None:
-    """/config reset <key> is an alias for /config unset <key>."""
+def test_config_reset_key_no_longer_aliases_unset(tmp_path: Path) -> None:
+    """/config reset <key> was demoted (v0.10.0): only /config unset <key>
+    removes one key; /config reset <key> falls to the usage message and changes
+    nothing. /config reset (no key) still clears all."""
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/config set runtime.max_tool_turns 20")
     assert harness.runtime.settings.runtime.max_tool_turns == 20
     harness.dispatcher.handle("/config reset runtime.max_tool_turns")
-    assert harness.runtime.settings.runtime.max_tool_turns == 40
+    assert harness.runtime.settings.runtime.max_tool_turns == 20  # alias gone — unchanged
+    assert "Usage:" in harness.output()
+    harness.dispatcher.handle("/config unset runtime.max_tool_turns")
+    assert harness.runtime.settings.runtime.max_tool_turns == 40  # unset still works
 
 
 def test_config_reset_all_declined(tmp_path: Path) -> None:

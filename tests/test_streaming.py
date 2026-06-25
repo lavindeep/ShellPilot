@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import difflib
 import io
 import random
 from pathlib import Path
 
+import pytest
 from rich.cells import cell_len
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.text import Text
 
+import shellpilot.cli.streaming as streaming_mod
 from shellpilot.cli.streaming import (
     FLIGHT_PHASES,
     AviationSpinner,
+    DiffReveal,
     ResponseStream,
     phase_for_elapsed,
 )
@@ -61,6 +66,72 @@ def test_response_stream_renders_markdown_on_terminals() -> None:
     out = console.export_text()
     assert "bold" in out and "code" in out
     assert "**bold**" not in out  # markdown was rendered, not echoed
+
+
+def test_response_stream_sanitizes_every_markdown_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources: list[str] = []
+    real_markdown = streaming_mod.Markdown
+
+    def recording_markdown(markup: str) -> Markdown:
+        sources.append(markup)
+        return real_markdown(markup)
+
+    monkeypatch.setattr(streaming_mod, "Markdown", recording_markdown)
+    console = terminal_console()
+    stream = ResponseStream(console)
+    stream.feed("alpha\x1b[2J\x00\n\n**bold**\x07")
+    stream.finish()
+
+    assert len(sources) >= 2
+    assert all(not any(char in source for char in "\x1b\x00\x07") for source in sources)
+    assert "alpha" in sources[-1]
+    assert "\n\n**bold**" in sources[-1]
+
+
+def test_response_stream_sanitizes_plain_passthrough_and_buffer() -> None:
+    console = plain_console()
+    stream = ResponseStream(console)
+    stream.feed("plain\x1b[2J\x00\ttext\x7f\n")
+
+    out = console.export_text()
+    assert not any(char in out for char in "\x1b\x00\x7f\t")
+    assert not any(char in stream._buffer for char in "\x1b\x00\x7f\t")
+    assert "plain" in out and "text" in out
+    assert out.endswith("\n")
+
+
+def test_response_stream_preserves_multiline_fenced_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B1 sanitization must not corrupt legitimate multi-line fenced markdown.
+
+    Asserts on the markup handed to Markdown — not the Live-streamed export_text,
+    which records intermediate frames and so cannot equal a single static print
+    (every other terminal test here uses substring checks for the same reason).
+    """
+    sources: list[str] = []
+    real_markdown = streaming_mod.Markdown
+
+    def recording_markdown(markup: str) -> Markdown:
+        sources.append(markup)
+        return real_markdown(markup)
+
+    monkeypatch.setattr(streaming_mod, "Markdown", recording_markdown)
+    content = 'Intro paragraph.\n\n```python\nprint("hello")\n```\n\nFinal **bold** line.\n'
+    console = terminal_console()
+    stream = ResponseStream(console)
+    for token in (content[:13], content[13:31], content[31:]):
+        stream.feed(token)
+    stream.finish()
+
+    # The final flush hands the complete, un-corrupted markdown to Markdown:
+    # the fenced code block and surrounding text survive sanitization intact.
+    assert sources[-1] == content
+    out = console.export_text()
+    assert 'print("hello")' in out  # code-block body rendered
+    assert "Final" in out and "bold" in out  # trailing text + bold rendered
 
 
 def test_response_stream_final_render_is_complete() -> None:
@@ -349,6 +420,113 @@ def test_finish_clears_live_before_stop() -> None:
     refresh = last_update[2]["refresh"]
     assert renderable == "", f"expected empty string renderable, got {renderable!r}"
     assert refresh is False, "expected refresh=False on the clearing update"
+
+
+# ---------------------------------------------------------------------------
+# DiffReveal: approval-time scrolling reveal (design section 31.4)
+# ---------------------------------------------------------------------------
+
+
+def _additions_diff(count: int, name: str = "big.py") -> str:
+    """A unified diff that adds *count* numbered lines to an empty file."""
+    before = ""
+    after = "".join(f"line {i}\n" for i in range(count))
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{name}",
+            tofile=f"b/{name}",
+        )
+    )
+
+
+class _SpyLive:
+    """Records start/update/stop so reveal ordering can be asserted with no sleeps."""
+
+    instances: list[_SpyLive] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+        _SpyLive.instances.append(self)
+
+    def start(self) -> None:
+        self.calls.append(("start", (), {}))
+
+    def update(self, renderable: object, *, refresh: bool = True) -> None:
+        self.calls.append(("update", (renderable,), {"refresh": refresh}))
+
+    def stop(self) -> None:
+        self.calls.append(("stop", (), {}))
+
+
+def test_diff_reveal_short_diff_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    _SpyLive.instances = []
+    monkeypatch.setattr(streaming_mod, "Live", _SpyLive)
+    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=True)
+    # 5 additions = 5 rendered rows, well under ANIMATE_THRESHOLD.
+    reveal.reveal(_additions_diff(5), max_rows=DiffReveal.WINDOW_ROWS)
+    assert _SpyLive.instances == []  # no Live opened for a short diff
+
+
+def test_diff_reveal_disabled_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    _SpyLive.instances = []
+    monkeypatch.setattr(streaming_mod, "Live", _SpyLive)
+    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=False)
+    reveal.reveal(_additions_diff(40), max_rows=DiffReveal.WINDOW_ROWS)
+    assert _SpyLive.instances == []  # motion off → no Live even for a long diff
+
+
+def test_diff_reveal_nontty_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    _SpyLive.instances = []
+    monkeypatch.setattr(streaming_mod, "Live", _SpyLive)
+    # plain_console() is not a terminal → enabled collapses to False internally.
+    reveal = DiffReveal(plain_console(), GLYPHS, enabled=True)
+    reveal.reveal(_additions_diff(40), max_rows=DiffReveal.WINDOW_ROWS)
+    assert _SpyLive.instances == []
+
+
+def test_diff_reveal_row_count_is_pure() -> None:
+    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=True)
+    diff = _additions_diff(30)
+    first = reveal.row_count(diff)
+    second = reveal.row_count(diff)
+    assert first == second == 30
+    assert reveal.row_count("") >= 0
+
+
+def test_diff_reveal_long_diff_animates_and_clears_before_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _SpyLive.instances = []
+    monkeypatch.setattr(streaming_mod, "Live", _SpyLive)
+    monkeypatch.setattr(streaming_mod.time, "sleep", lambda _seconds: None)  # no real delay
+    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=True)
+    reveal.reveal(_additions_diff(40), max_rows=DiffReveal.WINDOW_ROWS)
+
+    assert len(_SpyLive.instances) == 1
+    live = _SpyLive.instances[0]
+    names = [c[0] for c in live.calls]
+    assert names[0] == "start"
+    assert names[-1] == "stop"
+    # The clearing update must immediately precede stop (mirrors finish()).
+    stop_index = names.index("stop")
+    last_update_index = max(i for i, n in enumerate(names) if n == "update")
+    assert last_update_index == stop_index - 1
+    clearing = live.calls[last_update_index]
+    assert clearing[1][0] == ""
+    assert clearing[2]["refresh"] is False
+
+
+def test_diff_reveal_chunk_math_bounds_tick_count() -> None:
+    """The chunk size keeps any diff length within TOTAL_DURATION's tick budget."""
+    import math
+
+    ticks_budget = math.floor(DiffReveal.TOTAL_DURATION / streaming_mod._REFRESH_SECONDS)
+    for total in (21, 40, 60, 200, 500):
+        chunk = max(1, math.ceil(total / max(1, ticks_budget)))
+        frames = math.ceil(total / chunk)
+        assert frames <= ticks_budget, f"{total} rows took {frames} frames > {ticks_budget}"
 
 
 def test_runtime_emits_response_hooks_and_turn_stats(tmp_path: Path) -> None:

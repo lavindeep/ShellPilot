@@ -32,13 +32,17 @@ _DiscoveryResult = tuple[
 ]
 
 _BUILTIN_TRIGGER_MAP: dict[str, tuple[SkillTrigger, ...]] = {
+    "code-review": (SkillTrigger.ENABLED,),
     "context-management": (SkillTrigger.ALWAYS_ON,),
+    "debugging": (SkillTrigger.ENABLED,),
+    "git-workflow": (SkillTrigger.ENABLED,),
     "planning": (
         SkillTrigger.PLAN_PROPOSED,
         SkillTrigger.PLAN_ACTIVE,
         SkillTrigger.PLAN_BLOCKED,
     ),
     "skill-authoring": (SkillTrigger.ENABLED,),
+    "verification": (SkillTrigger.ENABLED,),
     "web-grounding": (SkillTrigger.WEB_ENABLED,),
 }
 _PLANNING_REFERENCE_TRIGGER_MAP: dict[str, SkillTrigger] = {

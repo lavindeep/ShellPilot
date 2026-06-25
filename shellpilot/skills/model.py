@@ -73,6 +73,6 @@ class Skill:
 
 
 def is_on_demand(resource: SkillResource) -> bool:
-    # ponytail: on_demand == no trigger today; the explicit `disclosure` dial
+    # NOTE: on_demand == no trigger today; the explicit `disclosure` dial
     # for per-model profiles replaces this when that consumer ships (v0.10.x).
     return resource.trigger is None

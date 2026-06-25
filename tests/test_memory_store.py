@@ -89,6 +89,23 @@ def test_render_block_lists_entries_and_caps_tokens(tmp_path: Path) -> None:
     assert len(tiny) <= 10 * 4 + 40  # truncated to roughly the cap
 
 
+def test_render_meta_adds_scope_source_for_display_only(tmp_path: Path) -> None:
+    """meta=True annotates preference lines with (scope, source) for the
+    /memory show view (folding in what /prefs used to print); the default
+    (injected) format stays byte-identical and never leaks the tag."""
+    global_store = MemoryStore(tmp_path / "global.json")
+    project_store = MemoryStore(tmp_path / "project.json", project_id="ShellPilot:abc")
+    global_store.add_preference("Prefer concise answers.", scope="global", source="user")
+    stores = MemoryStores(global_store=global_store, project_store=project_store)
+
+    injected = stores.render(max_tokens=500)
+    assert "[pref_001] Prefer concise answers." in injected
+    assert "(global, user)" not in injected  # never reaches the model prompt
+
+    display = stores.render(max_tokens=500, meta=True)
+    assert "[pref_001] (global, user) Prefer concise answers." in display
+
+
 def test_empty_stores_render_nothing(tmp_path: Path) -> None:
     stores = MemoryStores(
         global_store=MemoryStore(tmp_path / "g.json"),
