@@ -8,7 +8,12 @@ from shellpilot.cli.banner import render_banner
 _JET_GLYPHS = ("▀", "▄", "█")
 
 
-def _export(panel: Panel, *, styles: bool = False, width: int = 120) -> str:
+def _export(panel: Panel, *, styles: bool = False, width: int = 200) -> str:
+    # Render width must stay above the banner's natural width. The panel is
+    # expand=False, so a generous console width is a no-op on the output, but a
+    # console narrower than the panel's measured width makes Rich shrink columns
+    # and wrap long lines (e.g. the Tips text) — a runner/Rich-version-dependent
+    # fragility, not a banner change. 200 keeps the panel at its natural width.
     console = Console(record=True, width=width, force_terminal=True)
     console.print(panel)
     return console.export_text(styles=styles)
