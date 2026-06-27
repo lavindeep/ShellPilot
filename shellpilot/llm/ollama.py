@@ -244,11 +244,15 @@ class OllamaClient:
                         chunk = json.loads(line)
                     except json.JSONDecodeError as exc:
                         raise OllamaResponseError(f"invalid stream chunk: {line[:200]}") from exc
+                    if not isinstance(chunk, dict):
+                        raise OllamaResponseError(f"unexpected stream chunk shape: {line[:200]}")
                     if chunk.get("error"):
                         raise OllamaResponseError(str(chunk["error"]))
                     if chunk.get("done"):
                         done_seen = True
                     message = chunk.get("message") or {}
+                    if not isinstance(message, dict):
+                        raise OllamaResponseError(f"unexpected stream message shape: {line[:200]}")
                     token = message.get("content") or ""
                     if token:
                         content_parts.append(token)
@@ -260,7 +264,10 @@ class OllamaClient:
                     thinking = message.get("thinking") or ""
                     if thinking:
                         thinking_parts.append(thinking)
-                    for raw_call in message.get("tool_calls") or []:
+                    raw_calls = message.get("tool_calls") or []
+                    if not isinstance(raw_calls, list):
+                        raise OllamaResponseError(f"unexpected tool_calls shape: {line[:200]}")
+                    for raw_call in raw_calls:
                         parsed = _decode_tool_call(raw_call)
                         if parsed is not None:
                             tool_calls.append(parsed)
@@ -303,8 +310,15 @@ def encode_tool(tool: ToolDefinition) -> dict[str, Any]:
     }
 
 
-def _decode_tool_call(raw: dict[str, Any]) -> ToolCall | None:
-    function = raw.get("function") or {}
+def _decode_tool_call(raw: object) -> ToolCall | None:
+    # A non-dict element inside an otherwise-valid tool_calls list is one bad
+    # call, not a malformed stream — skip it (None) the same way a dict call
+    # with a missing name/arguments is skipped, rather than raising.
+    if not isinstance(raw, dict):
+        return None
+    function = raw.get("function")
+    if not isinstance(function, dict):
+        return None
     name = function.get("name")
     arguments = function.get("arguments")
     if isinstance(arguments, str):

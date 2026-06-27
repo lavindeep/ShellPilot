@@ -182,6 +182,17 @@ def _streaming_transport(chunks: list[dict[str, Any]]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+def _raw_stream_transport(body: str) -> httpx.MockTransport:
+    """MockTransport that returns a verbatim /api/chat NDJSON body (any shape)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/chat":
+            return httpx.Response(200, content=body.encode())
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
 def test_truncated_stream_raises_response_error() -> None:
     """A stream that closes without a done:true chunk raises OllamaResponseError."""
     chunks: list[dict[str, Any]] = [
@@ -216,3 +227,51 @@ def test_done_reason_length_stream_is_accepted() -> None:
     client = make_client(_streaming_transport(chunks))
     msg = client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
     assert msg.content == "partial answer"
+
+
+# ---------------------------------------------------------------------------
+# Malformed stream-chunk shapes raise the typed error, not a raw AttributeError
+# ---------------------------------------------------------------------------
+
+
+def test_stream_non_dict_chunk_raises_response_error() -> None:
+    """A top-level JSON array chunk raises OllamaResponseError, not AttributeError."""
+    client = make_client(_raw_stream_transport('["not", "a", "dict"]\n'))
+    with pytest.raises(OllamaResponseError, match="shape"):
+        client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
+
+
+def test_stream_non_dict_message_raises_response_error() -> None:
+    """A chunk whose `message` is a string raises OllamaResponseError."""
+    body = json.dumps({"message": "oops", "done": True}) + "\n"
+    client = make_client(_raw_stream_transport(body))
+    with pytest.raises(OllamaResponseError, match="shape"):
+        client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
+
+
+def test_stream_non_list_tool_calls_raises_response_error() -> None:
+    """A chunk whose `message.tool_calls` is a string raises OllamaResponseError."""
+    body = json.dumps({"message": {"content": "", "tool_calls": "oops"}, "done": True}) + "\n"
+    client = make_client(_raw_stream_transport(body))
+    with pytest.raises(OllamaResponseError, match="shape"):
+        client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
+
+
+def test_stream_non_dict_tool_call_element_is_skipped() -> None:
+    """A non-dict element in a valid tool_calls list is skipped, not raised."""
+    body = (
+        json.dumps(
+            {
+                "message": {
+                    "content": "hi",
+                    "tool_calls": ["oops", {"function": {"name": "x", "arguments": {}}}],
+                },
+                "done": True,
+            }
+        )
+        + "\n"
+    )
+    client = make_client(_raw_stream_transport(body))
+    msg = client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
+    assert msg.content == "hi"
+    assert [c.name for c in msg.tool_calls] == ["x"]
