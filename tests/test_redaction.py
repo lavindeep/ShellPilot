@@ -90,6 +90,25 @@ def test_structure_redacts_expanded_token_keys() -> None:
     assert redact_structure({"access_token": "ya29.xxxxxxxxxx"}) == {"access_token": REDACTED}
 
 
+def test_structure_redacts_prefixed_sensitive_keys() -> None:
+    # Conventional env-var/config style keys carry the secret token as the final
+    # "_"-delimited segment(s). Their values match no value-pattern, so the key
+    # matcher must catch them or they leak verbatim (e.g. into the session log).
+    probe = {
+        "OPENAI_API_KEY": "sk-supersecret123456",
+        "DB_PASSWORD": "hunter2secret",
+        "MY_API_KEY": "1234567890",
+        "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI",
+    }
+    assert redact_structure(probe) == {key: REDACTED for key in probe}
+
+
+def test_structure_token_substring_key_not_redacted() -> None:
+    # A key that only contains a sensitive token mid-word is not a secret holder.
+    assert redact_structure({"password_strength": "weak"}) == {"password_strength": "weak"}
+    assert redact_structure({"token_count": 5}) == {"token_count": 5}
+
+
 def test_structure_nested_sensitive_key_redacted() -> None:
     nested = {"config": {"password": "hunter2pass"}}
     assert redact_structure(nested) == {"config": {"password": REDACTED}}

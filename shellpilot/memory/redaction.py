@@ -36,7 +36,11 @@ _SENSITIVE_KEYS = frozenset(
 
 
 def _is_sensitive_key(key: str) -> bool:
-    return key.lower().replace("-", "_") in _SENSITIVE_KEYS
+    # Exact match, or a conventional prefixed form (OPENAI_API_KEY, DB_PASSWORD,
+    # MY_API_KEY) where the sensitive token is the final "_"-delimited segment(s).
+    # NOTE: "_"-delimited convention only; camelCase (myApiKey) is out of scope.
+    norm = key.lower().replace("-", "_")
+    return norm in _SENSITIVE_KEYS or any(norm.endswith(f"_{s}") for s in _SENSITIVE_KEYS)
 
 
 def _is_redactable_scalar(item: object) -> bool:
