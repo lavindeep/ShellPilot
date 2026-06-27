@@ -1090,7 +1090,7 @@ Execution:
 
 - Use `subprocess.Popen(argv, shell=False)`.
 - Stream stdout/stderr.
-- Bound captured output; each read is hard-capped at 65 536 chars so a newline-less stream cannot materialise an unbounded string before the total capture cap is consulted.
+- Bound captured output; each read is hard-capped at 65 536 chars so a newline-less stream cannot materialise an unbounded string before the total capture cap is consulted, and the final captured chunk is sliced to the remaining budget so total capture never exceeds the cap (and `truncated` is set).
 - Enforce timeout.
 - Kill process group on timeout.
 - Return exit code and captured output.

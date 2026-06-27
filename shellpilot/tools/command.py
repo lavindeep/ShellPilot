@@ -137,11 +137,19 @@ def run_command_process(
                 break
             if emit_line is not None:
                 emit_line(line.rstrip("\n"))
-            if captured_chars < max_capture_chars:
+            # Hard-bound total capture: a single newline-less chunk can be up to
+            # MAX_READ_CHARS, so slice it to the remaining budget rather than
+            # appending it whole (which overshot the cap and left truncated=False).
+            remaining = max_capture_chars - captured_chars
+            if remaining <= 0:
+                truncated = True
+            elif len(line) > remaining:
+                captured.append(line[:remaining])
+                captured_chars = max_capture_chars
+                truncated = True
+            else:
                 captured.append(line)
                 captured_chars += len(line)
-            else:
-                truncated = True
 
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()

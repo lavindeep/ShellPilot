@@ -87,15 +87,19 @@ def test_timeout_kills_process_group(tmp_path: Path) -> None:
 
 
 def test_output_capture_is_bounded(tmp_path: Path) -> None:
+    # A single newline-less chunk far larger than the cap must be hard-bounded to
+    # exactly max_capture_chars with truncated=True — not appended whole (which
+    # overshot the cap by up to one chunk and left truncated=False).
     outcome = run_command_process(
         CommandRequest(
-            argv=[sys.executable, "-c", "print('x' * 100 + '\\n', end='');" * 1],
+            argv=[sys.executable, "-c", "print('x' * 1000, end='')"],
             cwd=tmp_path,
             timeout_seconds=30,
         ),
         max_capture_chars=50,
     )
-    assert len(outcome.output) <= 101  # one buffered line may land before the cap
+    assert len(outcome.output) == 50
+    assert outcome.truncated
 
 
 def test_streaming_emits_lines(tmp_path: Path) -> None:
