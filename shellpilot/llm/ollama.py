@@ -117,12 +117,15 @@ class OllamaClient:
             raise OllamaUnreachableError(f"Ollama API unreachable: {exc}") from exc
         except httpx.HTTPError as exc:
             raise OllamaResponseError(f"Ollama API error: {exc}") from exc
-        payload: dict[str, Any] = response.json()
-        models = payload.get("models") or []
-        return [
-            LocalModel(name=str(item.get("name", "")), size_bytes=int(item.get("size", 0)))
-            for item in models
-        ]
+        try:
+            payload = response.json()
+            models = payload.get("models") or []
+            return [
+                LocalModel(name=str(item.get("name", "")), size_bytes=int(item.get("size", 0)))
+                for item in models
+            ]
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise OllamaResponseError(f"Ollama API returned a malformed model list: {exc}") from exc
 
     def _api_show(self, model: str) -> dict[str, Any] | None:
         """POST /api/show; return the parsed body, or None on any HTTP/transport error."""
@@ -131,8 +134,11 @@ class OllamaClient:
             response.raise_for_status()
         except httpx.HTTPError:
             return None
-        result: dict[str, Any] = response.json()
-        return result
+        try:
+            result = response.json()
+        except ValueError:
+            return None  # malformed JSON body — metadata probing must never crash
+        return result if isinstance(result, dict) else None
 
     def model_context_length(self, model: str) -> int | None:
         """Maximum context length from model metadata, or None when undetectable.

@@ -73,6 +73,36 @@ def test_list_models_tolerates_empty_payload() -> None:
     assert client.list_models() == []
 
 
+def test_list_models_raises_response_error_on_invalid_json() -> None:
+    """A 200 with a non-JSON body raises the typed error, not a raw JSONDecodeError."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"<<not json>>"))
+    client = make_client(transport)
+    with pytest.raises(OllamaResponseError):
+        client.list_models()
+
+
+def test_list_models_raises_response_error_on_wrong_shape() -> None:
+    """A malformed schema (models is a string, not a list) raises the typed error."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"models": "bad"}))
+    client = make_client(transport)
+    with pytest.raises(OllamaResponseError):
+        client.list_models()
+
+
+def test_model_capabilities_empty_on_malformed_show_json() -> None:
+    """Metadata probing never crashes a session: malformed /api/show JSON -> ()."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"not json"))
+    client = make_client(transport)
+    assert client.model_capabilities("gemma4:e4b") == ()
+
+
+def test_model_context_length_none_on_non_dict_show_json() -> None:
+    """A non-dict /api/show body yields None rather than an AttributeError."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=["not", "a", "dict"]))
+    client = make_client(transport)
+    assert client.model_context_length("gemma4:e4b") is None
+
+
 # ---------------------------------------------------------------------------
 # A9: preload tests
 # ---------------------------------------------------------------------------
