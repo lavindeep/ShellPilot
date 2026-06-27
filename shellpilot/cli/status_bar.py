@@ -66,6 +66,8 @@ def status_bar(
     is_cloud: bool,
     ctx_pct: int,
     home: Path | None = None,
+    branch: str | None = None,
+    branch_glyph: str = "⎇",
 ) -> FormattedText:
     """Build the persistent status-bar fragments for the input bottom toolbar.
 
@@ -80,6 +82,15 @@ def status_bar(
         ctx_pct:   Context utilization percent (see ``ctx_percent``); color-
                    coded green → amber → red as it fills.
         home:      Home directory for abbreviation (defaults to ``Path.home()``).
+        branch:    Active git branch, inserted as a ``<glyph> <branch>`` segment
+                   after ``profile`` when non-None. The branch name is user-
+                   controlled (it comes from ``.git/HEAD``), so it is sanitized
+                   like the other fields. ``None`` (the default) yields output
+                   byte-identical to before this parameter existed, so the
+                   existing bottom-toolbar caller is unaffected.
+        branch_glyph: Glyph prefixing the branch segment — ``⎇`` in unicode,
+                   an ASCII fallback (e.g. ``git:``) otherwise. The caller drives
+                   this off the same unicode/ascii decision as the dock border.
 
     Returns:
         A prompt_toolkit ``FormattedText`` (list of ``(style, text)`` fragments).
@@ -108,9 +119,14 @@ def status_bar(
         (f"fg:{model_color}", model_text),
         sep,
         (f"fg:{COLOR_DIM}", profile_text),
-        sep,
-        locality,
     ]
+    if branch is not None:
+        # The branch name reaches the terminal, so strip control/ANSI bytes the
+        # same way the workspace path is sanitized above.
+        left.append(sep)
+        left.append((f"fg:{COLOR_DIM}", f"{branch_glyph} {_sanitize_line(branch)}"))
+    left.append(sep)
+    left.append(locality)
 
     right: list[tuple[str, str]] = [
         (f"fg:{_ctx_color(ctx_pct)}", f"{ctx_pct}%"),
