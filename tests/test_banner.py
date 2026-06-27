@@ -1,5 +1,7 @@
 """Tests for shellpilot.cli.banner — boot-banner renderer."""
 
+import re
+
 from rich.console import Console
 from rich.panel import Panel
 
@@ -8,15 +10,24 @@ from shellpilot.cli.banner import render_banner
 _JET_GLYPHS = ("▀", "▄", "█")
 
 
-def _export(panel: Panel, *, styles: bool = False, width: int = 200) -> str:
-    # Render width must stay above the banner's natural width. The panel is
-    # expand=False, so a generous console width is a no-op on the output, but a
-    # console narrower than the panel's measured width makes Rich shrink columns
-    # and wrap long lines (e.g. the Tips text) — a runner/Rich-version-dependent
-    # fragility, not a banner change. 200 keeps the panel at its natural width.
+def _export(panel: Panel, *, styles: bool = False, width: int = 120) -> str:
     console = Console(record=True, width=width, force_terminal=True)
     console.print(panel)
     return console.export_text(styles=styles)
+
+
+def _right_column_text(text: str) -> str:
+    """Right-column content with wrapping flattened (jet column excluded).
+
+    The banner is a two-column panel. How Rich wraps a long right-column line
+    depends on the terminal width and Rich version, and the left-column jet art
+    interleaves between the wrapped halves — so a contiguous-substring assertion
+    on the raw render is width/version-fragile. Slice each content row to its
+    right column (between the interior divider and the right border) and collapse
+    whitespace, so content checks are independent of where Rich wrapped.
+    """
+    cols = [parts[-2] for line in text.splitlines() if len(parts := line.split("│")) >= 3]
+    return re.sub(r"\s+", " ", " ".join(cols)).strip()
 
 
 def _jet_left_cells(text: str) -> list[str]:
@@ -80,11 +91,14 @@ def test_command_section_present() -> None:
 
 
 def test_tips_section_present() -> None:
-    text = _export(render_banner("m", is_cloud=False, profile="balanced"))
-    assert "Tips" in text
-    assert "for slash commands" in text
-    assert "to run a shell command" in text
-    assert "to confirm a high-risk command" in text
+    # Assert against the flattened right column: the Tips lines are long enough
+    # to wrap at narrow widths / on some Rich versions, and the contiguous-string
+    # check must survive that wrap (the original P1 merge-blocker).
+    rc = _right_column_text(_export(render_banner("m", is_cloud=False, profile="balanced")))
+    assert "Tips" in rc
+    assert "for slash commands" in rc
+    assert "to run a shell command" in rc
+    assert "to confirm a high-risk command" in rc
 
 
 def test_workflow_skills_section_enabled() -> None:
