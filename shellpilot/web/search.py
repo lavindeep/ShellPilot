@@ -165,7 +165,8 @@ def _resolve_url(href: str) -> str:
         qs = parse_qs(parts.query)
         uddg = qs.get("uddg", [])
         if uddg:
-            return uddg[0]
+            target = uddg[0]
+            return target if urlsplit(target).scheme in ("http", "https") else ""
         return ""
 
     # Already an absolute http(s) link

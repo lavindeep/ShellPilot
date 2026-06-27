@@ -1102,6 +1102,23 @@ def test_new_builtin_names_are_reserved(tmp_path: Path) -> None:
     assert collision.error == "reserved builtin name"
 
 
+def test_merge_reserves_builtin_names_even_when_builtin_list_is_empty() -> None:
+    """Reserved builtin names must be enforced even when builtin discovery returned nothing.
+
+    If the builtin list is empty (e.g. due to a discovery failure) and the
+    reserved set is derived only from that list, a user skill named "planning"
+    would pass through valid — which is wrong.  The static trigger map
+    provides a floor so the reserved set is never smaller than the full
+    builtin name set.
+    """
+    user = [_make_skill("planning", root="user")]
+    merged = merge_skills(builtin=[], user=user)
+    user_results = [s for s in merged if s.root == "user"]
+    assert len(user_results) == 1
+    assert user_results[0].valid is False
+    assert "reserved builtin name" in user_results[0].error
+
+
 # ---------------------------------------------------------------------------
 # Fix 1: manifest.json byte-cap and entry-count cap (boot-DoS hardening)
 # ---------------------------------------------------------------------------

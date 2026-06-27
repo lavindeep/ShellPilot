@@ -638,7 +638,7 @@ def merge_skills(builtin: list[Skill], user: list[Skill]) -> list[Skill]:
     invalid with error="reserved builtin name".  Builtin names are harness
     machinery; a local folder must not be able to override them.
     """
-    builtin_names: set[str] = {s.name for s in builtin}
+    builtin_names: set[str] = {s.name for s in builtin} | set(_BUILTIN_TRIGGER_MAP)
     merged_user: list[Skill] = []
     for skill in user:
         if skill.name in builtin_names:
