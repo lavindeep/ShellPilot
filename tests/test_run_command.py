@@ -12,6 +12,7 @@ from shellpilot.policy.approvals import APPROVE, DECLINE, ApprovalReply
 from shellpilot.runtime.executor import ToolExecutor
 from shellpilot.tools.base import ToolContext
 from shellpilot.tools.command import (
+    MAX_READ_CHARS,
     RUN_COMMAND,
     CommandRequest,
     _precheck_run_command,
@@ -590,3 +591,89 @@ def _fake_outcome() -> Any:
     from shellpilot.tools.command import CommandOutcome
 
     return CommandOutcome(exit_code=0, output="", timed_out=False, truncated=False)
+
+
+# ---------------------------------------------------------------------------
+# Newline-less output: per-read chunk bound (#17)
+# ---------------------------------------------------------------------------
+
+
+def test_newline_less_runaway_is_truncated(tmp_path: Path) -> None:
+    """A newline-less 5 MB stream is hard-bounded; truncated flag is set.
+
+    Pre-fix: the text-mode line iterator materialises the entire 5 MB string
+    before the cap is consulted, so captured output == 5 MB and truncated stays
+    False.  Post-fix: readline(MAX_READ_CHARS) caps each read so total capture
+    stays within max_capture_chars + MAX_READ_CHARS.
+    """
+    cap = 200_000
+    outcome = run_command_process(
+        CommandRequest(
+            argv=[
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write('x' * 5_000_000); sys.stdout.flush()",
+            ],
+            cwd=tmp_path,
+            timeout_seconds=30,
+        ),
+        max_capture_chars=cap,
+    )
+    assert outcome.truncated is True, "truncated must be set for newline-less runaway"
+    assert len(outcome.output) <= cap + MAX_READ_CHARS, (
+        f"output length {len(outcome.output)} exceeds cap + MAX_READ_CHARS "
+        f"({cap} + {MAX_READ_CHARS} = {cap + MAX_READ_CHARS})"
+    )
+
+
+def test_newline_less_small_output_untruncated(tmp_path: Path) -> None:
+    """A short newline-less stream (under the cap) is captured fully, not truncated."""
+    outcome = run_command_process(
+        CommandRequest(
+            argv=[
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write('hello'); sys.stdout.flush()",
+            ],
+            cwd=tmp_path,
+            timeout_seconds=30,
+        ),
+        max_capture_chars=200_000,
+    )
+    assert not outcome.truncated
+    assert "hello" in outcome.output
+
+
+def test_multiline_normal_output_untruncated(tmp_path: Path) -> None:
+    """Normal multi-line output well under the cap is captured in full."""
+    outcome = run_command_process(
+        CommandRequest(
+            argv=[sys.executable, "-c", "for i in range(10): print(f'line {i}')"],
+            cwd=tmp_path,
+            timeout_seconds=30,
+        ),
+        max_capture_chars=200_000,
+    )
+    assert not outcome.truncated
+    for i in range(10):
+        assert f"line {i}" in outcome.output
+
+
+def test_newline_rich_over_cap_still_truncates(tmp_path: Path) -> None:
+    """Newline-rich output that exceeds the cap still sets truncated (regression guard)."""
+    cap = 500
+    outcome = run_command_process(
+        CommandRequest(
+            argv=[
+                sys.executable,
+                "-c",
+                "for i in range(200): print('x' * 20)",
+            ],
+            cwd=tmp_path,
+            timeout_seconds=30,
+        ),
+        max_capture_chars=cap,
+    )
+    assert outcome.truncated is True
+    # Each readline stops at the '\n' (line is 21 chars), so total <= cap + 21.
+    assert len(outcome.output) <= cap + 21
