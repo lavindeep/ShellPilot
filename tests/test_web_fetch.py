@@ -605,3 +605,13 @@ def test_redirect_to_private_resolving_name_blocked(
     assert len(calls) == 1, (
         f"Expected exactly 1 transport call, got {len(calls)}: {[str(r.url) for r in calls]}"
     )
+
+
+def test_page_fetcher_ignores_ambient_proxy_env() -> None:
+    """PageFetcher's httpx client must not honour ambient proxy env vars.
+
+    Web fetch traffic cannot be silently redirected through an ambient proxy —
+    trust_env=False keeps the egress audit's destination truthful (§36.3).
+    """
+    fetcher = PageFetcher(transport=_html_transport("<html><body>ok</body></html>"))
+    assert fetcher._client.trust_env is False

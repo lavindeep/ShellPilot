@@ -91,6 +91,7 @@ class OllamaClient:
             base_url=base_url or resolve_base_url(),
             timeout=httpx.Timeout(timeout_seconds, read=generate_timeout_seconds),
             transport=transport,
+            trust_env=False,
         )
         self._reasoning = reasoning
         # Per-model fallback cache: models that rejected the think flag.

@@ -120,3 +120,13 @@ def test_preload_raises_unreachable_on_transport_error() -> None:
     client = make_client(httpx.MockTransport(raise_connect))
     with pytest.raises(OllamaUnreachableError):
         client.preload("gemma4:e4b")
+
+
+def test_client_ignores_ambient_proxy_env() -> None:
+    """The httpx client must not honour ambient proxy env vars.
+
+    Loopback Ollama traffic cannot be redirected by HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
+    in the environment — trust_env=False enforces this invariant (F7 / §36.3).
+    """
+    client = make_client(httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    assert client._client.trust_env is False

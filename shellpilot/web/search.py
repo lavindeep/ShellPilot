@@ -193,6 +193,7 @@ class DuckDuckGoProvider:
             timeout=httpx.Timeout(timeout_seconds),
             headers={"User-Agent": _USER_AGENT},
             transport=transport,
+            trust_env=False,
         )
 
     def search(self, query: str, *, max_results: int = 5) -> list[SearchResult]:
