@@ -61,6 +61,8 @@ class SessionStore:
     @staticmethod
     def find(directory: Path, session_id: str) -> Path | None:
         candidate = directory / f"{session_id}.jsonl"
+        if candidate.parent.resolve() != directory.resolve():
+            return None
         return candidate if candidate.is_file() else None
 
     @staticmethod

@@ -220,6 +220,7 @@ class OllamaClient:
         content_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        done_seen = False
         try:
             with self._client.stream("POST", "/api/chat", json=payload) as response:
                 if response.status_code >= 400:
@@ -234,6 +235,8 @@ class OllamaClient:
                         raise OllamaResponseError(f"invalid stream chunk: {line[:200]}") from exc
                     if chunk.get("error"):
                         raise OllamaResponseError(str(chunk["error"]))
+                    if chunk.get("done"):
+                        done_seen = True
                     message = chunk.get("message") or {}
                     token = message.get("content") or ""
                     if token:
@@ -250,6 +253,8 @@ class OllamaClient:
                         parsed = _decode_tool_call(raw_call)
                         if parsed is not None:
                             tool_calls.append(parsed)
+            if not done_seen:
+                raise OllamaResponseError("stream ended before completion (no done sentinel)")
         except httpx.TransportError as exc:
             raise OllamaUnreachableError(f"Ollama API unreachable: {exc}") from exc
         return Message(
