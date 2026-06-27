@@ -989,11 +989,7 @@ Before the model can edit an existing file, the runtime must have read that file
 The snapshot should include:
 
 - Resolved path.
-- File size.
 - Content hash.
-- Read timestamp.
-- Line count.
-- The exact text or bounded read windows provided to the model.
 
 This prevents blind edits where the model guesses file contents, overwrites concurrent changes, or writes a file it has not inspected.
 

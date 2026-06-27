@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -20,9 +19,6 @@ def content_hash(data: bytes) -> str:
 class FileSnapshot:
     path: Path
     sha256: str
-    size: int
-    line_count: int
-    taken_at: str
 
 
 class SnapshotStore:
@@ -32,13 +28,7 @@ class SnapshotStore:
         self._snapshots: dict[Path, FileSnapshot] = {}
 
     def record(self, path: Path, data: bytes) -> FileSnapshot:
-        snapshot = FileSnapshot(
-            path=path,
-            sha256=content_hash(data),
-            size=len(data),
-            line_count=data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0),
-            taken_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
+        snapshot = FileSnapshot(path=path, sha256=content_hash(data))
         self._snapshots[path] = snapshot
         return snapshot
 
