@@ -242,7 +242,10 @@ class PageFetcher:
                     byte_truncated = False
                     for chunk in response.iter_bytes():
                         remaining = self._max_bytes - bytes_read
-                        if len(chunk) >= remaining:
+                        # Only truncate when a chunk EXCEEDS the remaining budget; a
+                        # chunk that exactly fills it is complete, not truncated. If
+                        # more data follows, the next iteration (remaining == 0) flags it.
+                        if len(chunk) > remaining:
                             chunks.append(chunk[:remaining])
                             byte_truncated = True
                             break

@@ -299,6 +299,18 @@ def test_caps_download_size_and_flags_truncation() -> None:
     assert page.truncated
 
 
+def test_body_exactly_at_byte_limit_not_truncated() -> None:
+    # A body exactly max_bytes long is complete — nothing was cut, so truncated
+    # must be False (the off-by-one was a >= where > is correct).
+    body = b"A" * 100
+    transport = _bytes_transport(body, content_type="text/plain; charset=utf-8")
+    fetcher = PageFetcher(max_bytes=100, transport=transport)
+
+    page = fetcher.fetch("https://example.com/exact.txt")
+    assert page.text == "A" * 100
+    assert not page.truncated
+
+
 def test_rejects_binary_content_type() -> None:
     fetcher = PageFetcher(transport=_bytes_transport(b"\x00\x01\x02"))
     with pytest.raises(WebFetchError, match="content type"):
