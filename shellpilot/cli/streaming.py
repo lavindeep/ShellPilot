@@ -206,21 +206,18 @@ class DiffReveal:
         self._glyphs = glyphs
         self._enabled = enabled and console.is_terminal
 
-    def row_count(self, diff_text: str) -> int:
-        """Number of rendered diff rows — pure, cheap, no Panel built."""
-        rows, _ = _diff_rows(diff_text, self._glyphs)
-        return len(rows)
-
-    def reveal(self, diff_text: str, *, max_rows: int) -> None:
+    def reveal(self, diff_text: str, *, max_rows: int) -> bool:
         """Animate a scrolling reveal of *diff_text*, then return.
 
-        No-op when motion is off, on a non-terminal, or for a diff at or below
-        ``ANIMATE_THRESHOLD`` rows. The caller prints the settled (capped) panel
-        next regardless — capping is a display choice, not part of the motion.
+        Returns True when the diff exceeds ``ANIMATE_THRESHOLD`` rows (a pure
+        row-count predicate, independent of whether animation is enabled), so the
+        caller can decide whether to cap the settled panel to ``WINDOW_ROWS``.
+        Animation itself is a no-op when motion is off or on a non-terminal.
         """
         rows, _ = _diff_rows(diff_text, self._glyphs)
-        if not self._enabled or len(rows) <= self.ANIMATE_THRESHOLD:
-            return
+        long_diff = len(rows) > self.ANIMATE_THRESHOLD
+        if not self._enabled or not long_diff:
+            return long_diff
         total = len(rows)
         ticks = max(1, math.floor(self.TOTAL_DURATION / _REFRESH_SECONDS))
         chunk = max(1, math.ceil(total / ticks))
@@ -245,6 +242,7 @@ class DiffReveal:
             # scrollback and double-rendering under the settled panel.
             live.update("", refresh=False)
             live.stop()
+        return long_diff
 
     def _frame(self, rows: list[Text], revealed: int, max_rows: int) -> Group:
         """A reveal frame: the last ``max_rows`` of the rows revealed so far."""

@@ -286,10 +286,9 @@ class TerminalUI:
         self._console.print()
         if request.diff:
             cap = DiffReveal.WINDOW_ROWS
-            long_diff = self._diff_reveal.row_count(request.diff) > DiffReveal.ANIMATE_THRESHOLD
             # Long diffs scroll-reveal (motion only when enabled+TTY) then settle
             # into a capped window; short diffs print the full panel unchanged.
-            self._diff_reveal.reveal(request.diff, max_rows=cap)
+            long_diff = self._diff_reveal.reveal(request.diff, max_rows=cap)
             self._console.print(
                 Padding(
                     render_diff(request.diff, self._glyphs, max_rows=cap if long_diff else None),
