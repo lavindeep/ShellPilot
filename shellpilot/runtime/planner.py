@@ -200,7 +200,10 @@ class PlanManager:
         self._workspace = workspace
 
     def artifact_path(self, plan: TaskPlan) -> Path:
-        return project_state_dir(self._workspace) / "tasks" / plan.task_id / "PLAN.md"
+        # Pinned to the plan's own workspace (set at create, persisted, restored),
+        # not the mutable self._workspace — so a mid-plan /cwd keeps PLAN.md where
+        # it was written instead of orphaning it under the new boundary (§11.3).
+        return project_state_dir(plan.workspace) / "tasks" / plan.task_id / "PLAN.md"
 
     def _write(self, plan: TaskPlan) -> None:
         plan.updated = _now_iso()
@@ -322,8 +325,13 @@ class PlanManager:
             nxt = next((s for s in self.active.steps if s.status == "pending"), None)
             if nxt is not None:
                 nxt.status = "active"
-            elif all(s.status in ("completed", "skipped") for s in self.active.steps):
-                self.active.status = "completed"
+        # Finalize after ANY status change: a skipped final step must complete the
+        # plan too, otherwise it stays active forever (keeps injecting, the
+        # end-of-plan summary never fires, the session pointer is never cleaned).
+        if self.active.steps and all(
+            s.status in ("completed", "skipped") for s in self.active.steps
+        ):
+            self.active.status = "completed"
         self._write(self.active)
         return ""
 

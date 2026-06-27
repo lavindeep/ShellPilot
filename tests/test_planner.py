@@ -75,6 +75,118 @@ def test_step_completion_advances_and_finishes(tmp_path: Path) -> None:
     assert "- [x] Inspect current code" in text
 
 
+def test_skipped_final_step_completes_plan(tmp_path: Path) -> None:
+    """A skipped final step must finalize the plan, not leave it active forever."""
+    manager = PlanManager(tmp_path, "balanced")
+    manager.create(
+        goal="Two-step task",
+        user_intent="u",
+        steps=["Do the work", "Optional cleanup"],
+        assumptions=[],
+        verification=[],
+    )
+    manager.approve()
+    assert manager.active is not None
+
+    assert manager.update_step(1, "completed") == ""
+    assert manager.update_step(2, "skipped") == ""
+
+    assert manager.active.status == "completed"
+
+
+def test_middle_skipped_last_completed_completes_plan(tmp_path: Path) -> None:
+    """Skipping a middle step then completing the last finalizes the plan."""
+    manager = make_plan(tmp_path)
+    manager.approve()
+    assert manager.active is not None
+
+    manager.update_step(1, "completed")
+    manager.update_step(2, "skipped")
+    assert manager.active.status == "active"  # step 3 still pending
+    manager.update_step(3, "completed")
+
+    assert manager.active.status == "completed"
+
+
+def test_all_completed_plan_still_completes(tmp_path: Path) -> None:
+    """No-regression: a normal all-completed plan still finishes."""
+    manager = make_plan(tmp_path)
+    manager.approve()
+    assert manager.active is not None
+
+    manager.update_step(1, "completed")
+    manager.update_step(2, "completed")
+    manager.update_step(3, "completed")
+
+    assert manager.active.status == "completed"
+
+
+def test_completion_promotes_next_pending_step(tmp_path: Path) -> None:
+    """No-regression: completing a step still promotes the first pending step to active."""
+    manager = make_plan(tmp_path)
+    manager.approve()
+    assert manager.active is not None
+
+    manager.update_step(1, "completed")
+    assert manager.active.steps[1].status == "active"
+    assert manager.active.status == "active"
+
+
+def test_skip_does_not_promote_or_complete_with_pending_left(tmp_path: Path) -> None:
+    """No-regression: a skip neither advances the next step nor completes a plan
+    that still has a pending step."""
+    manager = make_plan(tmp_path)
+    manager.approve()
+    assert manager.active is not None
+
+    # Skip the active first step; steps 2 and 3 remain pending.
+    manager.update_step(1, "skipped")
+
+    # Skip alone does not promote the next pending step (only completion does).
+    assert manager.active.steps[1].status == "pending"
+    # A pending step remains, so the plan is NOT marked completed.
+    assert manager.active.status == "active"
+
+
+def test_artifact_path_pinned_to_plan_workspace(tmp_path: Path) -> None:
+    """An active plan keeps its artifact path even after the workspace boundary moves."""
+    workspace_a = tmp_path / "ws_a"
+    workspace_a.mkdir()
+    workspace_b = tmp_path / "ws_b"
+    workspace_b.mkdir()
+
+    manager = PlanManager(workspace_a, "balanced")
+    plan = manager.create(
+        goal="g", user_intent="u", steps=["A", "B"], assumptions=[], verification=[]
+    )
+    before = manager.artifact_path(plan)
+
+    manager.set_workspace(workspace_b)
+
+    # The active plan's artifact path is pinned to its creation workspace.
+    assert manager.artifact_path(plan) == before
+    assert before.exists()
+
+
+def test_new_task_after_set_workspace_uses_new_boundary(tmp_path: Path) -> None:
+    """set_workspace governs NEW tasks: a plan created after the move lands under ws_b."""
+    workspace_a = tmp_path / "ws_a"
+    workspace_a.mkdir()
+    workspace_b = tmp_path / "ws_b"
+    workspace_b.mkdir()
+
+    manager = PlanManager(workspace_a, "balanced")
+    manager.set_workspace(workspace_b)
+    plan_b = manager.create(
+        goal="g2", user_intent="u", steps=["X"], assumptions=[], verification=[]
+    )
+
+    path_b = manager.artifact_path(plan_b)
+    assert str(workspace_b) in str(path_b)
+    assert str(workspace_a) not in str(path_b)
+    assert path_b.exists()
+
+
 def test_invalid_step_index_reports(tmp_path: Path) -> None:
     manager = make_plan(tmp_path)
     error = manager.update_step(9, "completed")

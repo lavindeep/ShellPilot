@@ -788,6 +788,10 @@ Recommended workflow:
    next step in the same turn. The final completion result instructs the model to summarize
    the outcome instead.
 
+A plan finalizes to `completed` once every step is `completed` or `skipped`. This is
+re-checked after **any** step status change, so a skipped final step finishes the plan just
+as a completed one does; only a *completion* advances the next pending step to active.
+
 Completing a step is deterministically guarded: if the step's last side-effecting action
 failed or was denied and nothing has succeeded since, `update_plan(completed)` returns a
 corrective failure telling the model to apply the change successfully or record a blocker
