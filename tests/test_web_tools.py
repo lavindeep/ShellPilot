@@ -176,6 +176,48 @@ def test_web_search_empty_query_returns_failed_result(tmp_path: Path) -> None:
     assert provider.calls == []  # provider never called
 
 
+def test_web_search_non_numeric_max_results_falls_back_to_default(tmp_path: Path) -> None:
+    """A non-numeric max_results value must not raise; the provider is called with 5."""
+    provider = _MockSearchProvider([])
+    specs = make_web_tools(provider, _empty_fetcher())
+    search_spec = next(s for s in specs if s.name == "web_search")
+
+    ctx = ToolContext(workspace=tmp_path, max_result_tokens=2000)
+    search_spec.handler(ctx, {"query": "test", "max_results": "abc"})
+
+    assert len(provider.calls) == 1
+    _, received_max = provider.calls[0]
+    assert received_max == 5
+
+
+def test_web_search_excessive_max_results_is_clamped(tmp_path: Path) -> None:
+    """max_results values above 10 must be clamped to 10."""
+    provider = _MockSearchProvider([])
+    specs = make_web_tools(provider, _empty_fetcher())
+    search_spec = next(s for s in specs if s.name == "web_search")
+
+    ctx = ToolContext(workspace=tmp_path, max_result_tokens=2000)
+    search_spec.handler(ctx, {"query": "test", "max_results": 999})
+
+    assert len(provider.calls) == 1
+    _, received_max = provider.calls[0]
+    assert received_max == 10
+
+
+def test_web_search_zero_max_results_is_clamped_to_one(tmp_path: Path) -> None:
+    """max_results of 0 or negative must be clamped to 1."""
+    provider = _MockSearchProvider([])
+    specs = make_web_tools(provider, _empty_fetcher())
+    search_spec = next(s for s in specs if s.name == "web_search")
+
+    ctx = ToolContext(workspace=tmp_path, max_result_tokens=2000)
+    search_spec.handler(ctx, {"query": "test", "max_results": -3})
+
+    assert len(provider.calls) == 1
+    _, received_max = provider.calls[0]
+    assert received_max == 1
+
+
 # ---------------------------------------------------------------------------
 # web_fetch: result formatting
 # ---------------------------------------------------------------------------

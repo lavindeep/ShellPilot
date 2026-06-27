@@ -26,6 +26,9 @@ from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
 from shellpilot.tools.filesystem import ALL_PROFILES
 
 DEFAULT_TIMEOUT_SECONDS = 600
+# Maximum chars read in a single readline() call so a newline-less stream cannot
+# materialise an unbounded string before the total-capture cap is consulted.
+MAX_READ_CHARS = 65_536
 # Exit codes that mean "ran fine, found nothing" rather than failure (section 24.3).
 EXPECTED_NONZERO: dict[str, frozenset[int]] = {
     "grep": frozenset({1}),
@@ -133,7 +136,10 @@ def run_command_process(
     def reader() -> None:
         nonlocal captured_chars, truncated
         assert process.stdout is not None
-        for line in process.stdout:
+        while True:
+            line = process.stdout.readline(MAX_READ_CHARS)
+            if not line:
+                break
             if emit_line is not None:
                 emit_line(line.rstrip("\n"))
             if captured_chars < max_capture_chars:

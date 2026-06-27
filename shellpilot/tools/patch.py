@@ -19,6 +19,7 @@ from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.persistence.json_store import atomic_write_text
+from shellpilot.policy.command_policy import sensitive_path_reason
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.tools.base import (
     ToolContext,
@@ -32,6 +33,28 @@ from shellpilot.tools.filesystem import ALL_PROFILES, is_binary
 OPERATIONS = ("replace_exact", "insert_before", "insert_after", "delete_exact")
 WRITE_MODES = ("create", "overwrite", "append")
 MAX_PREVIEW_LINES = 60
+# Stand-in shown instead of a real diff when the target is an in-workspace
+# sensitive file, so existing secret contents never render in the approval
+# preview or the diff returned to the model (design section 15).
+SENSITIVE_DIFF_PLACEHOLDER = "[sensitive file contents hidden]\n"
+
+
+def _hides_sensitive_contents(context: ToolContext, path: Path) -> bool:
+    """True when *path* is an in-workspace sensitive file whose existing contents
+    must not be disclosed in a pre-approval diff (design section 15).
+
+    ``path`` is the resolved, in-workspace target (out-of-workspace paths are
+    already rejected by ``resolve_in_workspace``), so a workspace-relative form
+    always exists. ``allow_sensitive_reads == "always"`` opts back into showing
+    the real before-content, mirroring read_file's sensitive-read gate.
+    """
+    if context.allow_sensitive_reads == "always":
+        return False
+    try:
+        relative = path.relative_to(context.workspace.resolve())
+    except ValueError:
+        return False
+    return sensitive_path_reason(relative) is not None
 
 
 def apply_edit(text: str, operation: str, old: str, new: str) -> tuple[str | None, str]:
@@ -141,7 +164,11 @@ def _patch_file(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
     assert context.snapshots is not None
     context.snapshots.record(path, new_text.encode("utf-8"))
     display = workspace_display(context.workspace, str(arguments["path"]))
-    diff = unified_diff(display, text, new_text)
+    diff = (
+        SENSITIVE_DIFF_PLACEHOLDER
+        if _hides_sensitive_contents(context, path)
+        else unified_diff(display, text, new_text)
+    )
     return ToolResult(
         success=True,
         summary=f"patched {arguments['path']} ({arguments['operation']})",
@@ -164,6 +191,8 @@ def _patch_preview(context: ToolContext, arguments: dict[str, Any]) -> str:
     )
     if new_text is None:
         return f"(cannot preview: {edit_error})"
+    if _hides_sensitive_contents(context, path):
+        return SENSITIVE_DIFF_PLACEHOLDER
     display = workspace_display(context.workspace, str(arguments["path"]))
     return unified_diff(display, text, new_text)
 
@@ -212,7 +241,11 @@ def _write_file(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
     _write_preserving(path, new_text)
     if context.snapshots is not None:
         context.snapshots.record(path, new_text.encode("utf-8"))
-    diff = unified_diff(workspace_display(context.workspace, raw_path), before, new_text)
+    diff = (
+        SENSITIVE_DIFF_PLACEHOLDER
+        if mode != "create" and _hides_sensitive_contents(context, path)
+        else unified_diff(workspace_display(context.workspace, raw_path), before, new_text)
+    )
     return ToolResult(
         success=True,
         summary=f"wrote {raw_path} ({mode}, {len(new_text)} chars)",
@@ -237,6 +270,8 @@ def _write_preview(context: ToolContext, arguments: dict[str, Any]) -> str:
     else:
         before = path.read_bytes().decode("utf-8", errors="replace")
         after = before + content if mode == "append" else content
+        if _hides_sensitive_contents(context, path):
+            return SENSITIVE_DIFF_PLACEHOLDER
     return unified_diff(workspace_display(context.workspace, raw_path), before, after)
 
 

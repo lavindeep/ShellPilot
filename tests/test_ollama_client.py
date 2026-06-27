@@ -1,14 +1,17 @@
 """Tests for the Ollama HTTP client (no live Ollama; httpx.MockTransport only)."""
 
 import json
+from typing import Any
 
 import httpx
 import pytest
 
+from shellpilot.llm.messages import Message
 from shellpilot.llm.ollama import (
     DEFAULT_BASE_URL,
     LocalModel,
     OllamaClient,
+    OllamaResponseError,
     OllamaUnreachableError,
     resolve_base_url,
 )
@@ -120,3 +123,66 @@ def test_preload_raises_unreachable_on_transport_error() -> None:
     client = make_client(httpx.MockTransport(raise_connect))
     with pytest.raises(OllamaUnreachableError):
         client.preload("gemma4:e4b")
+
+
+def test_client_ignores_ambient_proxy_env() -> None:
+    """The httpx client must not honour ambient proxy env vars.
+
+    Loopback Ollama traffic cannot be redirected by HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
+    in the environment — trust_env=False enforces this invariant (F7 / §36.10).
+    """
+    client = make_client(httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    assert client._client.trust_env is False
+
+
+# ---------------------------------------------------------------------------
+# Fix #4: truncated stream (no done sentinel) is rejected
+# ---------------------------------------------------------------------------
+
+
+def _streaming_transport(chunks: list[dict[str, Any]]) -> httpx.MockTransport:
+    """MockTransport that responds to /api/chat with the given NDJSON lines."""
+    body = "\n".join(json.dumps(c) for c in chunks) + "\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/chat":
+            return httpx.Response(200, content=body.encode())
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def test_truncated_stream_raises_response_error() -> None:
+    """A stream that closes without a done:true chunk raises OllamaResponseError."""
+    chunks: list[dict[str, Any]] = [
+        {"message": {"role": "assistant", "content": "hello"}, "done": False},
+        {"message": {"role": "assistant", "content": " world"}, "done": False},
+        # NOTE: no {"done": true} chunk — simulates a truncated/OOM-killed stream
+    ]
+    client = make_client(_streaming_transport(chunks))
+    with pytest.raises(OllamaResponseError, match="done"):
+        client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
+
+
+def test_complete_stream_returns_assembled_message() -> None:
+    """A stream ending with done:true is accepted and returns the full message."""
+    chunks: list[dict[str, Any]] = [
+        {"message": {"role": "assistant", "content": "hello"}, "done": False},
+        {"message": {"role": "assistant", "content": " world"}, "done": False},
+        {"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop"},
+    ]
+    client = make_client(_streaming_transport(chunks))
+    msg = client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
+    assert msg.content == "hello world"
+    assert msg.role == "assistant"
+
+
+def test_done_reason_length_stream_is_accepted() -> None:
+    """A stream truncated by context length (done_reason='length') still carries done:true."""
+    chunks: list[dict[str, Any]] = [
+        {"message": {"role": "assistant", "content": "partial answer"}, "done": False},
+        {"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "length"},
+    ]
+    client = make_client(_streaming_transport(chunks))
+    msg = client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
+    assert msg.content == "partial answer"

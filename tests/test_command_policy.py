@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from shellpilot.policy.command_policy import classify_command, sensitive_path_reason
+from shellpilot.policy.command_policy import (
+    _path_arg_outside_workspace,
+    classify_command,
+    sensitive_path_reason,
+)
 from shellpilot.policy.risk import RiskLevel
 
 WS = Path("/tmp/fake-workspace")
@@ -315,6 +319,94 @@ def test_mv_outside_behavior_unchanged_after_rename() -> None:
 
 
 # -- end reader-command boundary tests ----------------------------------------
+
+
+# -- git mutating verbs under read-only LOW (#1) ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        # --output is a global diff-formatting option honoured by every
+        # diff-emitting verb (diff/show/log/stash show), not just diff/show, so
+        # every one is an out-of-workspace write/truncate primitive under LOW.
+        (["git", "diff", "--output=/tmp/x"], RiskLevel.HIGH),
+        (["git", "show", "--output=/tmp/x"], RiskLevel.HIGH),
+        (["git", "diff", "--output", "/tmp/x"], RiskLevel.HIGH),
+        (["git", "diff", "-O/tmp/x"], RiskLevel.HIGH),
+        (["git", "log", "--output=/tmp/x"], RiskLevel.HIGH),
+        (["git", "log", "-p", "--output=/tmp/x"], RiskLevel.HIGH),
+        (["git", "log", "--output", "/tmp/x"], RiskLevel.HIGH),
+        (["git", "log", "-O/tmp/x"], RiskLevel.HIGH),
+        (["git", "stash", "show", "-p", "--output=/tmp/x"], RiskLevel.HIGH),
+        # In-workspace --output is still a write -> MEDIUM (ask), never LOW/auto.
+        (["git", "diff", "--output=out.diff"], RiskLevel.MEDIUM),
+        (["git", "log", "--output=out.diff"], RiskLevel.MEDIUM),
+        # branch/remote with a non-flag positional mutate state -> MEDIUM.
+        (["git", "branch", "newtopic"], RiskLevel.MEDIUM),
+        (["git", "remote", "add", "o", "u"], RiskLevel.MEDIUM),
+        (["git", "remote", "set-url", "o", "u"], RiskLevel.MEDIUM),
+    ],
+    ids=lambda case: str(case),
+)
+def test_git_mutating_verbs_escalate(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+def test_git_output_check_does_not_downgrade_high_verb() -> None:
+    # An already-HIGH determination (branch delete) must win over the
+    # output-path check even when --output points inside the workspace.
+    result = classify_command(["git", "branch", "-D", "topic", "--output=in_ws.txt"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH, result.reasons
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # No-regression: bare/listing read-only forms must stay LOW (auto-run).
+        ["git", "branch"],
+        ["git", "branch", "--list"],
+        ["git", "branch", "--list", "topic"],
+        ["git", "branch", "-r"],
+        ["git", "remote"],
+        ["git", "remote", "-v"],
+        ["git", "diff", "--stat"],
+        ["git", "log"],
+        ["git", "log", "-p"],
+        ["git", "log", "--stat"],
+        ["git", "stash", "show"],
+        ["git", "stash", "list"],
+    ],
+    ids=lambda case: str(case),
+)
+def test_git_readonly_verbs_stay_low(argv: list[str]) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == RiskLevel.LOW, f"{argv}: {result.reasons}"
+
+
+# -- option-encoded paths evade the workspace boundary (#14) -------------------
+
+
+def test_grep_option_encoded_outside_path_is_high() -> None:
+    result = classify_command(["grep", "--file=/etc/passwd", "."], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
+
+
+def test_patch_option_encoded_outside_path_detected() -> None:
+    assert _path_arg_outside_workspace(["patch", "--output=/etc/x"], WS) is not None
+
+
+def test_grep_option_encoded_inside_path_stays_low() -> None:
+    result = classify_command(["grep", "--file=./patterns.txt", "."], workspace=WS)
+    assert result.risk == RiskLevel.LOW
+
+
+def test_grep_non_path_option_value_stays_low() -> None:
+    # --color=auto / --include=*.py are not path-like; no false-positive escalation.
+    result = classify_command(["grep", "--color=auto", "TODO", "."], workspace=WS)
+    assert result.risk == RiskLevel.LOW
 
 
 def test_reasons_are_present_for_risky_commands() -> None:

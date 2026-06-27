@@ -182,6 +182,7 @@ class PageFetcher:
             timeout=httpx.Timeout(timeout_seconds, read=read_timeout_seconds),
             follow_redirects=False,
             transport=transport,
+            trust_env=False,
         )
         self._max_bytes = max_bytes
         self._max_chars = max_chars

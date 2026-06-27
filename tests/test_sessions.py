@@ -508,3 +508,38 @@ def test_recent_newest_first_and_capped(tmp_path: Path) -> None:
         os.utime(s.path, (1000.0 + i, 1000.0 + i))
     recent = SessionStore.recent(sessions, limit=3)
     assert [label for label, _ in recent] == ["msg 4", "msg 3", "msg 2"]
+
+
+# ---------------------------------------------------------------------------
+# Fix #6: SessionStore.find read-side path traversal guard
+# ---------------------------------------------------------------------------
+
+
+def test_find_rejects_traversal_id(tmp_path: Path) -> None:
+    """find() returns None for a session_id that escapes the sessions directory via '..'."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True)
+    # Plant a sibling .jsonl one level up that would be reachable via traversal.
+    sibling = tmp_path / "passwd.jsonl"
+    sibling.write_text('{"type":"meta","model":"evil"}\n', encoding="utf-8")
+
+    assert SessionStore.find(sessions_dir, "../passwd") is None
+
+
+def test_find_rejects_absolute_id(tmp_path: Path) -> None:
+    """find() returns None for an absolute-path session_id (pathlib replaces the base)."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True)
+    target = tmp_path / "target.jsonl"
+    target.write_text('{"type":"meta"}\n', encoding="utf-8")
+
+    # str(target.with_suffix("")) is an absolute path; / with it replaces sessions_dir.
+    assert SessionStore.find(sessions_dir, str(target.with_suffix(""))) is None
+
+
+def test_find_normal_id_still_works(tmp_path: Path) -> None:
+    """find() still returns the path for a valid session id inside the sessions dir."""
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="hello"))
+    found = SessionStore.find(store.path.parent, "20260611-100000-ab12")
+    assert found is not None and found == store.path

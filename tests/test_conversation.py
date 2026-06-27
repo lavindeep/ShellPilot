@@ -472,6 +472,51 @@ def test_image_token_estimate_counted(tmp_path: Path) -> None:
     assert estimate_with_image >= estimate_no_image + IMAGE_TOKEN_ESTIMATE
 
 
+def test_set_workspace_rebuilds_project_memory(tmp_path: Path) -> None:
+    """Changing workspace (/cwd) rebuilds the project memory store for the new
+    path, so the previous workspace's facts stop injecting (design section 16);
+    the shared global store is preserved."""
+    from shellpilot.memory.store import MemoryStore, MemoryStores, project_id_for
+    from shellpilot.persistence.paths import project_state_dir
+
+    workspace_a = tmp_path / "a"
+    workspace_b = tmp_path / "b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    global_store = MemoryStore(tmp_path / "global-memory.json")
+    stores = MemoryStores(
+        global_store=global_store,
+        project_store=MemoryStore(
+            project_state_dir(workspace_a) / "memory.json",
+            project_id=project_id_for(workspace_a),
+        ),
+    )
+    stores.project_store.add_fact(kind="config", value="postgres-a", label="db", source="user")
+
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=workspace_a,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        memory=stores,
+    )
+    assert "postgres-a" in runtime.context_snapshot().system_text()
+
+    runtime.set_workspace(workspace_b)
+
+    rendered_b = runtime.context_snapshot().system_text()
+    assert "postgres-a" not in rendered_b  # A's fact no longer injected into B
+    assert runtime.memory is not None
+    assert runtime.memory.global_store is global_store  # shared global untouched
+
+    runtime.memory.project_store.add_fact(
+        kind="config", value="postgres-b", label="db", source="user"
+    )
+    assert "postgres-b" in runtime.context_snapshot().system_text()
+
+
 def test_update_plan_after_clear_reports_no_active_plan(tmp_path: Path) -> None:
     """After clear, the update_plan tool handler returns 'no active plan'."""
     fake = FakeLLM(

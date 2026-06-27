@@ -41,7 +41,11 @@ def make_web_tools(provider: SearchProvider, fetcher: PageFetcher) -> list[ToolS
                 summary="query is required",
                 content="Provide a non-empty query string.",
             )
-        max_results = int(arguments.get("max_results", 5))
+        try:
+            max_results = int(arguments.get("max_results", 5))
+        except (TypeError, ValueError):
+            max_results = 5
+        max_results = max(1, min(max_results, 10))
         try:
             results = provider.search(query, max_results=max_results)
         except WebSearchError as exc:

@@ -16,8 +16,9 @@ from shellpilot.llm.messages import ImageRef, Message, tool_result, user
 from shellpilot.llm.ollama import encode_tool, is_loopback_url
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.memory.redaction import redact_secrets, redact_structure
-from shellpilot.memory.store import MemoryStores
+from shellpilot.memory.store import MemoryStore, MemoryStores, project_id_for
 from shellpilot.persistence.audit_store import AuditLogger
+from shellpilot.persistence.paths import project_state_dir
 from shellpilot.persistence.sessions import SessionStore
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.risk import SideEffect
@@ -263,6 +264,19 @@ class ConversationRuntime:
     def set_workspace(self, workspace: Path) -> None:
         self._workspace = workspace
         self.plan_manager.set_workspace(workspace)
+        if self._memory is not None:
+            # Project memory is path-scoped (workspace/.shellpilot/memory.json),
+            # so a /cwd change must rebuild the project store for the new path —
+            # otherwise the previous workspace's facts keep injecting (and, under
+            # cloud, egressing). The shared global store is preserved as-is.
+            self._memory = dataclasses.replace(
+                self._memory,
+                project_store=MemoryStore(
+                    project_state_dir(workspace) / "memory.json",
+                    project_id=project_id_for(workspace),
+                    redact=self._settings.privacy.redact_secrets,
+                ),
+            )
         if self._audit is not None:
             # Update the logger's workspace field BEFORE writing the event so
             # the change record itself (and all subsequent events) carry the new
@@ -476,7 +490,10 @@ class ConversationRuntime:
             return ""
 
         if not self._settings.runtime.auto_compact and (
-            self.estimated_prompt_tokens() + estimate_tokens(text) > self.budget.hard_limit_tokens
+            self.estimated_prompt_tokens()
+            + estimate_tokens(text)
+            + IMAGE_TOKEN_ESTIMATE * len(images)
+            > self.budget.hard_limit_tokens
         ):
             self._ui.show_status(
                 "Context is over the hard limit and automatic compaction is off. "
