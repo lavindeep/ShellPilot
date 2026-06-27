@@ -389,6 +389,7 @@ def test_user_turn_audit_counts_images(tmp_path: Path) -> None:
         path=str(tmp_path / "shot.png"),
         sha256=hashlib.sha256(TINY_PNG).hexdigest(),
         data_b64=base64.b64encode(TINY_PNG).decode(),
+        size_bytes=len(TINY_PNG),
     )
     fake = FakeLLM(script=[answer("with image"), answer("without image")])
     ui = FakeUI()
@@ -423,6 +424,7 @@ def test_run_turn_passes_images_into_user_message(tmp_path: Path) -> None:
         path=str(tmp_path / "sample.png"),
         sha256=hashlib.sha256(TINY_PNG).hexdigest(),
         data_b64=data_b64,
+        size_bytes=len(TINY_PNG),
     )
 
     fake = FakeLLM(script=[answer("I see a white pixel.")])
@@ -457,6 +459,7 @@ def test_image_token_estimate_counted(tmp_path: Path) -> None:
         path="/tmp/img.png",
         sha256=hashlib.sha256(TINY_PNG).hexdigest(),
         data_b64=data_b64,
+        size_bytes=len(TINY_PNG),
     )
 
     fake_no_image = FakeLLM(script=[answer("plain reply")])

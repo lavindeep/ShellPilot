@@ -39,7 +39,7 @@ def load_image(path: Path) -> ImageRef:
         )
     sha256 = hashlib.sha256(raw).hexdigest()
     data_b64 = base64.b64encode(raw).decode()
-    return ImageRef(path=str(path), sha256=sha256, data_b64=data_b64)
+    return ImageRef(path=str(path), sha256=sha256, data_b64=data_b64, size_bytes=len(raw))
 
 
 @dataclass

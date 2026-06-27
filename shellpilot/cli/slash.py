@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import base64
+import dataclasses
+import json
 import os
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from rich.console import Console
 from rich.table import Table
@@ -283,8 +285,6 @@ class SlashDispatcher:
         endpoint, or 'cloud' for a -cloud model proxied through loopback);
         local in dim otherwise (design section 15.2).
         """
-        from urllib.parse import urlsplit
-
         from shellpilot.llm.ollama import is_loopback_url
 
         base_url = self._loaded.settings.model.base_url
@@ -338,7 +338,6 @@ class SlashDispatcher:
             # consent BEFORE set_model/_preload touch it. On reject: no switch,
             # no preload, no egress.
             from shellpilot.cli.terminal import _resolve_cloud_consent
-            from shellpilot.config.model import is_egressing
 
             base_url = self._loaded.settings.model.base_url
             egressing = is_egressing(name, base_url)
@@ -355,8 +354,6 @@ class SlashDispatcher:
             if self._preload is not None:
                 self._preload(name)
             if egressing and self._runtime.audit is not None:
-                from urllib.parse import urlsplit
-
                 self._runtime.audit.write(
                     "cloud_consent_granted",
                     model=name,
@@ -604,8 +601,6 @@ class SlashDispatcher:
             self._console.print(render_diff(diff, self._glyphs))
 
     def _profile(self, args: list[str]) -> None:
-        import dataclasses
-
         from shellpilot.config.model import VALID_PROFILES
 
         settings = self._runtime.settings
@@ -722,8 +717,6 @@ class SlashDispatcher:
             self._runtime.audit.write("memory_update", summary=summary)
 
     def _memory_compact(self, stores: object) -> None:
-        import json
-
         from shellpilot.llm.messages import Message
         from shellpilot.memory.store import MemoryStores, Preference
         from shellpilot.prompts.memory import MEMORY_COMPACT_PROMPT
@@ -949,7 +942,7 @@ class SlashDispatcher:
 
         queue.stage(candidate)
         # Use the already-loaded ref so a file vanishing between calls can't crash.
-        size = len(base64.b64decode(ref.data_b64))
+        size = ref.size_bytes
         human_size = (
             f"{size / 1024 / 1024:.1f} MB" if size >= 1024 * 1024 else f"{size / 1024:.1f} KB"
         )
@@ -959,8 +952,6 @@ class SlashDispatcher:
         )
 
     def _compact(self, args: list[str]) -> None:
-        import dataclasses
-
         if args and args[0] == "status":
             status = self._runtime.status()
             budget = status.budget

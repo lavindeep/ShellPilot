@@ -152,7 +152,7 @@ def test_session_markdown_renders_transcript(tmp_path: Path) -> None:
 def _make_image_ref(data: bytes, path: str = "/tmp/shot.png") -> ImageRef:
     sha256 = hashlib.sha256(data).hexdigest()
     data_b64 = base64.b64encode(data).decode()
-    return ImageRef(path=path, sha256=sha256, data_b64=data_b64)
+    return ImageRef(path=path, sha256=sha256, data_b64=data_b64, size_bytes=len(data))
 
 
 def test_record_message_stores_image_refs_not_bytes(tmp_path: Path) -> None:

@@ -75,11 +75,7 @@ def subprocess_env() -> dict[str, str]:
     prompts.  PATH and all other variables pass through untouched so that
     activated-venv workflows continue to work.
     """
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if not any(k.startswith(prefix) for prefix in _STRIP_PREFIXES)
-    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith(_STRIP_PREFIXES)}
     env.update(_NON_INTERACTIVE)
     return env
 
