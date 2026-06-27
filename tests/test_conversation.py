@@ -1194,3 +1194,28 @@ def test_build_system_prompt_egressing_flag() -> None:
     assert "no independent network access" not in remote
     assert "entirely on this machine" not in remote
     assert "leaves this device" in remote
+
+
+# ---------------------------------------------------------------------------
+# output_tokens accumulation across multi-call tool loop (thinking-stream plumbing)
+# ---------------------------------------------------------------------------
+
+
+def test_turn_stats_output_tokens_accumulated(tmp_path: Path) -> None:
+    """TurnStats.output_tokens is the sum of output_tokens across all chat() calls in a turn.
+
+    Uses two empty-content replies to trigger the empty-reply nudge path (the
+    only multi-call-per-turn route that needs no tool registry or approvals).
+    """
+    import dataclasses
+
+    from tests.fakes.fake_llm import answer
+
+    first = dataclasses.replace(answer(""), output_tokens=100)  # empty → triggers nudge
+    second = dataclasses.replace(answer("done"), output_tokens=50)  # real answer
+    fake = FakeLLM(script=[first, second])
+    ui = FakeUI()
+    runtime = make_runtime(fake, ui, tmp_path)
+    runtime.run_turn("do something")
+    assert len(ui.turn_stats) == 1
+    assert ui.turn_stats[0].output_tokens == 150

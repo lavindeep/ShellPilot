@@ -2405,7 +2405,7 @@ Most rows here concern the v2 memory system. The prompt-injection and secret row
 | Model emits malformed tool call | Reject tool call, show compact error, and allow one retry. |
 | Model loops tool calls | Enforce turn/tool budgets and replan or stop. |
 | Reasoning mode unavailable | Per-model fallback: add the model to `_no_think`; retry once without `think`; other models keep sending `think`. `_reasoning` (the config-level flag) is never mutated. |
-| Reasoning-only turn (think text, empty content) | The streamed `thinking` field is now accumulated and captured on the reply message (it is never echoed back to the API and never rendered), so a turn that reasons and then emits nothing is observable in the audit log rather than silently empty; the runtime nudges such a reply once the model has already run a tool (section 10.4). |
+| Reasoning-only turn (think text, empty content) | The streamed `thinking` field is accumulated and captured on the reply message. It is never echoed back to the API; it may be surfaced live to the UI when a consumer is wired via `on_thinking` (the default `TerminalUI` is a no-op). A turn that reasons then emits nothing is observable in the audit log; the runtime nudges such a reply once the model has already run a tool (section 10.4). |
 | Stream ends without `done` sentinel | Rejected as incomplete: `_stream_chat` raises `OllamaResponseError` after the `with` block closes without seeing a chunk whose `done` field is truthy. Legitimate early stops (`done_reason = "length"` or `"load"`) still carry the sentinel and are accepted normally. |
 
 ### 24.7 Privacy And Log Edge Cases

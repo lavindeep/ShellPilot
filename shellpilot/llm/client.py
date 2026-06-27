@@ -23,6 +23,7 @@ class LLMClient(Protocol):
         num_ctx: int,
         options: dict[str, Any] | None = None,
         on_token: TokenCallback | None = None,
+        on_thinking: TokenCallback | None = None,
     ) -> Message: ...
 
     def health(self) -> bool: ...

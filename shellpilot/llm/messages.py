@@ -44,9 +44,12 @@ class Message:
     tool_calls: tuple[ToolCall, ...] = ()
     images: tuple[ImageRef, ...] = ()
     # Streamed reasoning text from a think-capable model, captured for audit
-    # observability only. Never echoed back to the API (see ollama._encode_message)
-    # and never rendered; kept default-empty so existing constructions stand.
+    # observability only. Never echoed back to the API (see ollama._encode_message);
+    # may be surfaced live to the UI when a consumer is wired (see on_thinking).
+    # Kept default-empty so existing constructions stand.
     thinking: str = ""
+    # Total output tokens for this call, from Ollama's `eval_count`; 0 if absent.
+    output_tokens: int = 0
 
 
 @dataclass(frozen=True)

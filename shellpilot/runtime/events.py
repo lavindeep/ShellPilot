@@ -18,12 +18,15 @@ class TurnStats:
     context_tokens: int
     context_pct: int
     warn: bool
+    output_tokens: int
 
 
 class RuntimeUI(Protocol):
     """What the conversation runtime needs from a user interface."""
 
     def stream_token(self, token: str) -> None: ...
+
+    def stream_thinking(self, text: str) -> None: ...
 
     def begin_response(self) -> None:
         """The runtime is about to call the model (start a waiting indicator)."""
