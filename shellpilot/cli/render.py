@@ -289,10 +289,6 @@ def badge(level: str, *, plain: bool = False) -> Text:
     return Text(f" {label} ", style=_BADGE_STYLES.get(level.lower(), "sp.badge.medium"))
 
 
-def approval_head(request: ApprovalRequest, glyphs: Glyphs) -> Text:
-    return Text.assemble((f"{glyphs.bullet} ", ""), (request.display, ""))
-
-
 def approval_info(request: ApprovalRequest, *, plain_badge: bool = False) -> Text:
     info = Text("  ")
     info.append_text(badge(request.risk.value, plain=plain_badge))
@@ -305,14 +301,6 @@ def approval_info(request: ApprovalRequest, *, plain_badge: bool = False) -> Tex
 
 def approval_cwd(request: ApprovalRequest) -> Text:
     return Text(f"  CWD: {request.cwd}", style="sp.dim")
-
-
-def approval_block(request: ApprovalRequest, glyphs: Glyphs, *, plain_badge: bool = False) -> Group:
-    return Group(
-        approval_head(request, glyphs),
-        approval_info(request, plain_badge=plain_badge),
-        approval_cwd(request),
-    )
 
 
 def plan_step_line(index: int, step: PlanStep, glyphs: Glyphs) -> Text:

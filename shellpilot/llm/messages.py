@@ -32,6 +32,7 @@ class ImageRef:
     path: str  # original filesystem path (display/reference)
     sha256: str  # hex digest of the raw bytes
     data_b64: str  # base64-encoded raw bytes (for Ollama wire encoding)
+    size_bytes: int  # byte length of the raw image (avoids re-decoding b64 to measure)
 
 
 @dataclass(frozen=True)

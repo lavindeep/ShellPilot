@@ -17,6 +17,7 @@ from rich.text import Text
 
 from shellpilot import __version__
 from shellpilot.cli.render import _sanitize_line
+from shellpilot.cli.theme import COLOR_ACCENT, COLOR_DIM, COLOR_FAINT, COLOR_WARN
 
 # ---------------------------------------------------------------------------
 # Jet art — locked v2 block art, embedded verbatim (do NOT read from disk).
@@ -68,12 +69,8 @@ _JET_CELLS = (
 
 _JET_WIDTH = len(_JET_BLOCKS[0])  # 28 — every row is this wide.
 
-# Theme color constants (aligned with shellpilot/cli/theme.py).
-_COLOR_ACCENT = "#98c379"  # green — local model
-_COLOR_WARN = "#e5c07b"  # amber — cloud model
+# Banner-only color constants (shared theme colors imported from theme.py above).
 _COLOR_CYAN = "#7fb3c8"  # section headers
-_COLOR_DIM = "#6b6b6b"  # sp.dim — item text
-_COLOR_FAINT = "#444444"  # sp.faint — hints / rules
 _COLOR_COCKPIT = "#080808"  # near-black for cockpit cells
 _GRADIENT_TOP = (0x7C, 0x7C, 0x7C)  # #7c7c7c — nose
 _GRADIENT_BOT = (0x3A, 0x3A, 0x3A)  # #3a3a3a — tail
@@ -131,7 +128,7 @@ def _build_jet() -> Text:
 
 
 def _build_left_col(model: str, *, is_cloud: bool, profile: str) -> Group:
-    model_style = f"bold {_COLOR_WARN if is_cloud else _COLOR_ACCENT}"
+    model_style = f"bold {COLOR_WARN if is_cloud else COLOR_ACCENT}"
     locality = "cloud" if is_cloud else "local"
     # The jet is centered as a fixed-width BLOCK via Align (width=_JET_WIDTH),
     # not per line — per-line centering skews because Rich strips trailing
@@ -142,7 +139,7 @@ def _build_left_col(model: str, *, is_cloud: bool, profile: str) -> Group:
         Align.center(_build_jet(), width=_JET_WIDTH),
         Text(""),
         Text(model, style=model_style, justify="center"),
-        Text(f"{profile} · {locality}", style=_COLOR_DIM, justify="center"),
+        Text(f"{profile} · {locality}", style=COLOR_DIM, justify="center"),
     )
 
 
@@ -158,12 +155,12 @@ def _section(header: str, items: Sequence[tuple[str, str]]) -> Text:
     for lead, desc in items:
         t.append("\n")
         t.append(f"{lead:<{_ITEM_PAD}}", style="bold")
-        t.append(desc, style=_COLOR_DIM)
+        t.append(desc, style=COLOR_DIM)
     return t
 
 
 def _rule() -> Text:
-    return Text("─" * _RULE_WIDTH, style=_COLOR_FAINT)
+    return Text("─" * _RULE_WIDTH, style=COLOR_FAINT)
 
 
 def _workflow_section(skills: Sequence[str]) -> Text:
@@ -171,11 +168,11 @@ def _workflow_section(skills: Sequence[str]) -> Text:
     t.append("Workflow skills", style=f"bold {_COLOR_CYAN}")
     t.append("\n")
     if skills:
-        t.append(" · ".join(skills), style=_COLOR_DIM)
+        t.append(" · ".join(skills), style=COLOR_DIM)
     else:
-        t.append(" · ".join(_AVAILABLE_WORKFLOW_SKILLS), style=_COLOR_DIM)
+        t.append(" · ".join(_AVAILABLE_WORKFLOW_SKILLS), style=COLOR_DIM)
         t.append("\n")
-        t.append("/skills to enable", style=_COLOR_FAINT)
+        t.append("/skills to enable", style=COLOR_FAINT)
     return t
 
 
@@ -184,12 +181,12 @@ def _recent_section(recent_sessions: Sequence[tuple[str, str]]) -> Text:
     t.append("Recent sessions", style=f"bold {_COLOR_CYAN}")
     for label, age in recent_sessions:
         t.append("\n")
-        t.append("● ", style=_COLOR_DIM)
+        t.append("● ", style=COLOR_DIM)
         # The label is a snippet of a past session's first USER message — untrusted,
         # possibly-pasted input. Strip control/ANSI bytes at this render sink so a
         # stored escape sequence cannot repaint the terminal on boot (Group B).
         t.append(_sanitize_line(label))
-        t.append(f" ({age})", style=_COLOR_DIM)
+        t.append(f" ({age})", style=COLOR_DIM)
     return t
 
 

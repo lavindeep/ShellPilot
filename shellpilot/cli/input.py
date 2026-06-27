@@ -22,8 +22,8 @@ from prompt_toolkit.styles import Style
 from rich.console import Console
 
 from shellpilot.cli.render import context_line
-from shellpilot.cli.status_bar import COLOR_ACCENT, COLOR_WARN, status_bar
-from shellpilot.cli.theme import Glyphs
+from shellpilot.cli.status_bar import status_bar
+from shellpilot.cli.theme import COLOR_ACCENT, COLOR_WARN, Glyphs
 
 PT_STYLE = Style.from_dict(
     {

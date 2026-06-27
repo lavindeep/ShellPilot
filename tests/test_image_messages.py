@@ -17,7 +17,7 @@ from tests.conftest import TINY_PNG
 def _make_image_ref(data: bytes, path: str = "/tmp/test.png") -> ImageRef:
     sha256 = hashlib.sha256(data).hexdigest()
     data_b64 = base64.b64encode(data).decode()
-    return ImageRef(path=path, sha256=sha256, data_b64=data_b64)
+    return ImageRef(path=path, sha256=sha256, data_b64=data_b64, size_bytes=len(data))
 
 
 def stream_body(*chunks: dict[str, Any]) -> bytes:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -66,8 +67,6 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_config(workspace: Path, action: str) -> int:
-    import os
-
     from rich.console import Console
 
     from shellpilot.cli.slash import render_config

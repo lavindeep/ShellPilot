@@ -9,8 +9,14 @@ from shellpilot.llm.messages import ToolDefinition
 from shellpilot.policy.command_policy import sensitive_path_reason
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.budget import truncate_to_tokens
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec, resolve_in_workspace
-from shellpilot.tools.filesystem import ALL_PROFILES, _classify_path_arg, is_binary
+from shellpilot.tools.base import (
+    ALL_PROFILES,
+    ToolContext,
+    ToolResult,
+    ToolSpec,
+    resolve_in_workspace,
+)
+from shellpilot.tools.filesystem import _classify_path_arg, is_binary
 
 MAX_MATCHES = 100
 SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".shellpilot", ".mypy_cache"}

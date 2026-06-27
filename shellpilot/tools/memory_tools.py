@@ -14,9 +14,7 @@ from typing import Any
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.memory.store import MemoryFormatError, MemoryStores
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
-
-ALL_PROFILES = frozenset({"supervised", "balanced"})
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 
 PREVIEW_TOKENS = 2000
 

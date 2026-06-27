@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -784,3 +785,156 @@ def test_bang_prefix_runs_manual_shell_not_model(
     assert bang_calls == ["echo hi"], "'!<cmd>' must run via the manual-shell path"
     assert model_turns == [], "a '!' line must NOT be sent to the model"
     assert rc == 0
+
+
+def _boot_fake_paths(tmp_path: Path) -> object:
+    from shellpilot.persistence.paths import AppPaths
+
+    return AppPaths(
+        config_dir=tmp_path / "cfg",
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        cache_dir=tmp_path / "cache",
+    )
+
+
+def _make_fake_client(model: str, preload_calls: list[str] | None = None) -> type:
+    from shellpilot.llm.ollama import LocalModel
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def health(self) -> bool:
+            return True
+
+        def list_models(self) -> list[LocalModel]:
+            return [LocalModel(name=model, size_bytes=1)]
+
+        def preload(self, name: str, *, keep_alive: str = "5m") -> None:
+            if preload_calls is not None:
+                preload_calls.append(name)
+
+        def model_context_length(self, name: str) -> int:
+            return 8192
+
+    return _FakeClient
+
+
+def test_slash_branch_survives_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ctrl+C during a slash command (e.g. `/plan revise`) is caught in the REPL.
+
+    The interrupt must not escape `run_interactive` — the session ends cleanly
+    and the `session_end` audit still fires.
+    """
+    import shellpilot.cli.terminal as terminal_mod
+
+    model = "gemma4:e4b"
+    fake_paths = _boot_fake_paths(tmp_path)
+    monkeypatch.setattr(terminal_mod, "OllamaClient", lambda *a, **k: _make_fake_client(model)())
+    monkeypatch.setattr(terminal_mod.AppPaths, "default", classmethod(lambda cls: fake_paths))
+
+    class _Reader:
+        def __init__(self) -> None:
+            self._lines = iter(["/plan revise x"])
+
+        def read(self, context: object) -> str:
+            try:
+                return next(self._lines)
+            except StopIteration:
+                raise EOFError from None
+
+    monkeypatch.setattr(terminal_mod, "make_input", lambda *a, **k: _Reader())
+
+    def _boom(self: object, line: str) -> object:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(terminal_mod.SlashDispatcher, "handle", _boom)
+    monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    # Must return normally, not propagate the KeyboardInterrupt out of the REPL.
+    rc = terminal_mod.run_interactive(tmp_path, model_override=model)
+
+    assert rc == 0
+    events = [
+        json.loads(line) for line in (fake_paths.state_dir / "audit.jsonl").read_text().splitlines()
+    ]
+    assert any(e["event"] == "session_end" for e in events), "session_end audit must survive"
+
+
+def test_resume_existence_checked_before_preload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bad --resume fails fast: no model preload happens before the existence check."""
+    import shellpilot.cli.terminal as terminal_mod
+
+    model = "gemma4:e4b"
+    preload_calls: list[str] = []
+    fake_paths = _boot_fake_paths(tmp_path)
+    monkeypatch.setattr(
+        terminal_mod, "OllamaClient", lambda *a, **k: _make_fake_client(model, preload_calls)()
+    )
+    monkeypatch.setattr(terminal_mod.AppPaths, "default", classmethod(lambda cls: fake_paths))
+    monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    rc = terminal_mod.run_interactive(tmp_path, resume="nope", model_override=model)
+
+    assert rc == 1
+    assert preload_calls == [], "the model must not preload before the resume existence check"
+
+
+def test_resume_existing_session_still_loads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The happy path is unchanged: an existing --resume target loads and the model warms."""
+    import shellpilot.cli.terminal as terminal_mod
+    from shellpilot.persistence.sessions import SessionStore
+
+    model = "gemma4:e4b"
+    preload_calls: list[str] = []
+    fake_paths = _boot_fake_paths(tmp_path)
+
+    sessions_dir = SessionStore.sessions_dir(tmp_path)
+    sessions_dir.mkdir(parents=True)
+    sid = "20260101-000000-abcd"
+    (sessions_dir / f"{sid}.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "meta",
+                "session_id": sid,
+                "model": model,
+                "profile": "balanced",
+                "workspace": str(tmp_path),
+            }
+        )
+        + "\n"
+        + json.dumps({"type": "message", "role": "user", "content": "hello"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        terminal_mod, "OllamaClient", lambda *a, **k: _make_fake_client(model, preload_calls)()
+    )
+    monkeypatch.setattr(terminal_mod.AppPaths, "default", classmethod(lambda cls: fake_paths))
+
+    class _Reader:
+        def read(self, context: object) -> str:
+            raise EOFError
+
+    monkeypatch.setattr(terminal_mod, "make_input", lambda *a, **k: _Reader())
+    monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    rc = terminal_mod.run_interactive(tmp_path, resume=sid, model_override=model)
+
+    assert rc == 0
+    assert preload_calls == [model], "an existing resume target still warms the model"
+    events = [
+        json.loads(line) for line in (fake_paths.state_dir / "audit.jsonl").read_text().splitlines()
+    ]
+    assert any(e["event"] == "session_resume" for e in events), "resume load must still happen"

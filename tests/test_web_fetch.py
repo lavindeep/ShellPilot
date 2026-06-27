@@ -299,6 +299,18 @@ def test_caps_download_size_and_flags_truncation() -> None:
     assert page.truncated
 
 
+def test_body_exactly_at_byte_limit_not_truncated() -> None:
+    # A body exactly max_bytes long is complete — nothing was cut, so truncated
+    # must be False (the off-by-one was a >= where > is correct).
+    body = b"A" * 100
+    transport = _bytes_transport(body, content_type="text/plain; charset=utf-8")
+    fetcher = PageFetcher(max_bytes=100, transport=transport)
+
+    page = fetcher.fetch("https://example.com/exact.txt")
+    assert page.text == "A" * 100
+    assert not page.truncated
+
+
 def test_rejects_binary_content_type() -> None:
     fetcher = PageFetcher(transport=_bytes_transport(b"\x00\x01\x02"))
     with pytest.raises(WebFetchError, match="content type"):
@@ -605,3 +617,13 @@ def test_redirect_to_private_resolving_name_blocked(
     assert len(calls) == 1, (
         f"Expected exactly 1 transport call, got {len(calls)}: {[str(r.url) for r in calls]}"
     )
+
+
+def test_page_fetcher_ignores_ambient_proxy_env() -> None:
+    """PageFetcher's httpx client must not honour ambient proxy env vars.
+
+    Web fetch traffic cannot be silently redirected through an ambient proxy —
+    trust_env=False keeps the egress audit's destination truthful (§36.10).
+    """
+    fetcher = PageFetcher(transport=_html_transport("<html><body>ok</body></html>"))
+    assert fetcher._client.trust_env is False

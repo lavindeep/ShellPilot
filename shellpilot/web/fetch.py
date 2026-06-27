@@ -182,6 +182,7 @@ class PageFetcher:
             timeout=httpx.Timeout(timeout_seconds, read=read_timeout_seconds),
             follow_redirects=False,
             transport=transport,
+            trust_env=False,
         )
         self._max_bytes = max_bytes
         self._max_chars = max_chars
@@ -241,7 +242,10 @@ class PageFetcher:
                     byte_truncated = False
                     for chunk in response.iter_bytes():
                         remaining = self._max_bytes - bytes_read
-                        if len(chunk) >= remaining:
+                        # Only truncate when a chunk EXCEEDS the remaining budget; a
+                        # chunk that exactly fills it is complete, not truncated. If
+                        # more data follows, the next iteration (remaining == 0) flags it.
+                        if len(chunk) > remaining:
                             chunks.append(chunk[:remaining])
                             byte_truncated = True
                             break
@@ -251,9 +255,7 @@ class PageFetcher:
                     raw_bytes = b"".join(chunks)
 
                     # Determine charset
-                    charset: str = "utf-8"
-                    if response.encoding:
-                        charset = response.encoding
+                    charset = response.encoding or "utf-8"
 
                     body = raw_bytes.decode(charset, errors="replace")
                     final_url = str(response.url)

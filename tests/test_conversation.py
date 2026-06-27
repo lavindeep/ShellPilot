@@ -389,6 +389,7 @@ def test_user_turn_audit_counts_images(tmp_path: Path) -> None:
         path=str(tmp_path / "shot.png"),
         sha256=hashlib.sha256(TINY_PNG).hexdigest(),
         data_b64=base64.b64encode(TINY_PNG).decode(),
+        size_bytes=len(TINY_PNG),
     )
     fake = FakeLLM(script=[answer("with image"), answer("without image")])
     ui = FakeUI()
@@ -423,6 +424,7 @@ def test_run_turn_passes_images_into_user_message(tmp_path: Path) -> None:
         path=str(tmp_path / "sample.png"),
         sha256=hashlib.sha256(TINY_PNG).hexdigest(),
         data_b64=data_b64,
+        size_bytes=len(TINY_PNG),
     )
 
     fake = FakeLLM(script=[answer("I see a white pixel.")])
@@ -457,6 +459,7 @@ def test_image_token_estimate_counted(tmp_path: Path) -> None:
         path="/tmp/img.png",
         sha256=hashlib.sha256(TINY_PNG).hexdigest(),
         data_b64=data_b64,
+        size_bytes=len(TINY_PNG),
     )
 
     fake_no_image = FakeLLM(script=[answer("plain reply")])
@@ -470,6 +473,51 @@ def test_image_token_estimate_counted(tmp_path: Path) -> None:
     estimate_with_image = runtime_with_image.estimated_prompt_tokens()
 
     assert estimate_with_image >= estimate_no_image + IMAGE_TOKEN_ESTIMATE
+
+
+def test_set_workspace_rebuilds_project_memory(tmp_path: Path) -> None:
+    """Changing workspace (/cwd) rebuilds the project memory store for the new
+    path, so the previous workspace's facts stop injecting (design section 16);
+    the shared global store is preserved."""
+    from shellpilot.memory.store import MemoryStore, MemoryStores, project_id_for
+    from shellpilot.persistence.paths import project_state_dir
+
+    workspace_a = tmp_path / "a"
+    workspace_b = tmp_path / "b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    global_store = MemoryStore(tmp_path / "global-memory.json")
+    stores = MemoryStores(
+        global_store=global_store,
+        project_store=MemoryStore(
+            project_state_dir(workspace_a) / "memory.json",
+            project_id=project_id_for(workspace_a),
+        ),
+    )
+    stores.project_store.add_fact(kind="config", value="postgres-a", label="db", source="user")
+
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=workspace_a,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        memory=stores,
+    )
+    assert "postgres-a" in runtime.context_snapshot().system_text()
+
+    runtime.set_workspace(workspace_b)
+
+    rendered_b = runtime.context_snapshot().system_text()
+    assert "postgres-a" not in rendered_b  # A's fact no longer injected into B
+    assert runtime.memory is not None
+    assert runtime.memory.global_store is global_store  # shared global untouched
+
+    runtime.memory.project_store.add_fact(
+        kind="config", value="postgres-b", label="db", source="user"
+    )
+    assert "postgres-b" in runtime.context_snapshot().system_text()
 
 
 def test_update_plan_after_clear_reports_no_active_plan(tmp_path: Path) -> None:
@@ -880,6 +928,8 @@ def _make_runtime_with_base_url(
 
 def test_endpoint_loopback_detection_local(tmp_path: Path) -> None:
     """localhost / 127.x / ::1 / 0.0.0.0 / empty host are loopback (not egressing)."""
+    from shellpilot.llm.ollama import is_loopback_url
+
     for url in (
         "http://localhost:11434",
         "http://127.0.0.1:11434",
@@ -889,19 +939,21 @@ def test_endpoint_loopback_detection_local(tmp_path: Path) -> None:
         "http://foo.localhost:11434",
     ):
         runtime = _make_runtime_with_base_url(FakeLLM(script=[]), FakeUI(), tmp_path, url)
-        assert runtime._endpoint_is_loopback() is True, url
+        assert is_loopback_url(url) is True, url
         assert runtime._is_egressing() is False, url
 
 
 def test_endpoint_loopback_detection_remote(tmp_path: Path) -> None:
     """A non-loopback host is remote → egressing."""
+    from shellpilot.llm.ollama import is_loopback_url
+
     for url in (
         "https://ollama.com",
         "https://api.example.com:443",
         "http://10.0.0.5:11434",  # private but not loopback → still off this box
     ):
         runtime = _make_runtime_with_base_url(FakeLLM(script=[]), FakeUI(), tmp_path, url)
-        assert runtime._endpoint_is_loopback() is False, url
+        assert is_loopback_url(url) is False, url
         assert runtime._is_egressing() is True, url
 
 
@@ -1057,14 +1109,6 @@ def test_is_loopback_url_shared_helper() -> None:
         assert is_loopback_url(url) is False, url
 
 
-def test_endpoint_is_loopback_uses_shared_helper(tmp_path: Path) -> None:
-    """_endpoint_is_loopback delegates to the shared helper (no behaviour change)."""
-    runtime = _make_runtime_with_base_url(
-        FakeLLM(script=[]), FakeUI(), tmp_path, "https://ollama.com"
-    )
-    assert runtime._endpoint_is_loopback() is False
-
-
 def _make_runtime_with_model(
     fake: FakeLLM, ui: FakeUI, tmp_path: Path, model: str, *, base_url: str
 ) -> ConversationRuntime:
@@ -1081,6 +1125,8 @@ def _make_runtime_with_model(
 
 def test_cloud_model_egresses_on_localhost(tmp_path: Path) -> None:
     """A '-cloud' model egresses even through a loopback Ollama proxy."""
+    from shellpilot.llm.ollama import is_loopback_url
+
     runtime = _make_runtime_with_model(
         FakeLLM(script=[]),
         FakeUI(),
@@ -1088,7 +1134,7 @@ def test_cloud_model_egresses_on_localhost(tmp_path: Path) -> None:
         "nemotron-3-nano:30b-cloud",
         base_url="http://localhost:11434",
     )
-    assert runtime._endpoint_is_loopback() is True
+    assert is_loopback_url("http://localhost:11434") is True
     assert runtime._is_egressing() is True
 
 

@@ -102,6 +102,17 @@ def test_unknown_key_reports_dotted_key(tmp_path: Path) -> None:
         load_config(user_config_file=user, project_config_file=tmp_path / "missing.toml", env={})
 
 
+def test_deprecated_model_family_still_loads(tmp_path: Path) -> None:
+    # `family` is deprecated since v0.4.0 (ignored), but kept so an old user
+    # config that still sets it loads without raising — config.toml errors are
+    # fatal, so an unknown-key regression would break existing configs.
+    user = write_toml(tmp_path / "user.toml", '[model]\nfamily = "gemma"\n')
+    loaded = load_config(
+        user_config_file=user, project_config_file=tmp_path / "missing.toml", env={}
+    )
+    assert loaded.settings.model.family == "gemma"
+
+
 def test_invalid_profile_rejected(tmp_path: Path) -> None:
     user = write_toml(tmp_path / "user.toml", '[runtime]\nsecurity_profile = "trusted-local"\n')
     with pytest.raises(ConfigError, match="trusted-local"):
@@ -1099,3 +1110,15 @@ def test_is_egressing_combines_cloud_model_and_base_url() -> None:
     assert is_egressing("gemma4:e4b", remote) is True
     # Both signals firing is still egressing.
     assert is_egressing("x-cloud", remote) is True
+
+
+def test_all_profiles_matches_valid_profiles() -> None:
+    """ALL_PROFILES in tools.base must stay in sync with VALID_PROFILES in config.model.
+
+    A future profile add only requires updating VALID_PROFILES; this test
+    catches any silent desync between the two constants.
+    """
+    from shellpilot.config.model import VALID_PROFILES
+    from shellpilot.tools.base import ALL_PROFILES
+
+    assert ALL_PROFILES == frozenset(VALID_PROFILES)

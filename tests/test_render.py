@@ -9,7 +9,6 @@ from pathlib import Path
 from rich.console import Console, RenderableType
 
 from shellpilot.cli.render import (
-    approval_block,
     badge,
     context_line,
     output_truncation,
@@ -21,8 +20,6 @@ from shellpilot.cli.render import (
     word_highlight_ranges,
 )
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS
-from shellpilot.policy.approvals import ApprovalRequest
-from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.planner import PlanStep, TaskPlan
 
 GLYPHS = UNICODE_GLYPHS
@@ -215,23 +212,6 @@ def test_badge_chips_and_plain_degradation() -> None:
     assert badge("medium").plain == " MEDIUM "
     assert badge("high").plain == " HIGH "
     assert badge("blocked", plain=True).plain == "[BLOCKED]"
-
-
-def test_approval_block_composes_display_reasons_and_cwd() -> None:
-    request = ApprovalRequest(
-        kind="command",
-        display="rm -rf build/",
-        risk=RiskLevel.HIGH,
-        reasons=("recursive delete",),
-        cwd=Path("/tmp/ws"),
-        purpose="Removes stale build output.",
-    )
-    out = rendered(approval_block(request, GLYPHS))
-    assert "rm -rf build/" in out
-    assert " HIGH " in out
-    assert "recursive delete" in out
-    assert "Removes stale build output." in out
-    assert "/tmp/ws" in out
 
 
 def test_plan_panel_gate_and_step_lines() -> None:

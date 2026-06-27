@@ -15,14 +15,21 @@ from rich.theme import Theme
 
 from shellpilot.config.model import Settings
 
+# Single-source hex values for the four shared theme colors.  Other modules
+# (banner.py, status_bar.py) import these constants so the values can't drift.
+COLOR_ACCENT = "#98c379"
+COLOR_WARN = "#e5c07b"
+COLOR_DIM = "#6b6b6b"
+COLOR_FAINT = "#444444"
+
 SHELLPILOT_THEME = Theme(
     {
         "sp.emph": "bold bright_white",
-        "sp.dim": "#6b6b6b",
-        "sp.faint": "#444444",
-        "sp.accent": "#98c379",
-        "sp.success": "#98c379",
-        "sp.warn": "#e5c07b",
+        "sp.dim": COLOR_DIM,
+        "sp.faint": COLOR_FAINT,
+        "sp.accent": COLOR_ACCENT,
+        "sp.success": COLOR_ACCENT,
+        "sp.warn": COLOR_WARN,
         "sp.error": "#e06c75",
         "sp.risk.high": "bold #e06c75",
         "sp.badge.medium": "bold white on #3a3a3a",

@@ -10,6 +10,7 @@ from shellpilot.policy.command_policy import CommandRisk, sensitive_path_reason
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.budget import truncate_to_tokens
 from shellpilot.tools.base import (
+    ALL_PROFILES,
     ToolContext,
     ToolResult,
     ToolSpec,
@@ -19,8 +20,6 @@ from shellpilot.tools.base import (
 DEFAULT_MAX_LINES = 200
 MAX_DIR_ENTRIES = 500
 _BINARY_SNIFF_BYTES = 8192
-
-ALL_PROFILES = frozenset({"supervised", "balanced"})
 
 
 def is_binary(path: Path) -> bool:

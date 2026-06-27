@@ -22,10 +22,12 @@ from typing import Any
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.policy.command_policy import CommandRisk, classify_command
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
-from shellpilot.tools.filesystem import ALL_PROFILES
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 
 DEFAULT_TIMEOUT_SECONDS = 600
+# Maximum chars read in a single readline() call so a newline-less stream cannot
+# materialise an unbounded string before the total-capture cap is consulted.
+MAX_READ_CHARS = 65_536
 # Exit codes that mean "ran fine, found nothing" rather than failure (section 24.3).
 EXPECTED_NONZERO: dict[str, frozenset[int]] = {
     "grep": frozenset({1}),
@@ -73,11 +75,7 @@ def subprocess_env() -> dict[str, str]:
     prompts.  PATH and all other variables pass through untouched so that
     activated-venv workflows continue to work.
     """
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if not any(k.startswith(prefix) for prefix in _STRIP_PREFIXES)
-    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith(_STRIP_PREFIXES)}
     env.update(_NON_INTERACTIVE)
     return env
 
@@ -133,14 +131,25 @@ def run_command_process(
     def reader() -> None:
         nonlocal captured_chars, truncated
         assert process.stdout is not None
-        for line in process.stdout:
+        while True:
+            line = process.stdout.readline(MAX_READ_CHARS)
+            if not line:
+                break
             if emit_line is not None:
                 emit_line(line.rstrip("\n"))
-            if captured_chars < max_capture_chars:
+            # Hard-bound total capture: a single newline-less chunk can be up to
+            # MAX_READ_CHARS, so slice it to the remaining budget rather than
+            # appending it whole (which overshot the cap and left truncated=False).
+            remaining = max_capture_chars - captured_chars
+            if remaining <= 0:
+                truncated = True
+            elif len(line) > remaining:
+                captured.append(line[:remaining])
+                captured_chars = max_capture_chars
+                truncated = True
+            else:
                 captured.append(line)
                 captured_chars += len(line)
-            else:
-                truncated = True
 
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()

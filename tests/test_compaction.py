@@ -116,3 +116,43 @@ def test_auto_compact_off_allows_normal_turns(tmp_path: Path) -> None:
     )
     assert runtime.run_turn("hello") == "hi"
     assert len(fake.calls) == 1
+
+
+def test_auto_compact_off_counts_incoming_image_tokens(tmp_path: Path) -> None:
+    """The pre-turn hard-limit gate must count THIS turn's incoming images, not
+    only text and history images (design section 10.5)."""
+    import base64
+    import hashlib
+
+    from shellpilot.llm.messages import ImageRef
+    from shellpilot.runtime.conversation import IMAGE_TOKEN_ESTIMATE
+    from tests.conftest import TINY_PNG
+
+    ref = ImageRef(
+        path="/tmp/img.png",
+        sha256=hashlib.sha256(TINY_PNG).hexdigest(),
+        data_b64=base64.b64encode(TINY_PNG).decode(),
+        size_bytes=len(TINY_PNG),
+    )
+    runtime, ui, fake = make_runtime(
+        tmp_path, context_tokens=4096, auto_compact=False, script=[answer("seen")]
+    )
+    # An empty-text, no-image turn is comfortably under the hard limit; carrying
+    # enough images to close that gap must trip the gate (text stays empty).
+    headroom = runtime.budget.hard_limit_tokens - runtime.estimated_prompt_tokens()
+    assert headroom > 0
+    image_count = headroom // IMAGE_TOKEN_ESTIMATE + 1
+    reply = runtime.run_turn("", images=tuple(ref for _ in range(image_count)))
+    assert reply == ""
+    assert fake.calls == []  # the gate fired before any model call
+    assert any("hard limit" in status.lower() for status in ui.statuses)
+
+
+def test_auto_compact_off_text_near_limit_unaffected(tmp_path: Path) -> None:
+    """A text-only turn under the hard limit is allowed exactly as before."""
+    runtime, _, fake = make_runtime(
+        tmp_path, context_tokens=4096, auto_compact=False, script=[answer("seen")]
+    )
+    assert runtime.estimated_prompt_tokens() < runtime.budget.hard_limit_tokens
+    assert runtime.run_turn("hello") == "seen"
+    assert len(fake.calls) == 1

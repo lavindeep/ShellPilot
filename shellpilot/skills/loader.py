@@ -73,10 +73,6 @@ def _assign_builtin_reference_triggers(
     )
 
 
-def _triggers_for_skill_name(name: str) -> tuple[SkillTrigger, ...]:
-    return _triggers_for_builtin_skill_name(name)
-
-
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str, bool, str]:
     """Parse SKILL.md frontmatter.
 
@@ -177,79 +173,27 @@ def _resource_from_bytes(
     )
 
 
-def _read_resource_bytes_path(entry: Path) -> bytes:
+def _read_resource_bytes(entry: Path | importlib.resources.abc.Traversable) -> bytes:
     with entry.open("rb") as handle:
         return handle.read(MAX_RESOURCE_BYTES)
 
 
-def _read_resource_bytes_traversable(
-    entry: importlib.resources.abc.Traversable,
-) -> bytes:
-    with entry.open("rb") as handle:
-        return handle.read(MAX_RESOURCE_BYTES)
-
-
-def _discover_markdown_resources_path(
+def _discover_markdown_resources(
+    skill_root: Path | importlib.resources.abc.Traversable,
     *,
-    skill_root: Path,
     dirname: str,
     kind: str,
     max_tokens: int,
+    catch: type[BaseException] | tuple[type[BaseException], ...],
+    safe_check: Callable[[Any], bool] | None = None,
 ) -> tuple[tuple[SkillResource, ...], tuple[str, ...]]:
-    resource_dir = skill_root / dirname
-    if not resource_dir.is_dir():
-        return (), ()
+    """Discover ``.md`` resources under ``dirname``.
 
-    warnings: list[str] = []
-    try:
-        candidates = sorted(
-            (
-                entry
-                for entry in resource_dir.iterdir()
-                if entry.is_file() and entry.suffix == ".md"
-            ),
-            key=lambda entry: entry.stem,
-        )
-    except OSError:
-        return (), (f"{dirname}/: could not read resources",)
-    resources: list[SkillResource] = []
-    for entry in candidates[:MAX_RESOURCES_PER_KIND]:
-        rel_path = f"{dirname}/{entry.name}"
-        if not _is_safe_path(skill_root, entry):
-            warnings.append(f"{rel_path}: skipped unsafe path")
-            continue
-        try:
-            data = _read_resource_bytes_path(entry)
-        except OSError:
-            warnings.append(f"{rel_path}: could not read resource")
-            continue
-        try:
-            resources.append(
-                _resource_from_bytes(
-                    kind=kind,
-                    name=entry.stem,
-                    rel_path=rel_path,
-                    data=data,
-                    max_tokens=max_tokens,
-                )
-            )
-        except UnicodeDecodeError:
-            warnings.append(f"{rel_path}: could not decode resource")
-    if len(candidates) > MAX_RESOURCES_PER_KIND:
-        warnings.append(
-            f"{dirname}: found {len(candidates)} markdown resources; "
-            f"loaded first {MAX_RESOURCES_PER_KIND} sorted by name"
-        )
-    return tuple(resources), tuple(warnings)
-
-
-def _discover_markdown_resources_traversable(
-    *,
-    skill_root: importlib.resources.abc.Traversable,
-    dirname: str,
-    kind: str,
-    max_tokens: int,
-) -> tuple[tuple[SkillResource, ...], tuple[str, ...]]:
+    Serves both user (``Path``) and builtin (``Traversable``) roots by working on
+    ``entry.name``.  ``safe_check`` is the path-only resolve-escape guard (builtin
+    package resources pass ``None`` — trusted, never resolve-checked); ``catch`` is
+    the iterdir/read exception breadth (path narrow ``OSError``; builtin broad).
+    """
     resource_dir = skill_root / dirname
     if not resource_dir.is_dir():
         return (), ()
@@ -264,14 +208,17 @@ def _discover_markdown_resources_traversable(
             ),
             key=lambda entry: Path(entry.name).stem,
         )
-    except Exception:  # noqa: BLE001 — advisory only
+    except catch:
         return (), (f"{dirname}/: could not read resources",)
     resources: list[SkillResource] = []
     for entry in candidates[:MAX_RESOURCES_PER_KIND]:
         rel_path = f"{dirname}/{entry.name}"
+        if safe_check is not None and not safe_check(entry):
+            warnings.append(f"{rel_path}: skipped unsafe path")
+            continue
         try:
-            data = _read_resource_bytes_traversable(entry)
-        except Exception:  # noqa: BLE001 — unreadable resource is advisory only
+            data = _read_resource_bytes(entry)
+        except catch:
             warnings.append(f"{rel_path}: could not read resource")
             continue
         try:
@@ -423,6 +370,47 @@ def _script_from_manifest_entry(
     )
 
 
+def _parse_manifest_bytes(
+    manifest_bytes: bytes,
+    *,
+    entry_maker: Callable[[Any], SkillScript],
+    catch: type[BaseException] | tuple[type[BaseException], ...],
+) -> tuple[tuple[SkillScript, ...], tuple[str, ...]]:
+    """Decode/validate the manifest bytes and build the scripts.
+
+    Shared by the path and traversable callers; each reads the bytes and applies
+    its own size guard first.  ``catch`` is the decode/parse exception breadth the
+    caller wants (path stays narrow; traversable is intentionally broad).
+    """
+    try:
+        raw_manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except catch as exc:
+        return (
+            (
+                _invalid_script(
+                    name="manifest",
+                    entry="scripts/manifest.json",
+                    error=f"malformed scripts/manifest.json: {exc}",
+                ),
+            ),
+            (),
+        )
+    if not isinstance(raw_manifest, list):
+        return (
+            (
+                _invalid_script(
+                    name="manifest",
+                    entry="scripts/manifest.json",
+                    error="scripts/manifest.json must contain a list",
+                ),
+            ),
+            (),
+        )
+    entries = raw_manifest[:MAX_RESOURCES_PER_KIND]
+    scripts = tuple(entry_maker(entry) for entry in entries)
+    return scripts, ()
+
+
 def _script_from_manifest_entry_path(skill_root: Path, raw: Any) -> SkillScript:
     return _script_from_manifest_entry(
         raw,
@@ -476,8 +464,8 @@ def _discover_scripts_path(skill_root: Path) -> tuple[tuple[SkillScript, ...], t
         )
 
     try:
-        raw_manifest = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        manifest_bytes = manifest.read_bytes()
+    except OSError as exc:
         return (
             (
                 _invalid_script(
@@ -489,21 +477,11 @@ def _discover_scripts_path(skill_root: Path) -> tuple[tuple[SkillScript, ...], t
             (),
         )
 
-    if not isinstance(raw_manifest, list):
-        return (
-            (
-                _invalid_script(
-                    name="manifest",
-                    entry="scripts/manifest.json",
-                    error="scripts/manifest.json must contain a list",
-                ),
-            ),
-            (),
-        )
-
-    entries = raw_manifest[:MAX_RESOURCES_PER_KIND]
-    scripts = tuple(_script_from_manifest_entry_path(skill_root, entry) for entry in entries)
-    return scripts, ()
+    return _parse_manifest_bytes(
+        manifest_bytes,
+        entry_maker=lambda raw: _script_from_manifest_entry_path(skill_root, raw),
+        catch=(UnicodeDecodeError, json.JSONDecodeError),
+    )
 
 
 def _script_from_manifest_entry_traversable(
@@ -560,33 +538,11 @@ def _discover_scripts_traversable(
             ),
             (),
         )
-    try:
-        raw_manifest = json.loads(manifest_bytes.decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001 — advisory invalid script, not fatal
-        return (
-            (
-                _invalid_script(
-                    name="manifest",
-                    entry="scripts/manifest.json",
-                    error=f"malformed scripts/manifest.json: {exc}",
-                ),
-            ),
-            (),
-        )
-    if not isinstance(raw_manifest, list):
-        return (
-            (
-                _invalid_script(
-                    name="manifest",
-                    entry="scripts/manifest.json",
-                    error="scripts/manifest.json must contain a list",
-                ),
-            ),
-            (),
-        )
-    entries = raw_manifest[:MAX_RESOURCES_PER_KIND]
-    scripts = tuple(_script_from_manifest_entry_traversable(skill_root, entry) for entry in entries)
-    return scripts, ()
+    return _parse_manifest_bytes(
+        manifest_bytes,
+        entry_maker=lambda raw: _script_from_manifest_entry_traversable(skill_root, raw),
+        catch=Exception,
+    )
 
 
 def _discover_resources_path(
@@ -594,17 +550,24 @@ def _discover_resources_path(
     *,
     max_tokens: int,
 ) -> _DiscoveryResult:
-    references, ref_warnings = _discover_markdown_resources_path(
-        skill_root=skill_root,
+    def safe_check(entry: Path) -> bool:
+        return _is_safe_path(skill_root, entry)
+
+    references, ref_warnings = _discover_markdown_resources(
+        skill_root,
         dirname="references",
         kind="reference",
         max_tokens=max_tokens,
+        catch=OSError,
+        safe_check=safe_check,
     )
-    templates, template_warnings = _discover_markdown_resources_path(
-        skill_root=skill_root,
+    templates, template_warnings = _discover_markdown_resources(
+        skill_root,
         dirname="templates",
         kind="template",
         max_tokens=max_tokens,
+        catch=OSError,
+        safe_check=safe_check,
     )
     scripts, script_warnings = _discover_scripts_path(skill_root)
     return references, templates, scripts, ref_warnings + template_warnings + script_warnings
@@ -615,17 +578,19 @@ def _discover_resources_traversable(
     *,
     max_tokens: int,
 ) -> _DiscoveryResult:
-    references, ref_warnings = _discover_markdown_resources_traversable(
-        skill_root=skill_root,
+    references, ref_warnings = _discover_markdown_resources(
+        skill_root,
         dirname="references",
         kind="reference",
         max_tokens=max_tokens,
+        catch=Exception,
     )
-    templates, template_warnings = _discover_markdown_resources_traversable(
-        skill_root=skill_root,
+    templates, template_warnings = _discover_markdown_resources(
+        skill_root,
         dirname="templates",
         kind="template",
         max_tokens=max_tokens,
+        catch=Exception,
     )
     scripts, script_warnings = _discover_scripts_traversable(skill_root)
     return references, templates, scripts, ref_warnings + template_warnings + script_warnings
@@ -638,7 +603,7 @@ def merge_skills(builtin: list[Skill], user: list[Skill]) -> list[Skill]:
     invalid with error="reserved builtin name".  Builtin names are harness
     machinery; a local folder must not be able to override them.
     """
-    builtin_names: set[str] = {s.name for s in builtin}
+    builtin_names: set[str] = {s.name for s in builtin} | set(_BUILTIN_TRIGGER_MAP)
     merged_user: list[Skill] = []
     for skill in user:
         if skill.name in builtin_names:
@@ -684,7 +649,7 @@ def discover_skills(
                     description="",
                     body="",
                     root="builtin",
-                    triggers=_triggers_for_skill_name(entry.name),
+                    triggers=_triggers_for_builtin_skill_name(entry.name),
                     est_tokens=0,
                     valid=False,
                     error="could not read SKILL.md",
@@ -703,7 +668,7 @@ def discover_skills(
             skill = replace(
                 raw,
                 root="builtin",
-                triggers=_triggers_for_skill_name(entry.name),
+                triggers=_triggers_for_builtin_skill_name(entry.name),
                 references=references,
                 templates=templates,
                 scripts=scripts,

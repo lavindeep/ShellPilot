@@ -136,3 +136,56 @@ def test_sends_user_agent_and_query() -> None:
     )
 
     assert req.url.params.get("q") == "shellpilot web"
+
+
+def test_duckduckgo_provider_ignores_ambient_proxy_env() -> None:
+    """DuckDuckGoProvider's httpx client must not honour ambient proxy env vars.
+
+    Web search traffic cannot be silently redirected through an ambient proxy —
+    trust_env=False keeps the egress audit's destination truthful (§36.10).
+    """
+    provider = DuckDuckGoProvider(transport=_make_transport(_DDG_EMPTY_HTML))
+    assert provider._client.trust_env is False
+
+
+# ---------------------------------------------------------------------------
+# _resolve_url: scheme validation of decoded uddg targets
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_url_rejects_javascript_scheme_in_uddg() -> None:
+    """A DDG redirect whose uddg value has a javascript: scheme must return empty string.
+
+    The decoder validates only the DDG wrapper URL's scheme, not the decoded
+    target.  A javascript: or file: target must be rejected before it can be
+    emitted as a search result.
+    """
+    from urllib.parse import quote
+
+    from shellpilot.web.search import _resolve_url  # module-private, tested directly
+
+    javascript_target = "javascript:alert(1)"
+    href = f"//duckduckgo.com/l/?uddg={quote(javascript_target)}&rut=x"
+    assert _resolve_url(href) == ""
+
+
+def test_resolve_url_rejects_file_scheme_in_uddg() -> None:
+    """A DDG redirect whose uddg value has a file: scheme must return empty string."""
+    from urllib.parse import quote
+
+    from shellpilot.web.search import _resolve_url
+
+    file_target = "file:///etc/passwd"
+    href = f"//duckduckgo.com/l/?uddg={quote(file_target)}&rut=x"
+    assert _resolve_url(href) == ""
+
+
+def test_resolve_url_passes_through_https_uddg_target() -> None:
+    """A DDG redirect with a valid https: uddg target is returned unchanged."""
+    from urllib.parse import quote
+
+    from shellpilot.web.search import _resolve_url
+
+    target = "https://example.com/page"
+    href = f"//duckduckgo.com/l/?uddg={quote(target)}&rut=x"
+    assert _resolve_url(href) == target

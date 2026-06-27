@@ -91,6 +91,7 @@ class OllamaClient:
             base_url=base_url or resolve_base_url(),
             timeout=httpx.Timeout(timeout_seconds, read=generate_timeout_seconds),
             transport=transport,
+            trust_env=False,
         )
         self._reasoning = reasoning
         # Per-model fallback cache: models that rejected the think flag.
@@ -116,12 +117,28 @@ class OllamaClient:
             raise OllamaUnreachableError(f"Ollama API unreachable: {exc}") from exc
         except httpx.HTTPError as exc:
             raise OllamaResponseError(f"Ollama API error: {exc}") from exc
-        payload: dict[str, Any] = response.json()
-        models = payload.get("models") or []
-        return [
-            LocalModel(name=str(item.get("name", "")), size_bytes=int(item.get("size", 0)))
-            for item in models
-        ]
+        try:
+            payload = response.json()
+            models = payload.get("models") or []
+            return [
+                LocalModel(name=str(item.get("name", "")), size_bytes=int(item.get("size", 0)))
+                for item in models
+            ]
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise OllamaResponseError(f"Ollama API returned a malformed model list: {exc}") from exc
+
+    def _api_show(self, model: str) -> dict[str, Any] | None:
+        """POST /api/show; return the parsed body, or None on any HTTP/transport error."""
+        try:
+            response = self._client.post("/api/show", json={"model": model})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        try:
+            result = response.json()
+        except ValueError:
+            return None  # malformed JSON body — metadata probing must never crash
+        return result if isinstance(result, dict) else None
 
     def model_context_length(self, model: str) -> int | None:
         """Maximum context length from model metadata, or None when undetectable.
@@ -129,12 +146,10 @@ class OllamaClient:
         Note the Ollama context trap (design section 10.5): this is the model's
         maximum, NOT the runtime context. chat() must always set num_ctx.
         """
-        try:
-            response = self._client.post("/api/show", json={"model": model})
-            response.raise_for_status()
-        except httpx.HTTPError:
+        payload = self._api_show(model)
+        if payload is None:
             return None
-        info = response.json().get("model_info") or {}
+        info = payload.get("model_info") or {}
         for key, value in info.items():
             if key.endswith(".context_length") and isinstance(value, int):
                 return value
@@ -146,12 +161,9 @@ class OllamaClient:
         Returns an empty tuple on any HTTP or transport error so that capability
         probing never crashes a session.
         """
-        try:
-            response = self._client.post("/api/show", json={"model": model})
-            response.raise_for_status()
-        except httpx.HTTPError:
+        payload = self._api_show(model)
+        if payload is None:
             return ()
-        payload: dict[str, Any] = response.json()
         return tuple(payload.get("capabilities") or ())
 
     def preload(self, model: str, *, keep_alive: str = "5m") -> None:
@@ -219,6 +231,7 @@ class OllamaClient:
         content_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        done_seen = False
         try:
             with self._client.stream("POST", "/api/chat", json=payload) as response:
                 if response.status_code >= 400:
@@ -231,9 +244,15 @@ class OllamaClient:
                         chunk = json.loads(line)
                     except json.JSONDecodeError as exc:
                         raise OllamaResponseError(f"invalid stream chunk: {line[:200]}") from exc
+                    if not isinstance(chunk, dict):
+                        raise OllamaResponseError(f"unexpected stream chunk shape: {line[:200]}")
                     if chunk.get("error"):
                         raise OllamaResponseError(str(chunk["error"]))
+                    if chunk.get("done"):
+                        done_seen = True
                     message = chunk.get("message") or {}
+                    if not isinstance(message, dict):
+                        raise OllamaResponseError(f"unexpected stream message shape: {line[:200]}")
                     token = message.get("content") or ""
                     if token:
                         content_parts.append(token)
@@ -245,10 +264,15 @@ class OllamaClient:
                     thinking = message.get("thinking") or ""
                     if thinking:
                         thinking_parts.append(thinking)
-                    for raw_call in message.get("tool_calls") or []:
+                    raw_calls = message.get("tool_calls") or []
+                    if not isinstance(raw_calls, list):
+                        raise OllamaResponseError(f"unexpected tool_calls shape: {line[:200]}")
+                    for raw_call in raw_calls:
                         parsed = _decode_tool_call(raw_call)
                         if parsed is not None:
                             tool_calls.append(parsed)
+            if not done_seen:
+                raise OllamaResponseError("stream ended before completion (no done sentinel)")
         except httpx.TransportError as exc:
             raise OllamaUnreachableError(f"Ollama API unreachable: {exc}") from exc
         return Message(
@@ -286,8 +310,15 @@ def encode_tool(tool: ToolDefinition) -> dict[str, Any]:
     }
 
 
-def _decode_tool_call(raw: dict[str, Any]) -> ToolCall | None:
-    function = raw.get("function") or {}
+def _decode_tool_call(raw: object) -> ToolCall | None:
+    # A non-dict element inside an otherwise-valid tool_calls list is one bad
+    # call, not a malformed stream — skip it (None) the same way a dict call
+    # with a missing name/arguments is skipped, rather than raising.
+    if not isinstance(raw, dict):
+        return None
+    function = raw.get("function")
+    if not isinstance(function, dict):
+        return None
     name = function.get("name")
     arguments = function.get("arguments")
     if isinstance(arguments, str):

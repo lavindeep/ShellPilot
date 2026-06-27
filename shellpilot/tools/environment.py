@@ -8,8 +8,7 @@ from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
-from shellpilot.tools.filesystem import ALL_PROFILES
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 
 
 def _env_info(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:

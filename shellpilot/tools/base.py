@@ -7,10 +7,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from shellpilot.config.model import VALID_PROFILES
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.command_policy import CommandRisk
 from shellpilot.policy.risk import RiskLevel, SideEffect
+
+# Single canonical set derived from config.  Importing modules use this instead
+# of re-stating the literal so a future profile add requires only one edit here.
+ALL_PROFILES: frozenset[str] = frozenset(VALID_PROFILES)
 
 
 class ToolError(Exception):
@@ -110,8 +115,6 @@ def validate_args(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
             return f"unknown argument '{name}' for {spec.name}"
         expected = _JSON_TYPES.get(str(schema.get("type", "string")))
         if expected is not None and not isinstance(value, expected):
-            if expected is int and isinstance(value, bool):
-                return f"argument '{name}' must be an integer"
             return f"argument '{name}' must be of type {schema.get('type')}"
         if expected is int and isinstance(value, bool):
             return f"argument '{name}' must be an integer"

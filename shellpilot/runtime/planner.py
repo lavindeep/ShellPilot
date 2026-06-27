@@ -19,8 +19,7 @@ from shellpilot.llm.messages import ToolDefinition
 from shellpilot.persistence.json_store import atomic_write_json, atomic_write_text
 from shellpilot.persistence.paths import project_state_dir
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
-from shellpilot.tools.filesystem import ALL_PROFILES
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 
 STEP_STATUSES = ("pending", "active", "completed", "skipped")
 PLAN_STATUSES = ("proposed", "active", "blocked", "completed", "cancelled")
@@ -146,23 +145,6 @@ def render_plan_markdown(plan: TaskPlan) -> str:
     return "\n".join(parts)
 
 
-def render_plan_terminal(plan: TaskPlan) -> str:
-    lines = [f"Goal: {plan.goal}", ""]
-    if plan.assumptions:
-        lines.append("Assumptions:")
-        lines.extend(f"- {item}" for item in plan.assumptions)
-        lines.append("")
-    lines.append("Plan:")
-    for index, step in enumerate(plan.steps, start=1):
-        marker = {"completed": "✓", "active": "→", "skipped": "·"}.get(step.status, " ")
-        lines.append(f"{index}. [{marker}] {step.title}")
-    if plan.verification:
-        lines.append("")
-        lines.append("Verification:")
-        lines.extend(f"- {item}" for item in plan.verification)
-    return "\n".join(lines)
-
-
 def compact_plan_state(plan: TaskPlan) -> str:
     """Small plan-state block injected into the model context (section 11.3)."""
     steps = "; ".join(
@@ -200,7 +182,10 @@ class PlanManager:
         self._workspace = workspace
 
     def artifact_path(self, plan: TaskPlan) -> Path:
-        return project_state_dir(self._workspace) / "tasks" / plan.task_id / "PLAN.md"
+        # Pinned to the plan's own workspace (set at create, persisted, restored),
+        # not the mutable self._workspace — so a mid-plan /cwd keeps PLAN.md where
+        # it was written instead of orphaning it under the new boundary (§11.3).
+        return project_state_dir(plan.workspace) / "tasks" / plan.task_id / "PLAN.md"
 
     def _write(self, plan: TaskPlan) -> None:
         plan.updated = _now_iso()
@@ -322,8 +307,13 @@ class PlanManager:
             nxt = next((s for s in self.active.steps if s.status == "pending"), None)
             if nxt is not None:
                 nxt.status = "active"
-            elif all(s.status in ("completed", "skipped") for s in self.active.steps):
-                self.active.status = "completed"
+        # Finalize after ANY status change: a skipped final step must complete the
+        # plan too, otherwise it stays active forever (keeps injecting, the
+        # end-of-plan summary never fires, the session pointer is never cleaned).
+        if self.active.steps and all(
+            s.status in ("completed", "skipped") for s in self.active.steps
+        ):
+            self.active.status = "completed"
         self._write(self.active)
         return ""
 
@@ -438,8 +428,7 @@ def make_plan_tools(
             )
             plan = manager.active
         elif (
-            manager.pending_revision is None
-            and manager.active is not None
+            manager.active is not None
             and manager.active.status in ("proposed", "active")
             and manager.active.goal == goal
             and [step.title for step in manager.active.steps] == steps

@@ -286,10 +286,9 @@ class TerminalUI:
         self._console.print()
         if request.diff:
             cap = DiffReveal.WINDOW_ROWS
-            long_diff = self._diff_reveal.row_count(request.diff) > DiffReveal.ANIMATE_THRESHOLD
             # Long diffs scroll-reveal (motion only when enabled+TTY) then settle
             # into a capped window; short diffs print the full panel unchanged.
-            self._diff_reveal.reveal(request.diff, max_rows=cap)
+            long_diff = self._diff_reveal.reveal(request.diff, max_rows=cap)
             self._console.print(
                 Padding(
                     render_diff(request.diff, self._glyphs, max_rows=cap if long_diff else None),
@@ -472,6 +471,25 @@ def run_interactive(
         console.print(f"[red]Model {chosen} is not installed.[/red] Try: ollama pull {chosen}")
         return 1
 
+    # Fail fast on a missing --resume target BEFORE any consent prompt or model
+    # load: resolving the session file is pure filesystem (no egress), so a
+    # typo'd or stale --resume must not make the user consent and wait through a
+    # preload only to then hit "session not found".
+    sessions_dir = SessionStore.sessions_dir(workspace)
+    resume_path: Path | None = None
+    if resume is not None:
+        resume_path = (
+            SessionStore.latest(sessions_dir)
+            if resume == "latest"
+            else SessionStore.find(sessions_dir, resume)
+        )
+        if resume_path is None:
+            console.print(
+                f"[red]No saved session to resume[/red] "
+                f"({'none found' if resume == 'latest' else resume}) in {sessions_dir}."
+            )
+            return 1
+
     # Cloud-egress consent boundary (design section 15.2): a cloud/remote model
     # must clear allow_cloud + per-session consent BEFORE any prompt-bearing call
     # touches it. Placed strictly before _preload — the first egress point — so a
@@ -537,26 +555,13 @@ def run_interactive(
             host=(urlsplit(settings.model.base_url).hostname or "").rstrip("."),
         )
 
-    sessions_dir = SessionStore.sessions_dir(workspace)
     # Capture prior sessions for the banner BEFORE this session's meta is
-    # written, so the current (empty) session never lists itself.
+    # written, so the current (empty) session never lists itself. sessions_dir
+    # and the --resume existence check were resolved earlier (before consent).
     recent_sessions = [
         (label, _relative_age(mtime)) for label, mtime in SessionStore.recent(sessions_dir)
     ]
-    restored = None
-    if resume is not None:
-        session_path = (
-            SessionStore.latest(sessions_dir)
-            if resume == "latest"
-            else SessionStore.find(sessions_dir, resume)
-        )
-        if session_path is None:
-            console.print(
-                f"[red]No saved session to resume[/red] "
-                f"({'none found' if resume == 'latest' else resume}) in {sessions_dir}."
-            )
-            return 1
-        restored = SessionStore.load(session_path)
+    restored = SessionStore.load(resume_path) if resume_path is not None else None
     session = SessionStore(
         sessions_dir,
         restored.session_id if restored is not None else SessionStore.new_session_id(),
@@ -677,28 +682,38 @@ def run_interactive(
             continue
         if not line:
             continue
-        if line.startswith("!"):
-            # `!<cmd>` runs one command through the audited manual-shell path
-            # (raw shell=True, exactly like /shell); a bare `!` opens the shell
-            # loop. This is a human-only escape — model output never reaches this
-            # reader — so it carries the same trust as /shell. Live workspace
-            # honours a prior /cwd.
-            workspace = runtime.status().workspace
-            command = line[1:].strip()
-            if command:
-                run_manual_command(command, workspace, audit)
-            else:
-                manual_shell_loop(console, workspace, audit)
+        # The `!` and `/` branches run outside the normal-turn guard below, so
+        # a Ctrl+C (or model error) here is caught at this level — otherwise it
+        # escapes run_interactive and crashes the REPL, skipping session_end.
+        try:
+            if line.startswith("!"):
+                # `!<cmd>` runs one command through the audited manual-shell path
+                # (raw shell=True, exactly like /shell); a bare `!` opens the
+                # shell loop. This is a human-only escape — model output never
+                # reaches this reader — so it carries the same trust as /shell.
+                # Live workspace honours a prior /cwd.
+                workspace = runtime.status().workspace
+                command = line[1:].strip()
+                if command:
+                    run_manual_command(command, workspace, audit)
+                else:
+                    manual_shell_loop(console, workspace, audit)
+                continue
+            if line.startswith("/"):
+                action = dispatcher.handle(line)
+                if action is SlashAction.EXIT:
+                    break
+                if action is SlashAction.MANUAL_SHELL:
+                    # Fetch the live workspace from the runtime so that a prior
+                    # /cwd set is honoured, rather than using the stale local
+                    # captured at startup.
+                    manual_shell_loop(console, runtime.status().workspace, audit)
+                continue
+        except KeyboardInterrupt:
+            ui.show_status("Interrupted.")
             continue
-        if line.startswith("/"):
-            action = dispatcher.handle(line)
-            if action is SlashAction.EXIT:
-                break
-            if action is SlashAction.MANUAL_SHELL:
-                # Fetch the live workspace from the runtime so that a prior
-                # /cwd set is honoured, rather than using the stale local
-                # captured at startup.
-                manual_shell_loop(console, runtime.status().workspace, audit)
+        except OllamaError as exc:
+            ui.show_error(f"Model call failed: {exc}")
             continue
         try:
             staged_paths = attachments.take()
