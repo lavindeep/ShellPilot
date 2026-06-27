@@ -124,18 +124,26 @@ class OllamaClient:
             for item in models
         ]
 
+    def _api_show(self, model: str) -> dict[str, Any] | None:
+        """POST /api/show; return the parsed body, or None on any HTTP/transport error."""
+        try:
+            response = self._client.post("/api/show", json={"model": model})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        result: dict[str, Any] = response.json()
+        return result
+
     def model_context_length(self, model: str) -> int | None:
         """Maximum context length from model metadata, or None when undetectable.
 
         Note the Ollama context trap (design section 10.5): this is the model's
         maximum, NOT the runtime context. chat() must always set num_ctx.
         """
-        try:
-            response = self._client.post("/api/show", json={"model": model})
-            response.raise_for_status()
-        except httpx.HTTPError:
+        payload = self._api_show(model)
+        if payload is None:
             return None
-        info = response.json().get("model_info") or {}
+        info = payload.get("model_info") or {}
         for key, value in info.items():
             if key.endswith(".context_length") and isinstance(value, int):
                 return value
@@ -147,12 +155,9 @@ class OllamaClient:
         Returns an empty tuple on any HTTP or transport error so that capability
         probing never crashes a session.
         """
-        try:
-            response = self._client.post("/api/show", json={"model": model})
-            response.raise_for_status()
-        except httpx.HTTPError:
+        payload = self._api_show(model)
+        if payload is None:
             return ()
-        payload: dict[str, Any] = response.json()
         return tuple(payload.get("capabilities") or ())
 
     def preload(self, model: str, *, keep_alive: str = "5m") -> None:
