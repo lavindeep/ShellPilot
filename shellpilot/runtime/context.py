@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from shellpilot.runtime.budget import estimate_tokens
 from shellpilot.skills.model import Skill, SkillResource, SkillTrigger, is_on_demand
-from shellpilot.skills.triggers import TriggerContext, any_fires, fires
+from shellpilot.skills.triggers import TriggerContext, fires
 
 
 @dataclass(frozen=True)
@@ -68,11 +68,6 @@ class ContextSnapshot:
 
 def _skill_block_text(skill: Skill) -> str:
     return f"## Skill: {skill.name}\n{skill.body}"
-
-
-def _skill_should_inject(skill: Skill, *, ctx: TriggerContext) -> bool:
-    """Trigger predicate used by both the live prompt and /skills Active column."""
-    return any_fires(skill.triggers, skill.name, ctx)
 
 
 def _matched_triggers(skill: Skill, *, ctx: TriggerContext) -> tuple[SkillTrigger, ...]:
@@ -130,6 +125,27 @@ def _script_summary(skill: Skill) -> str:
     return f"{len(skill.scripts)} {noun} (execution unsupported)"
 
 
+def _skill_decision(
+    skill: Skill,
+    *,
+    injected: bool,
+    matched: tuple[SkillTrigger, ...],
+    reason: str,
+    injected_refs: tuple[SkillResource, ...],
+) -> SkillDecision:
+    return SkillDecision(
+        skill=skill.name,
+        root=skill.root,
+        injected=injected,
+        triggers=skill.triggers,
+        matched_triggers=matched,
+        reason=reason,
+        resource_summary=_resource_summary(skill, injected_refs),
+        script_summary=_script_summary(skill),
+        warnings=skill.warnings,
+    )
+
+
 class ContextAssembler:
     """Pure (no I/O). Builds the structured system-prompt snapshot."""
 
@@ -168,23 +184,19 @@ class ContextAssembler:
         budget_blown = False
         for skill in all_skills:
             if not skill.valid:
-                decisions_by_id[id(skill)] = SkillDecision(
-                    skill=skill.name,
-                    root=skill.root,
+                decisions_by_id[id(skill)] = _skill_decision(
+                    skill,
                     injected=False,
-                    triggers=skill.triggers,
-                    matched_triggers=(),
+                    matched=(),
                     reason=f"invalid: {skill.error}",
-                    resource_summary=_resource_summary(skill, ()),
-                    script_summary=_script_summary(skill),
-                    warnings=skill.warnings,
+                    injected_refs=(),
                 )
 
         for skill in _ordered_valid_skills(skills):
             text = _skill_block_text(skill)
             source = skill.root
             matched = _matched_triggers(skill, ctx=trigger_ctx)
-            if not _skill_should_inject(skill, ctx=trigger_ctx):
+            if not matched:
                 reason = _skill_not_injected_reason(skill, ctx=trigger_ctx)
                 skill_blocks.append(
                     ContextBlock(
@@ -195,16 +207,12 @@ class ContextAssembler:
                         reason=reason,
                     )
                 )
-                decisions_by_id[id(skill)] = SkillDecision(
-                    skill=skill.name,
-                    root=skill.root,
+                decisions_by_id[id(skill)] = _skill_decision(
+                    skill,
                     injected=False,
-                    triggers=skill.triggers,
-                    matched_triggers=matched,
+                    matched=matched,
                     reason=reason,
-                    resource_summary=_resource_summary(skill, ()),
-                    script_summary=_script_summary(skill),
-                    warnings=skill.warnings,
+                    injected_refs=(),
                 )
                 continue
             references = _triggered_references(skill, ctx=trigger_ctx)
@@ -220,16 +228,12 @@ class ContextAssembler:
                         reason="skipped: skill budget",
                     )
                 )
-                decisions_by_id[id(skill)] = SkillDecision(
-                    skill=skill.name,
-                    root=skill.root,
+                decisions_by_id[id(skill)] = _skill_decision(
+                    skill,
                     injected=False,
-                    triggers=skill.triggers,
-                    matched_triggers=matched,
+                    matched=matched,
                     reason="skipped: skill budget",
-                    resource_summary=_resource_summary(skill, ()),
-                    script_summary=_script_summary(skill),
-                    warnings=skill.warnings,
+                    injected_refs=(),
                 )
                 continue
             cumulative += group_tokens
@@ -260,16 +264,12 @@ class ContextAssembler:
                     on_demand_names.append(resource.name)
             if on_demand_names:
                 readable.append((skill.name, on_demand_names))
-            decisions_by_id[id(skill)] = SkillDecision(
-                skill=skill.name,
-                root=skill.root,
+            decisions_by_id[id(skill)] = _skill_decision(
+                skill,
                 injected=True,
-                triggers=skill.triggers,
-                matched_triggers=matched,
+                matched=matched,
                 reason="",
-                resource_summary=_resource_summary(skill, references),
-                script_summary=_script_summary(skill),
-                warnings=skill.warnings,
+                injected_refs=references,
             )
 
         index_injected = bool(injected_names)
