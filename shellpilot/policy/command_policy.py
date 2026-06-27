@@ -168,17 +168,26 @@ def _path_arg_outside_workspace(argv: list[str], workspace: Path) -> str | None:
     root = workspace.resolve()
     for token in argv[1:]:
         if token.startswith("-"):
-            # skip flags/options
-            continue
+            # A flag may still hide a path in its value (e.g. --file=/etc/passwd,
+            # --output=/etc/x). Check the substring after the first '=' when it
+            # looks path-like; otherwise the flag carries no path to check.
+            if "=" not in token:
+                continue
+            value = token.split("=", 1)[1]
+            if "/" not in value and not value.startswith(".."):
+                continue
+            candidate = value
+        else:
+            candidate = token
         try:
-            if token.startswith("/"):
-                target = Path(token).resolve()
+            if candidate.startswith("/"):
+                target = Path(candidate).resolve()
             else:
-                target = (workspace / token).resolve()
+                target = (workspace / candidate).resolve()
         except OSError:
             continue
         if root != target and root not in target.parents:
-            return f"target {token} is outside the workspace boundary"
+            return f"target {candidate} is outside the workspace boundary"
     return None
 
 
@@ -223,7 +232,34 @@ def _is_git_push_short_force_flag(flag: str) -> bool:
     return False
 
 
-def _classify_git(argv: list[str]) -> CommandRisk:
+GIT_BRANCH_READONLY_FLAGS: Final = frozenset(
+    {"-l", "--list", "-a", "--all", "-r", "--remotes", "--contains", "--merged", "--points-at"}
+)
+
+
+def _git_output_path(tokens: list[str]) -> str | None:
+    """The path value of a ``--output`` (or ``-O`` order-file) option, else None.
+
+    ``--output`` is a global diff-formatting option honoured by every
+    diff-emitting verb (``diff``/``show``/``log``/``stash show``/…), so the whole
+    invocation is scanned rather than a single verb. ``-O`` is git's order-file
+    option, not an ``--output`` short form; it is covered conservatively (an
+    out-of-workspace order-file is still a boundary crossing worth escalating).
+    """
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("--output", "-O"):
+            return tokens[index + 1] if index + 1 < len(tokens) else None
+        if token.startswith("--output="):
+            return token[len("--output=") :]
+        if token.startswith("-O") and len(token) > 2:
+            return token[2:]
+        index += 1
+    return None
+
+
+def _classify_git(argv: list[str], workspace: Path) -> CommandRisk:
     verb, verb_args, conservative_global = _scan_git_verb(argv)
     flags = [token for token in argv[1:] if token.startswith("-")]
     if verb in GIT_HIGH:
@@ -239,6 +275,25 @@ def _classify_git(argv: list[str]) -> CommandRisk:
         ):
             return CommandRisk(RiskLevel.HIGH, ("force push rewrites remote history",))
         return CommandRisk(RiskLevel.MEDIUM, ("git push publishes commits",))
+    # --output writes an arbitrary file from any diff-emitting verb, so scan the
+    # whole invocation. Placed after every HIGH determination above and before
+    # any read-only LOW return so it only ever escalates a would-be-LOW command
+    # (never downgrades an already-HIGH one, e.g. `branch -D x --output=in_ws`).
+    output_path = _git_output_path(argv[1:])
+    if output_path is not None:
+        if _path_arg_outside_workspace(["git", output_path], workspace):
+            return CommandRisk(
+                RiskLevel.HIGH,
+                (f"git {verb or '?'} output path is outside the workspace boundary",),
+            )
+        return CommandRisk(RiskLevel.MEDIUM, (f"git {verb or '?'} writes output to a file",))
+    if verb in ("branch", "remote"):
+        # A non-flag positional names a branch/remote to create/rename/add/set —
+        # a state mutation, not a read-only listing (which carries no name or a
+        # listing flag like --list/-a). Bare `git branch`/`git remote -v` stay LOW.
+        listing = verb == "branch" and any(flag in GIT_BRANCH_READONLY_FLAGS for flag in flags)
+        if not listing and any(not arg.startswith("-") for arg in verb_args):
+            return CommandRisk(RiskLevel.MEDIUM, (f"git {verb} changes repository state",))
     if conservative_global:
         return CommandRisk(RiskLevel.MEDIUM, ("git uses a non-benign global option",))
     if verb in GIT_READONLY_VERBS and verb != "stash":
@@ -284,7 +339,7 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
     if executable == "rm":
         return _classify_rm(argv, workspace)
     if executable == "git":
-        risk = _classify_git(argv)
+        risk = _classify_git(argv, workspace)
         if secret:
             return CommandRisk(RiskLevel.HIGH, (*risk.reasons, secret))
         return risk
