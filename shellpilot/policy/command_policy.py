@@ -55,7 +55,6 @@ GIT_READONLY_VERBS: Final = frozenset(
         "remote",
         "rev-parse",
         "ls-files",
-        "stash",
     }
 )
 GIT_HIGH: Final = frozenset({"reset", "clean"})
@@ -296,7 +295,7 @@ def _classify_git(argv: list[str], workspace: Path) -> CommandRisk:
             return CommandRisk(RiskLevel.MEDIUM, (f"git {verb} changes repository state",))
     if conservative_global:
         return CommandRisk(RiskLevel.MEDIUM, ("git uses a non-benign global option",))
-    if verb in GIT_READONLY_VERBS and verb != "stash":
+    if verb in GIT_READONLY_VERBS:
         return CommandRisk(RiskLevel.LOW, ())
     if verb == "stash" and verb_args and verb_args[0] in ("list", "show"):
         return CommandRisk(RiskLevel.LOW, ())
