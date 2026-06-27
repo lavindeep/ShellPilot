@@ -515,6 +515,8 @@ hard_limit_tokens = floor(model_context_tokens * 0.90)
 
 `clamp(min, max, value)` means use `value` but never lower than `min` or higher than `max`.
 
+When automatic compaction is off, a turn is refused if it would cross `hard_limit_tokens`. That pre-turn gate counts the estimated prompt (system prompt + history, including history images) plus this turn's incoming text **and** its incoming images (`IMAGE_TOKEN_ESTIMATE` per image), so an image-heavy turn cannot slip past a limit that text-only turns respect. The term is zero for text-only turns, leaving them unchanged.
+
 Note the floor case: at the 8192-token fallback, after the system prompt, tool schemas, and behavior instructions, the working prompt budget is roughly 3-4k tokens. Small-context operation is a first-class mode, not a degraded one: shorter tool results, more aggressive truncation, and no long conversational tails.
 
 If the selected model exposes a much larger context window, the runtime can scale up conversation and tool context, but it should still cap noisy data. Larger context should improve continuity, not encourage dumping full command logs into every prompt.
@@ -1307,6 +1309,8 @@ Reads of these are gated deterministically, never by model judgement. The `read_
 
 `search_text` applies the same gate to directory traversal: files whose path components name a secret are skipped (their contents are never read) unless `allow_sensitive_reads = "always"`, and the tool result appends a deterministic note naming up to three skipped files and pointing at `read_file` or the `"always"` setting. An explicit sensitive path passed as the search root is gated by the classifier exactly like `read_file`; once that gate authorizes it (auto under `"always"`, on approval under `"ask"`, never under `"never"`), the approved sensitive root is searched in full — the traversal skip applies only to sensitive files encountered incidentally under a non-sensitive root. Listing directory names (`list_dir`) is not a content read and is never gated.
 
+The write tools (`write_file`, `patch_file`, section 12.5) build their preview by reading the existing target, so an in-workspace sensitive file (e.g. a workspace `.env`) on overwrite, append, or patch would otherwise render its existing secret contents in the approval diff — and return them to the model on approval. When the resolved, in-workspace target's path components name a secret and `allow_sensitive_reads != "always"`, the diff is replaced with a `[sensitive file contents hidden]` placeholder at every preview and result site, so the existing on-disk secret never appears pre-approval. Out-of-workspace targets are already rejected by the workspace boundary (section 24.1) and cannot be previewed or written. This hides the contents only; write tools keep their existing risk and always-ask side-effect gate — the HIGH read-classifier is deliberately *not* bolted onto them, since write risk and read secrecy are separate concerns.
+
 ### 15.1 Egress Chokepoint (v0.10.0)
 
 When the model endpoint is **remote**, the entire prompt (system prompt, AGENTS.md, memory, file contents, command output) leaves the device — the prompt itself is an exfiltration channel that no per-action approval gate intercepts. The runtime owns a single locality signal (`_is_egressing()`, which delegates to the shared `is_egressing(model, base_url)` predicate in `config/model.py` — true when the model `base_url` is not loopback **or** the model is a cloud model — `is_cloud_model(name)`, the Ollama cloud tag (`:cloud`, or a sized `<size>-cloud` such as `:31b-cloud`, matched on the tag after the final `:`), which egresses to the provider even through a localhost Ollama proxy) and applies two controls at the one chokepoint where every **conversational** model request passes (`conversation.py` tool loop):
@@ -1479,6 +1483,8 @@ Example:
   ]
 }
 ```
+
+The project store is path-scoped to `workspace/.shellpilot/memory.json` and stamped with `project_id_for(workspace)`. Because the file follows the workspace, a `/cwd set <path>` (section 14.1) rebuilds the project `MemoryStore` for the new workspace inside the single `set_workspace` chokepoint — so the previous workspace's facts stop injecting into the prompt (and, under cloud, stop egressing). The shared global store is preserved across the change.
 
 ## 17. Configuration
 
@@ -2390,6 +2396,7 @@ Most rows here concern the v2 memory system. The prompt-injection and secret row
 | Prompt injection in repo docs | Do not store instructions from project files as behavior memory without user approval. |
 | Secret-like content | Redact from memory proposals and logs. |
 | Too many memory proposals | Batch and ask once, or defer low-value suggestions. |
+| Workspace change (`/cwd set`) | Rebuild the project memory store for the new path; the prior workspace's facts are never injected (or egressed) after the switch. |
 
 ### 24.6 Ollama And Model Edge Cases
 

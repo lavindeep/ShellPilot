@@ -197,6 +197,92 @@ def test_write_preview_diff_header_uses_resolved_relative_path(tmp_path: Path) -
     assert "sub/../sub/new.txt" not in diff
 
 
+# -- in-workspace sensitive-file pre-approval previews (design section 15) -------
+
+
+def _sensitive_ctx(workspace: Path, snapshots: SnapshotStore, mode: str) -> ToolContext:
+    return ToolContext(
+        workspace=workspace,
+        max_result_tokens=2000,
+        snapshots=snapshots,
+        allow_sensitive_reads=mode,
+    )
+
+
+def test_write_preview_hides_in_workspace_sensitive_before_content(tmp_path: Path) -> None:
+    """Overwriting an in-workspace sensitive file (.env) must not render the
+    existing secret contents in the pre-approval diff (design section 15)."""
+    (tmp_path / ".env").write_text("API_KEY=supersecret123\nDB_PASSWORD=hunter2\n")
+    diff = WRITE_FILE.preview(  # type: ignore[misc]
+        ctx(tmp_path),  # allow_sensitive_reads defaults to "ask"
+        {"path": ".env", "content": "API_KEY=x\n", "mode": "overwrite"},
+    )
+    assert "supersecret123" not in diff
+    assert "hunter2" not in diff
+    assert "[sensitive file contents hidden]" in diff
+
+
+def test_write_preview_shows_non_sensitive_before_content(tmp_path: Path) -> None:
+    """A normal in-workspace overwrite still shows its real before-content diff."""
+    (tmp_path / "notes.txt").write_text("alpha\nbeta\n")
+    diff = WRITE_FILE.preview(  # type: ignore[misc]
+        ctx(tmp_path),
+        {"path": "notes.txt", "content": "gamma\n", "mode": "overwrite"},
+    )
+    assert "alpha" in diff
+    assert "[sensitive file contents hidden]" not in diff
+
+
+def test_write_preview_shows_sensitive_when_allow_always(tmp_path: Path) -> None:
+    """allow_sensitive_reads='always' opts back into the real before-content."""
+    (tmp_path / ".env").write_text("API_KEY=visiblesecret\n")
+    diff = WRITE_FILE.preview(  # type: ignore[misc]
+        _sensitive_ctx(tmp_path, SnapshotStore(), "always"),
+        {"path": ".env", "content": "API_KEY=x\n", "mode": "overwrite"},
+    )
+    assert "visiblesecret" in diff
+
+
+def test_write_file_result_diff_hides_sensitive_before(tmp_path: Path) -> None:
+    """The diff returned to the model after writing an in-workspace sensitive file
+    omits the prior secret contents."""
+    (tmp_path / ".env").write_text("TOKEN=abc123secret\n")
+    context = read_then_ctx(tmp_path, ".env")
+    result = WRITE_FILE.handler(
+        context, {"path": ".env", "content": "TOKEN=new\n", "mode": "overwrite"}
+    )
+    assert result.success
+    assert "abc123secret" not in result.content
+    assert "abc123secret" not in result.metadata.get("diff", "")
+    assert "[sensitive file contents hidden]" in result.content
+
+
+def test_patch_preview_hides_sensitive_before(tmp_path: Path) -> None:
+    """Patching an in-workspace sensitive file does not reveal its contents."""
+    (tmp_path / ".env").write_text("SECRET=topsecret\nKEEP=1\n")
+    context = read_then_ctx(tmp_path, ".env")
+    diff = PATCH_FILE.preview(  # type: ignore[misc]
+        context,
+        {"path": ".env", "operation": "replace_exact", "old": "KEEP=1", "new": "KEEP=2"},
+    )
+    assert "topsecret" not in diff
+    assert "[sensitive file contents hidden]" in diff
+
+
+def test_patch_file_result_diff_hides_sensitive(tmp_path: Path) -> None:
+    """The patch result diff returned to the model omits the secret contents."""
+    (tmp_path / ".env").write_text("SECRET=topsecret\nKEEP=1\n")
+    context = read_then_ctx(tmp_path, ".env")
+    result = PATCH_FILE.handler(
+        context,
+        {"path": ".env", "operation": "replace_exact", "old": "KEEP=1", "new": "KEEP=2"},
+    )
+    assert result.success
+    assert "topsecret" not in result.content
+    assert "topsecret" not in result.metadata.get("diff", "")
+    assert "[sensitive file contents hidden]" in result.content
+
+
 def test_stale_snapshot_rejected(tmp_path: Path) -> None:
     (tmp_path / "f.py").write_text("x = 1\n")
     context = read_then_ctx(tmp_path, "f.py")
