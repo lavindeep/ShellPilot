@@ -26,9 +26,8 @@ from pathlib import Path
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.document import Document
 from prompt_toolkit.filters import has_focus
-from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.layout.containers import Float, FloatContainer, HSplit, VSplit, Window
@@ -38,8 +37,8 @@ from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.output import Output
 
+from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.input import SlashCompleter
-from shellpilot.cli.render import _sanitize_line
 from shellpilot.cli.status_bar import status_bar
 from shellpilot.cli.theme import (
     COLOR_ACCENT,
@@ -139,6 +138,7 @@ def build_app(
     ctx_pct: int = 0,
     input: Input | None = None,
     output: Output | None = None,
+    ui: AppUI | None = None,
 ) -> Application[None]:
     """Build the inert full-screen app shell.
 
@@ -154,13 +154,22 @@ def build_app(
     branch_glyph = "⎇" if unicode_mode else "git:"
     branch = _read_git_branch(workspace)
 
-    # Chat pane: a read-only, unfocusable, wrapping plain-text buffer.
-    # NOTE: branch 3 revisits this pane control to render Rich → ANSI content
-    # (responses, tool calls, diffs); for now it is plain echoed text.
-    pane_buffer = Buffer(name="pane", read_only=True)
+    # Chat pane: a FormattedTextControl rendering the AppUI transcript as Rich→ANSI.
+    # Rich handles all wrapping at width W (wrap_lines=False on the Window), so the
+    # ANSI string already contains the correct line breaks for the current width.
+    # The AppUI re-renders when the width changes (cache miss in _render_ansi).
+    if ui is None:
+        ui = AppUI(
+            glyphs=glyphs,
+            workspace=workspace,
+            width_fn=lambda: get_app().output.get_size().columns,
+        )
+    # Explicit AppUI annotation (not AppUI | None) so the closures below capture a
+    # non-optional type; ui is already narrowed to AppUI by the guard above.
+    _ui: AppUI = ui
     pane_window = Window(
-        BufferControl(buffer=pane_buffer, focusable=False),
-        wrap_lines=True,
+        FormattedTextControl(lambda: ANSI(_ui._render_ansi()), focusable=False),
+        wrap_lines=False,
     )
 
     # Input dock: a focused, multi-line buffer with slash completion.
@@ -184,12 +193,6 @@ def build_app(
         wrap_lines=True,
         get_line_prefix=_dock_prefix,
     )
-
-    def _append_pane(text: str) -> None:
-        sanitized = "\n".join(_sanitize_line(line) for line in text.split("\n"))
-        existing = pane_buffer.text
-        combined = f"{existing}{sanitized}\n" if existing else f"{sanitized}\n"
-        pane_buffer.set_document(Document(combined, len(combined)), bypass_readonly=True)
 
     def _border(*, top: bool) -> Callable[[], StyleAndTextTuples]:
         # One shared width: the live terminal columns, read at render time so a
@@ -253,7 +256,7 @@ def build_app(
             event.app.exit()
             return
         if text.strip():
-            _append_pane(text)
+            _ui.show_status(text)
         dock_buffer.reset()
 
     @kb.add("escape", "enter", filter=dock_focused)
@@ -270,7 +273,7 @@ def build_app(
 
     @kb.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
-        _append_pane(_IDLE_HINT)
+        _ui.show_status(_IDLE_HINT)
 
     # NOTE: mouse-wheel scroll over the pane needs no binding — prompt_toolkit
     # routes wheel events to the window under the cursor (the pane), whose own

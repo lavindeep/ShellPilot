@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import pytest
+from prompt_toolkit.application import Application
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -18,6 +19,7 @@ from shellpilot.cli.app import (
     build_app,
     horizontal_border,
 )
+from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.slash import command_words
 from shellpilot.cli.status_bar import status_bar
 from shellpilot.cli.theme import ASCII_GLYPHS, UNICODE_GLYPHS
@@ -179,46 +181,58 @@ def test_read_git_branch_worktree_file_is_none(tmp_path: Path) -> None:
 # --- Headless app smoke (the anti-garbage proof) ------------------------------
 
 
-def _build_headless(tmp_path: Path, inp: object, *, unicode: bool = True) -> object:
-    return build_app(
+def _build_headless(
+    tmp_path: Path,
+    inp: object,
+    *,
+    unicode: bool = True,
+) -> tuple[Application[None], AppUI]:
+    glyphs = UNICODE_GLYPHS if unicode else ASCII_GLYPHS
+    ui = AppUI(glyphs=glyphs, width_fn=lambda: 80)
+    app = build_app(
         workspace=tmp_path,
         model="gemma4:e4b",
         profile="balanced",
-        glyphs=UNICODE_GLYPHS if unicode else ASCII_GLYPHS,
+        glyphs=glyphs,
         commands=command_words(),
         input=inp,  # type: ignore[arg-type]
         output=DummyOutput(),
+        ui=ui,
     )
+    return app, ui
 
 
 def test_app_constructs_submits_and_exits(tmp_path: Path) -> None:
     with create_pipe_input() as inp:
-        app = _build_headless(tmp_path, inp)
+        app, ui = _build_headless(tmp_path, inp)
         inp.send_text("hello\n")  # LF → c-j → submit
         inp.send_text("/exit\n")  # quits cleanly
-        app.run()  # type: ignore[attr-defined]
-        pane = app.layout.get_buffer_by_name("pane")  # type: ignore[attr-defined]
-        assert pane is not None
-        assert "hello" in pane.text
+        app.run()
+        ansi = ui._render_ansi()
+        assert "hello" in ansi
         # The /exit command quit; it is never echoed into the pane.
-        assert "/exit" not in pane.text
+        assert "/exit" not in ansi
 
 
 def test_app_builds_in_ascii_mode(tmp_path: Path) -> None:
     with create_pipe_input() as inp:
-        app = _build_headless(tmp_path, inp, unicode=False)
+        app, _ = _build_headless(tmp_path, inp, unicode=False)
         inp.send_text("/exit\n")
-        app.run()  # type: ignore[attr-defined]
+        app.run()
         # Constructs and exits with the ASCII glyph/box set, no exception.
 
 
 def test_app_alt_enter_inserts_newline_then_submits(tmp_path: Path) -> None:
     with create_pipe_input() as inp:
-        app = _build_headless(tmp_path, inp)
+        app, ui = _build_headless(tmp_path, inp)
         # "a", Alt+Enter (ESC + CR) inserts a newline, "b", then Enter submits.
         inp.send_text("a\x1b\rb\r")
         inp.send_text("/exit\n")
-        app.run()  # type: ignore[attr-defined]
-        pane = app.layout.get_buffer_by_name("pane")  # type: ignore[attr-defined]
-        assert pane is not None
-        assert "a\nb" in pane.text
+        app.run()
+        from rich.text import Text as RichText
+
+        # The multi-line dock text "a\nb" is echoed via show_status as a single
+        # Text renderable; check its .plain property for the preserved newline.
+        texts = [r.plain for r in ui._renderables if isinstance(r, RichText)]
+        assert any("a\nb" in t for t in texts)
+        assert not any("/exit" in t for t in texts)
