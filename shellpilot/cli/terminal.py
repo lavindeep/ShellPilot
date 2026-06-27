@@ -213,6 +213,14 @@ class TerminalUI:
         self._spinner.stop()
         self._stream.feed(token)
 
+    def stream_thinking(self, text: str) -> None:
+        """No-op: the current terminal UI does not surface reasoning text.
+
+        A later full-screen UI consumes this hook; keeping it silent here keeps
+        a default session byte-identical.
+        """
+        return
+
     def show_status(self, text: str) -> None:
         self._console.print(f"[sp.dim]{escape(_sanitize_line(text))}[/sp.dim]")
 

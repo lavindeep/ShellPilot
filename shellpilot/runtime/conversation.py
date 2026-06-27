@@ -155,6 +155,7 @@ class ConversationRuntime:
         self._staged_tool_images: list[ImageRef] = []
         self._last_user_text = ""
         self._last_failure_signature: str | None = None
+        self._turn_output_tokens: int = 0
         self.snapshots = SnapshotStore()
         self.recent_diffs: list[str] = []
         self.plan_manager = PlanManager(workspace, settings.runtime.security_profile)
@@ -481,6 +482,7 @@ class ConversationRuntime:
         # Belt-and-braces: a stale stage left by an aborted prior turn must not
         # attach to this unrelated turn's first message.
         self._staged_tool_images.clear()
+        self._turn_output_tokens = 0
         if estimate_tokens(text) > self.budget.max_user_message_tokens:
             self._ui.show_status(
                 "Message too large for the model context "
@@ -526,6 +528,7 @@ class ConversationRuntime:
             context_tokens=used,
             context_pct=pct,
             warn=used > self.budget.compact_at_tokens,
+            output_tokens=self._turn_output_tokens,
         )
 
     def _pending_plan_step(self) -> tuple[int, str] | None:
@@ -610,9 +613,11 @@ class ConversationRuntime:
                     num_ctx=self.budget.model_context_tokens,
                     options=self._settings.model.options,
                     on_token=self._ui.stream_token,
+                    on_thinking=self._ui.stream_thinking,
                 )
             finally:
                 self._ui.end_response()
+            self._turn_output_tokens += reply.output_tokens
             self._record(reply)
             if not reply.tool_calls:
                 pending = self._pending_plan_step()
