@@ -245,3 +245,112 @@ def test_model_context_length_none_when_unavailable() -> None:
 
     client = OllamaClient(transport=httpx.MockTransport(handler))
     assert client.model_context_length("missing") is None
+
+
+# ---------------------------------------------------------------------------
+# on_thinking callback and eval_count → output_tokens (thinking-stream plumbing)
+# ---------------------------------------------------------------------------
+
+
+def test_on_thinking_fires_callback() -> None:
+    """Thinking fragments forwarded to on_thinking in order; on_token still fires for content."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stream_body(
+                {"message": {"role": "assistant", "thinking": "Hmm ", "content": ""}},
+                {"message": {"role": "assistant", "thinking": "let me think.", "content": ""}},
+                {
+                    "message": {"role": "assistant", "thinking": "", "content": "Answer"},
+                    "done": False,
+                },
+                {"message": {"role": "assistant", "content": ""}, "done": True},
+            ),
+        )
+
+    thinking_chunks: list[str] = []
+    content_tokens: list[str] = []
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    reply = client.chat(
+        "gemma4:e4b",
+        [user("hi")],
+        num_ctx=4096,
+        on_token=content_tokens.append,
+        on_thinking=thinking_chunks.append,
+    )
+    assert thinking_chunks == ["Hmm ", "let me think."]
+    assert content_tokens == ["Answer"]
+    assert reply.thinking == "Hmm let me think."
+    assert reply.content == "Answer"
+
+
+def test_on_thinking_none_does_not_raise() -> None:
+    """on_thinking=None (the default) leaves the existing stream behavior unchanged."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stream_body(
+                {
+                    "message": {"role": "assistant", "thinking": "thinking...", "content": ""},
+                    "done": True,
+                },
+            ),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    reply = client.chat("gemma4:e4b", [user("hi")], num_ctx=4096)
+    assert reply.thinking == "thinking..."
+
+
+def test_eval_count_sets_output_tokens() -> None:
+    """A done chunk carrying eval_count sets Message.output_tokens to that integer."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stream_body(
+                {"message": {"role": "assistant", "content": "hi"}, "done": True, "eval_count": 42},
+            ),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    reply = client.chat("gemma4:e4b", [user("hello")], num_ctx=4096)
+    assert reply.output_tokens == 42
+
+
+def test_eval_count_absent_gives_zero() -> None:
+    """A done chunk without eval_count yields output_tokens == 0."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stream_body(
+                {"message": {"role": "assistant", "content": "hi"}, "done": True},
+            ),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    reply = client.chat("gemma4:e4b", [user("hello")], num_ctx=4096)
+    assert reply.output_tokens == 0
+
+
+def test_eval_count_non_int_gives_zero() -> None:
+    """A non-int eval_count in the done chunk yields output_tokens == 0 (no raise)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stream_body(
+                {
+                    "message": {"role": "assistant", "content": "hi"},
+                    "done": True,
+                    "eval_count": "not-an-int",
+                },
+            ),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    reply = client.chat("gemma4:e4b", [user("hello")], num_ctx=4096)
+    assert reply.output_tokens == 0

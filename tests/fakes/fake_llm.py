@@ -60,6 +60,7 @@ class FakeLLM:
         num_ctx: int,
         options: dict[str, Any] | None = None,
         on_token: TokenCallback | None = None,
+        on_thinking: TokenCallback | None = None,
     ) -> Message:
         self.calls.append(
             RecordedCall(
@@ -76,6 +77,9 @@ class FakeLLM:
         if on_token is not None and reply.content:
             for chunk in _chunks(reply.content, 8):
                 on_token(chunk)
+        if on_thinking is not None and reply.thinking:
+            for chunk in _chunks(reply.thinking, 8):
+                on_thinking(chunk)
         return reply
 
     def health(self) -> bool:

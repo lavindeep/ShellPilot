@@ -938,3 +938,21 @@ def test_resume_existing_session_still_loads(
         json.loads(line) for line in (fake_paths.state_dir / "audit.jsonl").read_text().splitlines()
     ]
     assert any(e["event"] == "session_resume" for e in events), "resume load must still happen"
+
+
+# ---------------------------------------------------------------------------
+# stream_thinking no-op on TerminalUI (thinking-stream plumbing)
+# ---------------------------------------------------------------------------
+
+
+def test_stream_thinking_is_noop() -> None:
+    """TerminalUI.stream_thinking produces no console output.
+
+    Default session stays byte-identical: thinking is not echoed to the terminal.
+    """
+    console = make_console()
+    ui = TerminalUI(console, glyphs=GLYPHS, spinner=False)
+    console.begin_capture()
+    ui.stream_thinking("I am reasoning about this…")
+    captured = console.end_capture()
+    assert captured == ""

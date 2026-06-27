@@ -198,6 +198,7 @@ class OllamaClient:
         num_ctx: int,
         options: dict[str, Any] | None = None,
         on_token: Callable[[str], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
     ) -> Message:
         """Stream one chat completion; num_ctx is set explicitly on every request.
 
@@ -215,23 +216,27 @@ class OllamaClient:
         if self._reasoning and model not in self._no_think:
             payload["think"] = True
         try:
-            return self._stream_chat(payload, on_token)
+            return self._stream_chat(payload, on_token, on_thinking)
         except OllamaResponseError as exc:
             # Reasoning mode unavailable for this model: cache and retry once without
             # think (design section 24.6). Other models are not affected.
             if self._reasoning and model not in self._no_think and "think" in str(exc).lower():
                 self._no_think.add(model)
                 payload.pop("think", None)
-                return self._stream_chat(payload, on_token)
+                return self._stream_chat(payload, on_token, on_thinking)
             raise
 
     def _stream_chat(
-        self, payload: dict[str, Any], on_token: Callable[[str], None] | None
+        self,
+        payload: dict[str, Any],
+        on_token: Callable[[str], None] | None,
+        on_thinking: Callable[[str], None] | None = None,
     ) -> Message:
         content_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         done_seen = False
+        output_tokens = 0
         try:
             with self._client.stream("POST", "/api/chat", json=payload) as response:
                 if response.status_code >= 400:
@@ -250,6 +255,8 @@ class OllamaClient:
                         raise OllamaResponseError(str(chunk["error"]))
                     if chunk.get("done"):
                         done_seen = True
+                        raw_count = chunk.get("eval_count")
+                        output_tokens = raw_count if isinstance(raw_count, int) else 0
                     message = chunk.get("message") or {}
                     if not isinstance(message, dict):
                         raise OllamaResponseError(f"unexpected stream message shape: {line[:200]}")
@@ -260,10 +267,13 @@ class OllamaClient:
                             on_token(token)
                     # Reasoning text streams in a separate field; capture it so a
                     # reasoning-only turn is observable instead of silently empty
-                    # (design section 24.6). It is never streamed to the UI.
+                    # (design section 24.6). May be streamed to the UI via on_thinking
+                    # when a consumer is wired; never echoed back to the API.
                     thinking = message.get("thinking") or ""
                     if thinking:
                         thinking_parts.append(thinking)
+                        if on_thinking is not None:
+                            on_thinking(thinking)
                     raw_calls = message.get("tool_calls") or []
                     if not isinstance(raw_calls, list):
                         raise OllamaResponseError(f"unexpected tool_calls shape: {line[:200]}")
@@ -280,6 +290,7 @@ class OllamaClient:
             content="".join(content_parts),
             tool_calls=tuple(tool_calls),
             thinking="".join(thinking_parts),
+            output_tokens=output_tokens,
         )
 
 
