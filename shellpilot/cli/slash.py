@@ -84,13 +84,12 @@ HELP_ROWS: list[tuple[str, str]] = [
 
 
 def command_words() -> list[str]:
-    """Completion phrases derived from HELP_ROWS: split combined rows, drop <args>."""
+    """Completion phrases derived from HELP_ROWS: drop <args> placeholders."""
     words: list[str] = []
     for entry, _ in HELP_ROWS:
-        for raw in entry.split(","):
-            phrase = " ".join(part for part in raw.split() if not part.startswith("<"))
-            if phrase and phrase not in words:
-                words.append(phrase)
+        phrase = " ".join(part for part in entry.split() if not part.startswith("<"))
+        if phrase and phrase not in words:
+            words.append(phrase)
     return words
 
 
@@ -630,12 +629,12 @@ class SlashDispatcher:
             return
         self._console.print("Usage: /profile | /profile use <supervised|balanced>")
 
-    def _logs(self, args: list[str] | None = None) -> None:
+    def _logs(self, args: list[str]) -> None:
         audit = self._runtime.audit
         if audit is None:
             self._console.print("[dim]Audit logging is not active in this session.[/dim]")
             return
-        show_all = args is not None and args and args[0] == "all"
+        show_all = args[:1] == ["all"]
         session_filter = None if show_all else audit.session_id
         events = audit.tail(15, session_id=session_filter)
         if not events:

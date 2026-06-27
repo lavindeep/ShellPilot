@@ -146,23 +146,6 @@ def render_plan_markdown(plan: TaskPlan) -> str:
     return "\n".join(parts)
 
 
-def render_plan_terminal(plan: TaskPlan) -> str:
-    lines = [f"Goal: {plan.goal}", ""]
-    if plan.assumptions:
-        lines.append("Assumptions:")
-        lines.extend(f"- {item}" for item in plan.assumptions)
-        lines.append("")
-    lines.append("Plan:")
-    for index, step in enumerate(plan.steps, start=1):
-        marker = {"completed": "✓", "active": "→", "skipped": "·"}.get(step.status, " ")
-        lines.append(f"{index}. [{marker}] {step.title}")
-    if plan.verification:
-        lines.append("")
-        lines.append("Verification:")
-        lines.extend(f"- {item}" for item in plan.verification)
-    return "\n".join(lines)
-
-
 def compact_plan_state(plan: TaskPlan) -> str:
     """Small plan-state block injected into the model context (section 11.3)."""
     steps = "; ".join(
@@ -446,8 +429,7 @@ def make_plan_tools(
             )
             plan = manager.active
         elif (
-            manager.pending_revision is None
-            and manager.active is not None
+            manager.active is not None
             and manager.active.status in ("proposed", "active")
             and manager.active.goal == goal
             and [step.title for step in manager.active.steps] == steps

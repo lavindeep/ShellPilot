@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from shellpilot.config.model import Settings, is_egressing
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
-from shellpilot.llm.ollama import encode_tool, is_loopback_url
+from shellpilot.llm.ollama import encode_tool
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.memory.redaction import redact_secrets, redact_structure
 from shellpilot.memory.store import MemoryStore, MemoryStores, project_id_for
@@ -292,14 +292,6 @@ class ConversationRuntime:
     def _endpoint_host(self) -> str:
         """Host of the model endpoint (for audit); empty when unparseable."""
         return (urlsplit(self._base_url).hostname or "").rstrip(".")
-
-    def _endpoint_is_loopback(self) -> bool:
-        """True when the model endpoint is on this box (loopback = local).
-
-        Delegates to the shared ``is_loopback_url`` helper so the runtime egress
-        chokepoint and the CLI boot consent gate use one definition of off-box.
-        """
-        return is_loopback_url(self._base_url)
 
     def _is_egressing(self) -> bool:
         """True when a model request leaves this device.

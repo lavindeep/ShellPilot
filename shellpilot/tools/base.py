@@ -110,8 +110,6 @@ def validate_args(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
             return f"unknown argument '{name}' for {spec.name}"
         expected = _JSON_TYPES.get(str(schema.get("type", "string")))
         if expected is not None and not isinstance(value, expected):
-            if expected is int and isinstance(value, bool):
-                return f"argument '{name}' must be an integer"
             return f"argument '{name}' must be of type {schema.get('type')}"
         if expected is int and isinstance(value, bool):
             return f"argument '{name}' must be an integer"
