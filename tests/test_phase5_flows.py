@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from shellpilot.cli.manual_shell import BANNER, manual_shell_loop, run_manual_command
@@ -129,6 +130,31 @@ def test_manual_shell_loop_banner_and_exit(tmp_path: Path) -> None:
     assert (tmp_path / "probe.txt").read_text().strip() == "manual-mode-test"
     kinds = [e["event"] for e in read_events(tmp_path)]
     assert kinds == ["manual_shell_enter", "manual_shell_command", "manual_shell_exit"]
+
+
+def test_manual_shell_loop_survives_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ctrl+C during a manual command is caught; the loop continues, never propagates."""
+    import shellpilot.cli.manual_shell as manual_shell_mod
+
+    console = Console(record=True, width=100)
+    audit = make_audit(tmp_path)
+    lines = iter(["sleep 100", "/exit-shell"])
+
+    def _boom(command: str, cwd: Path, audit: object) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(manual_shell_mod, "run_manual_command", _boom)
+
+    # Must return normally — the interrupt is caught and the loop moves on to the
+    # next line — rather than propagating out of manual_shell_loop.
+    manual_shell_loop(console, tmp_path, audit, read_line=lambda: next(lines))
+
+    assert "Interrupted" in console.export_text()
+    # The loop reached /exit-shell and shut down cleanly.
+    kinds = [e["event"] for e in read_events(tmp_path)]
+    assert kinds == ["manual_shell_enter", "manual_shell_exit"]
 
 
 def test_banner_matches_design_wording() -> None:

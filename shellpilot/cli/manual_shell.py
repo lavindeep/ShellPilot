@@ -60,7 +60,12 @@ def manual_shell_loop(
             continue
         if line == EXIT_COMMAND:
             break
-        exit_code = run_manual_command(line, cwd, audit)
+        try:
+            exit_code = run_manual_command(line, cwd, audit)
+        except KeyboardInterrupt:
+            # Ctrl+C aborts the running command, not the shell loop.
+            console.print("[yellow]Interrupted.[/yellow]")
+            continue
         if exit_code != 0:
             console.print(f"[dim]exit code {exit_code}[/dim]")
     if audit is not None:
