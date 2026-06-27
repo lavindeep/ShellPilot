@@ -19,8 +19,7 @@ from shellpilot.llm.messages import ToolDefinition
 from shellpilot.persistence.json_store import atomic_write_json, atomic_write_text
 from shellpilot.persistence.paths import project_state_dir
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
-from shellpilot.tools.filesystem import ALL_PROFILES
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 
 STEP_STATUSES = ("pending", "active", "completed", "skipped")
 PLAN_STATUSES = ("proposed", "active", "blocked", "completed", "cancelled")

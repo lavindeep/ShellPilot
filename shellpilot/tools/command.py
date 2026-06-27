@@ -22,8 +22,7 @@ from typing import Any
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.policy.command_policy import CommandRisk, classify_command
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
-from shellpilot.tools.filesystem import ALL_PROFILES
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 
 DEFAULT_TIMEOUT_SECONDS = 600
 # Maximum chars read in a single readline() call so a newline-less stream cannot

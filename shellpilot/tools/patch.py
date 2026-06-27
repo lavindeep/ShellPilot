@@ -22,13 +22,14 @@ from shellpilot.persistence.json_store import atomic_write_text
 from shellpilot.policy.command_policy import sensitive_path_reason
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.tools.base import (
+    ALL_PROFILES,
     ToolContext,
     ToolResult,
     ToolSpec,
     resolve_in_workspace,
     workspace_display,
 )
-from shellpilot.tools.filesystem import ALL_PROFILES, is_binary
+from shellpilot.tools.filesystem import is_binary
 
 OPERATIONS = ("replace_exact", "insert_before", "insert_after", "delete_exact")
 WRITE_MODES = ("create", "overwrite", "append")

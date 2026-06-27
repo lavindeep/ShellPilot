@@ -18,12 +18,10 @@ from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 from shellpilot.web.errors import WebFetchError, WebSearchError
 from shellpilot.web.fetch import PageFetcher
 from shellpilot.web.search import SearchProvider
-
-ALL_PROFILES = frozenset({"supervised", "balanced"})
 
 
 def make_web_tools(provider: SearchProvider, fetcher: PageFetcher) -> list[ToolSpec]:
