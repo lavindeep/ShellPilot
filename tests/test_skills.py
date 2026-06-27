@@ -738,6 +738,28 @@ def test_discover_resources_do_not_use_whole_file_read(
     assert skill.references[0].text == "Bounded read"
 
 
+def test_discover_resource_filter_uses_name_endswith(tmp_path: Path) -> None:
+    """User and builtin roots share one filter: ``entry.name.endswith(".md")``.
+
+    A file named literally ``.md`` is therefore discovered (its ``.suffix`` is
+    empty, so an older ``suffix == ".md"`` filter would have excluded it). This
+    pins the unified filter against a regression back to suffix-based matching.
+    """
+    skill_dir = _user_skill_dir(tmp_path)
+    refs = skill_dir / "references"
+    refs.mkdir()
+    (refs / ".md").write_text("Dotfile resource", encoding="utf-8")
+    (refs / "normal.md").write_text("Normal resource", encoding="utf-8")
+
+    skill = _only_user_skill(tmp_path)
+
+    assert [resource.rel_path for resource in skill.references] == [
+        "references/.md",
+        "references/normal.md",
+    ]
+    assert skill.warnings == ()
+
+
 def test_discover_ignores_disallowed_top_level_dirs(tmp_path: Path) -> None:
     skill_dir = _user_skill_dir(tmp_path)
     docs = skill_dir / "docs"
