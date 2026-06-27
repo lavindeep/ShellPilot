@@ -18,12 +18,10 @@ from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 from shellpilot.web.errors import WebFetchError, WebSearchError
 from shellpilot.web.fetch import PageFetcher
-from shellpilot.web.search import SearchProvider
-
-ALL_PROFILES = frozenset({"supervised", "balanced"})
+from shellpilot.web.search import DuckDuckGoProvider, SearchProvider
 
 
 def make_web_tools(provider: SearchProvider, fetcher: PageFetcher) -> list[ToolSpec]:
@@ -163,7 +161,4 @@ def make_web_tools(provider: SearchProvider, fetcher: PageFetcher) -> list[ToolS
 
 def default_web_tools() -> list[ToolSpec]:
     """Production web tools backed by DuckDuckGoProvider and PageFetcher."""
-    from shellpilot.web.fetch import PageFetcher as _PageFetcher
-    from shellpilot.web.search import DuckDuckGoProvider as _DuckDuckGoProvider
-
-    return make_web_tools(_DuckDuckGoProvider(), _PageFetcher())
+    return make_web_tools(DuckDuckGoProvider(), PageFetcher())

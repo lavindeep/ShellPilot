@@ -19,14 +19,13 @@ from shellpilot.cli.attachments import AttachmentError, load_image
 from shellpilot.llm.messages import ImageRef, ToolDefinition
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.tools.base import (
+    ALL_PROFILES,
     ToolContext,
     ToolResult,
     ToolSpec,
     WorkspaceBoundaryError,
     resolve_in_workspace,
 )
-
-ALL_PROFILES = frozenset({"supervised", "balanced"})
 
 
 def make_view_image_tool(

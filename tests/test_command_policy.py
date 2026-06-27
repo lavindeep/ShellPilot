@@ -385,6 +385,24 @@ def test_git_readonly_verbs_stay_low(argv: list[str]) -> None:
     assert result.risk == RiskLevel.LOW, f"{argv}: {result.reasons}"
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        # Only `stash list`/`stash show` are read-only listings (auto-run LOW).
+        (["git", "stash", "list"], RiskLevel.LOW),
+        (["git", "stash", "show"], RiskLevel.LOW),
+        # Bare `git stash` and `git stash pop` mutate the working tree/index, so
+        # they stay MEDIUM (ask) and never auto-run under the balanced profile.
+        (["git", "stash"], RiskLevel.MEDIUM),
+        (["git", "stash", "pop"], RiskLevel.MEDIUM),
+    ],
+    ids=lambda case: str(case),
+)
+def test_git_stash_classification(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
 # -- option-encoded paths evade the workspace boundary (#14) -------------------
 
 

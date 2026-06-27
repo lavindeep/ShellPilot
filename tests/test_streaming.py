@@ -486,13 +486,12 @@ def test_diff_reveal_nontty_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _SpyLive.instances == []
 
 
-def test_diff_reveal_row_count_is_pure() -> None:
-    reveal = DiffReveal(terminal_console(), GLYPHS, enabled=True)
-    diff = _additions_diff(30)
-    first = reveal.row_count(diff)
-    second = reveal.row_count(diff)
-    assert first == second == 30
-    assert reveal.row_count("") >= 0
+def test_diff_reveal_long_diff_predicate_is_independent_of_enabled() -> None:
+    # reveal() returns True for a long diff even when animation is disabled (non-TTY),
+    # so the settled panel still applies the WINDOW_ROWS cap on non-interactive output.
+    reveal = DiffReveal(plain_console(), GLYPHS, enabled=True)
+    assert reveal.reveal(_additions_diff(30), max_rows=DiffReveal.WINDOW_ROWS) is True
+    assert reveal.reveal(_additions_diff(5), max_rows=DiffReveal.WINDOW_ROWS) is False
 
 
 def test_diff_reveal_long_diff_animates_and_clears_before_stop(

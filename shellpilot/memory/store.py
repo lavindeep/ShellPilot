@@ -129,7 +129,8 @@ class MemoryStore:
                 )
             )
 
-    def _next_id(self, prefix: str, existing: list[str]) -> str:
+    @staticmethod
+    def _next_id(prefix: str, existing: list[str]) -> str:
         highest = 0
         for entry_id in existing:
             _, _, number = entry_id.partition("_")

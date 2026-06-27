@@ -132,6 +132,7 @@ def test_auto_compact_off_counts_incoming_image_tokens(tmp_path: Path) -> None:
         path="/tmp/img.png",
         sha256=hashlib.sha256(TINY_PNG).hexdigest(),
         data_b64=base64.b64encode(TINY_PNG).decode(),
+        size_bytes=len(TINY_PNG),
     )
     runtime, ui, fake = make_runtime(
         tmp_path, context_tokens=4096, auto_compact=False, script=[answer("seen")]

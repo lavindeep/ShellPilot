@@ -19,8 +19,7 @@ from shellpilot.llm.messages import ToolDefinition
 from shellpilot.persistence.json_store import atomic_write_json, atomic_write_text
 from shellpilot.persistence.paths import project_state_dir
 from shellpilot.policy.risk import RiskLevel, SideEffect
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
-from shellpilot.tools.filesystem import ALL_PROFILES
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 
 STEP_STATUSES = ("pending", "active", "completed", "skipped")
 PLAN_STATUSES = ("proposed", "active", "blocked", "completed", "cancelled")
@@ -144,23 +143,6 @@ def render_plan_markdown(plan: TaskPlan) -> str:
         _section("Progress Log", plan.progress_log, "- Created initial plan."),
     ]
     return "\n".join(parts)
-
-
-def render_plan_terminal(plan: TaskPlan) -> str:
-    lines = [f"Goal: {plan.goal}", ""]
-    if plan.assumptions:
-        lines.append("Assumptions:")
-        lines.extend(f"- {item}" for item in plan.assumptions)
-        lines.append("")
-    lines.append("Plan:")
-    for index, step in enumerate(plan.steps, start=1):
-        marker = {"completed": "✓", "active": "→", "skipped": "·"}.get(step.status, " ")
-        lines.append(f"{index}. [{marker}] {step.title}")
-    if plan.verification:
-        lines.append("")
-        lines.append("Verification:")
-        lines.extend(f"- {item}" for item in plan.verification)
-    return "\n".join(lines)
 
 
 def compact_plan_state(plan: TaskPlan) -> str:
@@ -446,8 +428,7 @@ def make_plan_tools(
             )
             plan = manager.active
         elif (
-            manager.pending_revision is None
-            and manager.active is not None
+            manager.active is not None
             and manager.active.status in ("proposed", "active")
             and manager.active.goal == goal
             and [step.title for step in manager.active.steps] == steps

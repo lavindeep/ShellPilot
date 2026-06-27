@@ -252,9 +252,7 @@ class PageFetcher:
                     raw_bytes = b"".join(chunks)
 
                     # Determine charset
-                    charset: str = "utf-8"
-                    if response.encoding:
-                        charset = response.encoding
+                    charset = response.encoding or "utf-8"
 
                     body = raw_bytes.decode(charset, errors="replace")
                     final_url = str(response.url)

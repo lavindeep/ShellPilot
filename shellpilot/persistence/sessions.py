@@ -75,11 +75,12 @@ class SessionStore:
         """
         if not directory.is_dir():
             return []
-        files = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        out: list[tuple[str, float]] = []
-        for path in files[:limit]:
-            out.append((SessionStore._session_label(path), path.stat().st_mtime))
-        return out
+        pairs = sorted(
+            ((p, p.stat().st_mtime) for p in directory.glob("*.jsonl")),
+            key=lambda pm: pm[1],
+            reverse=True,
+        )
+        return [(SessionStore._session_label(p), mtime) for p, mtime in pairs[:limit]]
 
     @staticmethod
     def _session_label(path: Path) -> str:

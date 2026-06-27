@@ -13,9 +13,7 @@ from typing import Any
 from shellpilot.llm.messages import ToolDefinition
 from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.skills.model import Skill
-from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
-
-ALL_PROFILES = frozenset({"supervised", "balanced"})
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
 
 
 def make_skill_read_tool(skills: Sequence[Skill]) -> ToolSpec:

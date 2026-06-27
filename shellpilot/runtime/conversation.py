@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 from shellpilot.config.model import Settings, is_egressing
 from shellpilot.llm.client import LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
-from shellpilot.llm.ollama import encode_tool, is_loopback_url
+from shellpilot.llm.ollama import encode_tool
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.memory.redaction import redact_secrets, redact_structure
 from shellpilot.memory.store import MemoryStore, MemoryStores, project_id_for
@@ -27,7 +27,13 @@ from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_bu
 from shellpilot.runtime.context import ContextAssembler, ContextSnapshot
 from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.executor import ExecutionOutcome, ToolExecutor
-from shellpilot.runtime.planner import PlanManager, TaskPlan, compact_plan_state, make_plan_tools
+from shellpilot.runtime.planner import (
+    PlanManager,
+    TaskPlan,
+    compact_plan_state,
+    load_plan,
+    make_plan_tools,
+)
 from shellpilot.skills.model import Skill
 from shellpilot.skills.triggers import TriggerContext
 from shellpilot.tools.images import make_view_image_tool
@@ -242,8 +248,6 @@ class ConversationRuntime:
         """Restore an active plan from a prior session. None → no-op."""
         if task_id is None:
             return
-        from shellpilot.runtime.planner import load_plan
-
         plan = load_plan(self._workspace, task_id)
         if plan is None:
             return
@@ -292,14 +296,6 @@ class ConversationRuntime:
     def _endpoint_host(self) -> str:
         """Host of the model endpoint (for audit); empty when unparseable."""
         return (urlsplit(self._base_url).hostname or "").rstrip(".")
-
-    def _endpoint_is_loopback(self) -> bool:
-        """True when the model endpoint is on this box (loopback = local).
-
-        Delegates to the shared ``is_loopback_url`` helper so the runtime egress
-        chokepoint and the CLI boot consent gate use one definition of off-box.
-        """
-        return is_loopback_url(self._base_url)
 
     def _is_egressing(self) -> bool:
         """True when a model request leaves this device.
@@ -424,9 +420,6 @@ class ConversationRuntime:
             history_messages=len(self._history),
         )
 
-    def _over_threshold(self) -> bool:
-        return self.estimated_prompt_tokens() > self.budget.compact_at_tokens
-
     def _old_region(self) -> int:
         """Messages before this index are compactable; the recent window is not."""
         return max(0, len(self._history) - MIN_KEPT_MESSAGES)
@@ -441,12 +434,19 @@ class ConversationRuntime:
         metadata live outside history and are never touched.
         """
         changed = 0
+        # System context is invariant during compaction (only self._history
+        # mutates), so estimate it once and re-test only the changing history sum.
+        system_tokens = self._context_snapshot().est_system_tokens
+
+        def over() -> bool:
+            return system_tokens + self.history_token_estimate()[0] > self.budget.compact_at_tokens
+
         # Digestion may reach everything except the in-flight exchange (last 2
         # messages); snapshot staleness checks still force a fresh read before
         # any write, so losing exact tool text is safe. Drops below stay gated
         # by the wider MIN_KEPT_MESSAGES window.
         for index in range(max(0, len(self._history) - 2)):
-            if not self._over_threshold():
+            if not over():
                 break
             message = self._history[index]
             if message.role == "tool":
@@ -454,7 +454,7 @@ class ConversationRuntime:
                 if digest != message.content:
                     self._history[index] = Message(role="tool", content=digest)
                     changed += 1
-        while self._over_threshold():
+        while over():
             drop_index = next(
                 (i for i in range(self._old_region()) if self._history[i].role != "user"),
                 None,
@@ -468,7 +468,7 @@ class ConversationRuntime:
                 while drop_index < len(self._history) and self._history[drop_index].role == "tool":
                     self._history.pop(drop_index)
                     changed += 1
-        while self._over_threshold():
+        while over():
             user_indices = [i for i, m in enumerate(self._history) if m.role == "user"]
             if len(user_indices) <= 1:
                 break
