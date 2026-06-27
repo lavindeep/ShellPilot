@@ -1,12 +1,12 @@
 # ShellPilot Design
 
-Status: Current implementation design through v0.10.0, with historical rebuild notes retained
-Date: 2026-06-21
+Status: Current implementation design through v0.10.1, with historical rebuild notes retained
+Date: 2026-06-27
 Repository: `/Users/lavin/Projects/ShellPilot`
 
 ## 1. Purpose
 
-This document defines ShellPilot's design as a modular, local-first Python AI harness. Early sections retain the original rebuild rationale from 2026-06-10; later release-settled sections describe the current implementation through v0.10.0.
+This document defines ShellPilot's design as a modular, local-first Python AI harness. Early sections retain the original rebuild rationale from 2026-06-10; later release-settled sections describe the current implementation through v0.10.1.
 
 The rebuilt project should feel closer to a local coding and shell partner than a menu-driven chatbot. The user should be able to open one CLI conversation, ask questions, ask for project inspection, request command execution, approve plans for complex work, and use a manual shell when they want direct control.
 
@@ -18,7 +18,7 @@ This project is a local developer productivity harness. Security-related feature
 
 ## 2. Original Repo Baseline
 
-This section is historical context from the initial rebuild plan. The repository has since shipped the rebuilt architecture through v0.10.0, but these observations explain why the current boundaries exist.
+This section is historical context from the initial rebuild plan. The repository has since shipped the rebuilt architecture through v0.10.1, but these observations explain why the current boundaries exist.
 
 The pre-rebuild repository already proved several valuable ideas:
 

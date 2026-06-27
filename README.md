@@ -85,7 +85,7 @@ ShellPilot is developed and tested on **macOS** (Apple Silicon) and is **continu
 
 ## A session
 
-A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text). On launch, ShellPilot v0.10.0 prints a panel banner — a block-art logo alongside Commands, Tips, Workflow-skills, and Recent-sessions sections — then drops to the prompt; the transcript below picks up there:
+A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text). On launch, ShellPilot v0.10.1 prints a panel banner — a block-art logo alongside Commands, Tips, Workflow-skills, and Recent-sessions sections — then drops to the prompt; the transcript below picks up there:
 
 ```text
 ~/my-project · gemma4:e4b · balanced · ● local   6% ctx
@@ -284,14 +284,16 @@ python scripts/benchmark_model.py --model gemma4:e4b --trials 10
 
 ## Status and roadmap
 
-Current release: **v0.10.0** — opt-in cloud models. Recent milestones:
+Current release: **v0.10.1** — post-v0.10.0 hardening and cleanup. Recent milestones:
 
 - **v0.7.x** — Skills v2 with trigger-driven built-in guidance and read-only resources; instant high-risk approvals generated deterministically from classifier reasons.
 - **v0.8.x** — web-grounding quality and hardening for small local models: fetch-before-answer, discover-first query shaping, fetch-recovery, current-generation checks; planner hardening for a single end-of-plan summary and idempotent re-proposals.
 - **v0.9.0** — progressive disclosure: a `skill_read` tool and a readable-docs menu let skills carry depth without inflating every prompt.
 - **v0.10.0** — security hardening pass (policy tightening, terminal-output sanitization, DNS rebinding guard, audit/session file modes, config-key hardening, AGENTS.md TOFU); opt-in cloud models behind `[model] allow_cloud` with a per-session consent gate, fail-closed non-TTY path, best-effort outbound redaction, `cloud_consent_granted` and `model_request` audit events, honest system-prompt when egressing, and an unmistakable active-cloud indicator (☁ status bar + amber model name + `/status` locality); a persistent status bar (directory · model · profile · locality + context %); four opt-in workflow skills (debugging, verification, code-review, git-workflow); boot banner with cheat-sheet and amber/green model-locality color; streamlined one-key boot picker; reject-and-steer `[e]dit` tool/command approvals; a `!` one-shot manual-shell escape; resolved-path display in approval panels; full-width diff bars; `/config` command consolidation; approval diff scrolling reveal for long diffs.
 
-Next up is **v0.10.1** — a full-screen TUI input dock (framed input box, queueable input, completion-menu integration) deferred from v0.10.0. Later candidates include controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
+- **v0.10.1** — post-v0.10.0 hardening and cleanup: a wave of external-review logic and security fixes (classifier escalation of git mutating verbs and option-encoded paths, hard-bounded command output, `trust_env=False` on every HTTP client, broader secret redaction including prefixed and JSON-shaped keys, planner stuck-state and artifact-path fixes, Ollama stream done-sentinel and typed errors on malformed responses, session-id traversal guard, exact-byte web-fetch boundary) plus behavior-preserving internal cleanups. No model-facing behavior change — a default session is unchanged.
+
+Next up is a full-screen TUI input dock (framed input box, queueable input, completion-menu integration), deferred from v0.10.0. Later candidates include controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
 
 ## License
 
