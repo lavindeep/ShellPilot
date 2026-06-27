@@ -2125,6 +2125,8 @@ Type /exit-shell to return.
 
 A `!` prefix is a one-shot escape into the same audited manual-shell path: `!<cmd>` runs a single command (raw shell, identical to `/shell`) without entering the shell loop, while a bare `!` opens the loop. It is a human-only escape — the prefix is recognized only at the interactive prompt reader, so model output can never reach it.
 
+Inside the shell loop, Ctrl+C during a running command aborts that command and returns to the `manual$` prompt rather than leaving the shell; Ctrl+C at an empty prompt (or EOF) exits back to the agent CLI. The unified CLI applies the same discipline to interactive turns: a `KeyboardInterrupt` or a model-call error raised while handling a slash command or a `!` escape is caught and returns to the prompt instead of tearing down the session (a clean `/exit` is the only path that ends it).
+
 ## 22. Logging And Audit
 
 Audit logs should be local and structured.
@@ -3032,6 +3034,8 @@ The two highest-value at-rest artifacts — session transcripts and the audit lo
 ### 36.8 Cloud Consent Triad
 
 The opt-in cloud feature (section 15.2) rests on four enforced controls, summarized here as the security spine: (1) `[model] allow_cloud` defaults to **`false`** and can be enabled only by a deliberate act — a `config.toml` edit or a confirm-gated `/config set`, never an ambient env var (section 36.3); (2) a **fail-closed per-session consent gate** (`_resolve_cloud_consent`) runs at boot strictly before any prompt-bearing call and declines on a non-TTY, EOF, Enter, or anything but an explicit yes — so a decline egresses no prompt data; (3) an **unspoofable active-cloud indicator** (boot banner, persistent bottom status bar [§31.11], `/status` locality) derived from `is_egressing` on the live model, never from model output, with the bar's user-controlled workspace path sanitized at the render sink (§36.2); and (4) a `cloud_consent_granted` audit event recording the consent. Consent is *the* boundary: once granted, the prompt egresses, with the best-effort redaction above layered behind it. Local-first remains the only full-privacy posture.
+
+On the resume path specifically, a `--resume <id>` target is existence-resolved (the model-free filesystem lookup) *before* the consent gate runs, so a typo'd or stale session id fails fast — no consent prompt, no model preload, no cloud round-trip — because the gate's prompt-bearing work is never reached for a resume that cannot load.
 
 ### 36.9 Approval-Path Display Integrity
 

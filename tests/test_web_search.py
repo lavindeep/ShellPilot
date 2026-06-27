@@ -142,7 +142,7 @@ def test_duckduckgo_provider_ignores_ambient_proxy_env() -> None:
     """DuckDuckGoProvider's httpx client must not honour ambient proxy env vars.
 
     Web search traffic cannot be silently redirected through an ambient proxy —
-    trust_env=False keeps the egress audit's destination truthful (§36.3).
+    trust_env=False keeps the egress audit's destination truthful (§36.10).
     """
     provider = DuckDuckGoProvider(transport=_make_transport(_DDG_EMPTY_HTML))
     assert provider._client.trust_env is False

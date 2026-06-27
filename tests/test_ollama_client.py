@@ -129,7 +129,7 @@ def test_client_ignores_ambient_proxy_env() -> None:
     """The httpx client must not honour ambient proxy env vars.
 
     Loopback Ollama traffic cannot be redirected by HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
-    in the environment — trust_env=False enforces this invariant (F7 / §36.3).
+    in the environment — trust_env=False enforces this invariant (F7 / §36.10).
     """
     client = make_client(httpx.MockTransport(lambda r: httpx.Response(200, json={})))
     assert client._client.trust_env is False

@@ -611,7 +611,7 @@ def test_page_fetcher_ignores_ambient_proxy_env() -> None:
     """PageFetcher's httpx client must not honour ambient proxy env vars.
 
     Web fetch traffic cannot be silently redirected through an ambient proxy —
-    trust_env=False keeps the egress audit's destination truthful (§36.3).
+    trust_env=False keeps the egress audit's destination truthful (§36.10).
     """
     fetcher = PageFetcher(transport=_html_transport("<html><body>ok</body></html>"))
     assert fetcher._client.trust_env is False
