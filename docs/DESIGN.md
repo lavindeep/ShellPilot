@@ -2907,6 +2907,18 @@ The dock gains four refinements; each is additive and a default (non-app) sessio
 
 **Live status values.** The status bar reads its dir/model/profile/locality/ctx through an optional `status_fn` callable evaluated per render, so `/model use` (the cloud indicator!), `/profile use`, `/cwd set`, and context growth reflect immediately. The cloud bit stays the real `is_egressing` signal — now live, never model output, still unspoofable (§15.2). The git branch segment stays build-time (re-reading `.git/HEAD` every render would be wasteful; a mid-session `/cwd set` does not refresh it). With `status_fn` absent the bar uses the build-time params, unchanged.
 
+### 31.19 Thinking trail (inline, collapsible)
+
+The live indicator (§31.14) only ever surfaced a *count* of reasoning; the model's actual thinking was captured (`reply.thinking`) but never shown. The trail surfaces it inline, in place, as a faint collapsible block — display-only, additive, and a default session with no streamed thinking is byte-identical.
+
+**One trail per reasoning phase.** `stream_thinking` retains the thinking *text* on the current `_Trail` instead of only bumping the reasoning-char count. The trail is an entry in the `AppUI._renderables` transcript (not a separate channel), so it lands at its own position in scroll order. A reasoning phase opens a fresh trail at the current transcript position (closing any open response first, so the block sits below streamed answer text); any non-thinking transcript content — a tool call, status line, answer token, done line, aborted marker, user echo — *finalizes* the active trail (`_finalize_active_trail` clears the single `_active_trail` pointer at the top of `_add_renderable`/`stream_token`), so the next thinking phase starts a new block. Finalizing is the **only** cleanup: a finished trail stays visible and never has its state reset.
+
+**Collapsed by default, expandable.** The collapsed view shows the first `TRAIL_COLLAPSED_LINES` (10) non-blank lines under a `thinking · N reasoning` header (blank lines are dropped so the cap counts real reasoning lines); when more are hidden a footer reads `… +N hidden lines · press t to expand`. Expanded shows every line and a `press t to collapse` footer. A caret in the header (`▸`/`▾`, ASCII `>`/`v`) shows the state. Thinking text is model-controlled, so **every displayed line is `_sanitize_line`-stripped** at the sink.
+
+**`t` toggles the latest trail.** A bare `t` on an *empty* dock with *no active approval* flips `_latest_trail.expanded` — the active trail while the model runs, the most-recent finished trail after. Older trails freeze: there is no per-trail selection, by design. The keybinding is gated on dock-empty + no-approval (mirroring the §31.18 recall gate); when there is no trail to toggle (`toggle_thinking_trail()` returns `False` — fresh session, or `show_reasoning` off) it falls through and inserts a literal `t`, so a message that starts with `t` still types normally. `show_reasoning=False` builds no trail at all (the readout is hidden too), so the toggle is a no-op there.
+
+**Display-only.** The trail text never changes model history and is never fed back to the model (the same discard as the §31.15 aborted partial). `AppUI` has no history — it is a pure state+render object — so the trail lives only in the pane.
+
 ## 32. Model Selection And Preload
 
 ### 32.1 Boot Model Picker

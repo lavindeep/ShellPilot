@@ -443,6 +443,25 @@ def build_app(
         dock_buffer.cursor_position = len(dock_buffer.text)
         pending["text"] = None
 
+    @kb.add(
+        "t",
+        filter=dock_focused
+        & Condition(lambda: not dock_buffer.text)
+        & Condition(lambda: approval_gate is None or not approval_gate.active),
+    )
+    def _toggle_trail(event: KeyPressEvent) -> None:
+        # `t` on an EMPTY dock with no active approval toggles the latest thinking
+        # trail's collapse state (§31.19) — works while the model runs or after.
+        # If there is no trail to toggle (fresh session / show_reasoning off), fall
+        # through and type the key so a message that starts with 't' still works.
+        # Mirror prompt_toolkit's self-insert (event.data * event.arg) rather than a
+        # literal so a numeric-argument prefix (e.g. `Esc 5 t`) still repeats. NOTE:
+        # when a trail DOES exist, a bare 't' on an empty dock is the toggle, not the
+        # first char of a word — the spec's explicit dock-empty gate; type the 't'
+        # after any other char, or it toggles.
+        if not _ui.toggle_thinking_trail():
+            dock_buffer.insert_text(event.data * event.arg)
+
     @kb.add("escape", "enter", filter=dock_focused)
     def _newline(event: KeyPressEvent) -> None:
         dock_buffer.insert_text("\n")
