@@ -2867,6 +2867,18 @@ Ctrl-C aborts a model turn mid-stream — the motivating case is a long invisibl
 
 **Out of scope (branch 6b — subprocess killpg).** A cancel requested while a tool *command* is running does NOT kill that subprocess; the command finishes/times out, then the next model call's stream-read sees the set event and aborts the turn. Killing the running subprocess on cancel is deferred.
 
+### 31.16 Approval focus-swap (v2)
+
+Approvals are the exception to the fire-and-forget marshaling of §31.13: `ask_approval` / `ask_plan_approval` RETURN a value, so they cannot be enqueued and forgotten. The full-screen app resolves them with a **focus-swap handshake** (`cli/app_approval.py`, `ApprovalGate`): the worker thread blocks on a `concurrent.futures.Future` while the loop thread renders the prompt into the pane and the dock becomes the approval input.
+
+**Worker blocks, loop thread answers.** `ThreadedUI.ask_approval` delegates to `gate.ask_command(request)` (and `ask_plan_approval` → `gate.ask_plan`). The gate schedules a loop-thread setup thunk (via the same `TurnRunner.schedule` marshaler) and then calls `future.result()`, which blocks the worker. The thunk renders the prompt block — `AppUI.show_approval` (capped diff panel via `render_diff(..., max_rows=DiffReveal.WINDOW_ROWS)`, the risk/reason info line, the CWD line) or `AppUI.show_plan_approval` (the plan panel + the sanitized artifact path) — and arms `gate._pending`. Both `Future` operations are thread-safe stdlib primitives, so no lock is needed; `_pending` is touched only on the loop thread (the setup thunk arms it; the dock keybindings read+clear it).
+
+**Three-way outcome, unchanged contract (§14.6).** The dock's submit keybinding routes the typed line to `gate.submit(line)` when `gate.active`, BEFORE the `/exit` check (a mid-approval `/exit` is an approval answer, not a quit). The pure helpers `parse_command_choice` / `parse_plan_choice` carry the contract: a HIGH-risk **command** executes only on the literal `run` (the typed-`run` gate); every other request takes y/e/n; an unrecognized plan token re-prompts. `[e]dit` enters a steer phase — the next line becomes `ApprovalReply.steer_text` (empty = plain decline), which re-enters the deterministic classifier as a re-proposal exactly as in the REPL; the un-approved action never runs. The accepted line is echoed into the pane (sanitized, via `show_status` — never `show_user_message`, which would reset the live turn indicator).
+
+**Ctrl-C / EOF decline THIS action.** During an approval the worker is blocked on the Future, not in a model-stream read, so the §31.15 model-cancel path would not fire. The `c-c` and `c-d` handlers therefore check `gate.active` FIRST and call `gate.cancel()` (resolve as decline — `DECLINE` for a command, `("n", "")` for a plan), mirroring `TerminalUI.ask_approval`'s `except KeyboardInterrupt: return DECLINE`. The turn continues; turn-level cancel is available again once the prompt returns.
+
+**Shutdown ceiling.** A pending approval at app exit leaves the daemon worker blocked on `future.result()`; harmless for this opt-in dev entry (process exit reaps it). On promotion to the shipping default, resolve pending approvals as DECLINE on exit.
+
 ## 32. Model Selection And Preload
 
 ### 32.1 Boot Model Picker

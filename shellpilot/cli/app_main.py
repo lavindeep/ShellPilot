@@ -21,6 +21,7 @@ from shellpilot.cli.app import build_app
 from shellpilot.cli.app_turn import TurnRunner
 
 if TYPE_CHECKING:
+    from shellpilot.cli.app_approval import ApprovalGate
     from shellpilot.cli.app_ui import AppUI
     from shellpilot.cli.theme import Glyphs
     from shellpilot.runtime.conversation import ConversationRuntime
@@ -38,6 +39,7 @@ def run_app(
     commands: Sequence[str],
     is_cloud: bool = False,
     ctx_pct: int = 0,
+    approval_gate: ApprovalGate | None = None,
 ) -> int:
     """Build the full-screen app around an already-wired conversation and run it.
 
@@ -71,6 +73,7 @@ def run_app(
         ui=app_ui,
         on_submit=runner.start,
         on_interrupt=runner.request_cancel,
+        approval_gate=approval_gate,
     )
     runner.app = app
     runner.conversation = runtime
