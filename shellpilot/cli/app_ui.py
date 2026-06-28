@@ -27,17 +27,24 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.text import Text
 
-from shellpilot.cli.render import _sanitize_line, plan_step_line
+from shellpilot.cli.render import (
+    _sanitize_line,
+    approval_cwd,
+    approval_info,
+    plan_panel,
+    plan_step_line,
+    render_diff,
+)
 from shellpilot.cli.render import tool_call as render_tool_call
 from shellpilot.cli.render import tool_result as render_tool_result
-from shellpilot.cli.streaming import phase_for_elapsed
+from shellpilot.cli.streaming import DiffReveal, phase_for_elapsed
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS, Glyphs
 from shellpilot.memory.redaction import redact_structure
 from shellpilot.runtime.budget import CHARS_PER_TOKEN
 from shellpilot.tools.base import workspace_display
 
 if TYPE_CHECKING:
-    from shellpilot.policy.approvals import ApprovalReply, ApprovalRequest
+    from shellpilot.policy.approvals import ApprovalRequest
     from shellpilot.runtime.events import TurnStats
     from shellpilot.runtime.planner import TaskPlan
 
@@ -337,11 +344,24 @@ class AppUI:
         self._cache = None
 
     # ------------------------------------------------------------------
-    # Approval stubs — raise until branch 7 wires the focus-swap
+    # Approval prompt content (design section 31.16). The blocking handshake
+    # lives in ApprovalGate; these only append the prompt block to the pane,
+    # mirroring the render block of TerminalUI.ask_approval / ask_plan_approval
+    # MINUS the DiffReveal animation — the pane scroll replaces the Rich Live.
     # ------------------------------------------------------------------
 
-    def ask_approval(self, request: ApprovalRequest) -> ApprovalReply:
-        raise NotImplementedError("approval focus-swap is wired in branch 7")
+    def show_approval(self, request: ApprovalRequest) -> None:
+        if request.diff:
+            self._add_renderable(
+                Padding(
+                    render_diff(request.diff, self._glyphs, max_rows=DiffReveal.WINDOW_ROWS),
+                    (0, 0, 0, 2),
+                )
+            )
+        self._add_renderable(approval_info(request, plain_badge=False))
+        self._add_renderable(approval_cwd(request))
 
-    def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
-        raise NotImplementedError("approval focus-swap is wired in branch 7")
+    def show_plan_approval(self, plan: TaskPlan, path: str) -> None:
+        self._add_renderable(plan_panel(plan, self._glyphs))
+        # The path is user-visible state reaching the pane → sanitize it.
+        self._add_renderable(Text(_sanitize_line(path), style="sp.faint"))

@@ -15,6 +15,7 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
+from shellpilot.cli.app_approval import ApprovalGate
 from shellpilot.cli.app_main import run_app
 from shellpilot.cli.app_turn import ThreadedUI, TurnRunner
 from shellpilot.cli.app_ui import AppUI
@@ -609,6 +610,7 @@ def run_interactive(
     app_mode = env.get("SHELLPILOT_UI") == "app"
     app_ui: AppUI | None = None
     app_runner: TurnRunner | None = None
+    approval_gate: ApprovalGate | None = None
     ui: RuntimeUI
     if app_mode:
         app_ui = AppUI(
@@ -618,7 +620,10 @@ def run_interactive(
             show_reasoning=settings.ui.show_reasoning_summary,
         )
         app_runner = TurnRunner(inner_ui=app_ui)
-        ui = ThreadedUI(inner=app_ui, schedule=app_runner.schedule)
+        # The focus-swap gate handles the two blocking approval methods (§31.16):
+        # the worker blocks on a Future while the dock reads the user's answer.
+        approval_gate = ApprovalGate(ui=app_ui, schedule=app_runner.schedule, glyphs=glyphs)
+        ui = ThreadedUI(inner=app_ui, schedule=app_runner.schedule, approval_gate=approval_gate)
     else:
         ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner, workspace=workspace)
     runtime = ConversationRuntime(
@@ -648,7 +653,7 @@ def run_interactive(
     # fully-configured runtime; the default REPL below is reached only when
     # app_mode is False, so it stays byte-identical.
     if app_mode:
-        assert app_runner is not None and app_ui is not None
+        assert app_runner is not None and app_ui is not None and approval_gate is not None
         return run_app(
             runtime,
             app_runner,
@@ -663,6 +668,7 @@ def run_interactive(
                 runtime.status().estimated_prompt_tokens,
                 runtime.status().budget.model_context_tokens,
             ),
+            approval_gate=approval_gate,
         )
     attachments = AttachmentQueue()
     dispatcher = SlashDispatcher(
