@@ -440,3 +440,57 @@ def test_eof_cancels_active_gate(tmp_path: Path) -> None:
         inp.send_text("/exit\n")  # gate now inactive → quits
         app.run()
     assert gate.cancelled == 1
+
+
+# --- Branch-8 slash/manual-shell routing (§31.17) -----------------------------
+
+
+def test_slash_and_bang_lines_route_to_on_slash(tmp_path: Path) -> None:
+    # A typed slash or `!` line goes to the router (on_slash), NOT the model turn
+    # (on_submit); a normal line still goes to on_submit; /exit still quits.
+    submits: list[str] = []
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+            on_slash=slashes.append,
+        )
+        inp.send_text("/help\n")  # → on_slash
+        inp.send_text("!ls\n")  # → on_slash
+        inp.send_text("just talk\n")  # → on_submit (model turn)
+        inp.send_text("/exit\n")  # → quits, never reaches on_slash
+        app.run()
+    assert slashes == ["/help", "!ls"]
+    assert submits == ["just talk"]
+
+
+def test_slash_without_on_slash_falls_through_to_on_submit(tmp_path: Path) -> None:
+    # Back-compat: with no on_slash wired (the inert fallback), a slash line still
+    # reaches on_submit exactly as before branch 8.
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+        )
+        inp.send_text("/help\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert submits == ["/help"]
