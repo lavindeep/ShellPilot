@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShellPilot · Thinking Trail Preview</title>
+<style>
+  :root {
+    --page-bg: #0b0e13;
+    --panel-bg: #11151c;
+    --term-bg: #0d1117;
+    --term-bg-soft: #161b22;
+    --line: #232b36;
+    --line-soft: #1b222c;
+    --txt: #d7dde6;
+    --txt-dim: #7d8794;
+    --txt-faint: #586170;
+    --accent: #4ec9a0;
+    --accent-soft: rgba(78, 201, 160, 0.12);
+    --user: #6cb6ff;
+    --warn: #e3b341;
+    --sel: #4ec9a0;
+    --sel-glow: rgba(78, 201, 160, 0.16);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background:
+      radial-gradient(1100px 600px at 80% -10%, #131a24 0%, transparent 60%),
+      var(--page-bg);
+    color: var(--txt);
+    line-height: 1.5;
+    padding: 40px 28px 80px;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  .wrap { max-width: 1240px; margin: 0 auto; }
+
+  .eyebrow {
+    font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600; margin-bottom: 10px;
+  }
+  h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 8px; }
+  .lede { color: var(--txt-dim); font-size: 15px; max-width: 760px; }
+  .lede b { color: var(--txt); font-weight: 600; }
+
+  .grid {
+    margin-top: 30px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 20px;
+    align-items: stretch;
+  }
+  @media (max-width: 1080px) { .grid { grid-template-columns: 1fr; } }
+
+  .opt {
+    display: flex; flex-direction: column;
+    background: var(--panel-bg);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+    user-select: none;
+  }
+  .opt:hover { border-color: #2f3a48; transform: translateY(-2px); }
+  .opt.selected {
+    border-color: var(--sel);
+    box-shadow: 0 0 0 1px var(--sel), 0 10px 30px var(--sel-glow);
+  }
+
+  .opt-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line-soft); }
+  .opt-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    color: var(--txt-faint); text-transform: uppercase;
+  }
+  .opt.selected .opt-tag { color: var(--accent); }
+  .pill {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+    padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--txt-dim);
+  }
+  .pill.rec { color: var(--accent); border-color: rgba(78,201,160,.4); background: var(--accent-soft); }
+  .opt-head h3 { font-size: 16px; font-weight: 650; margin: 10px 0 4px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .opt-head p { font-size: 13px; color: var(--txt-dim); }
+
+  /* terminal */
+  .term {
+    margin: 14px;
+    background: var(--term-bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    flex: 1;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 7px;
+    padding: 9px 12px;
+    background: var(--term-bg-soft);
+    border-bottom: 1px solid var(--line);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot.r { background: #ff5f56; } .dot.y { background: #ffbd2e; } .dot.g { background: #27c93f; }
+  .term-title { margin-left: 8px; font-size: 11px; color: var(--txt-faint); }
+  .term-body {
+    padding: 14px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px; line-height: 1.65;
+    flex: 1; position: relative; min-height: 360px;
+  }
+
+  .ln { white-space: pre-wrap; }
+  .user { color: var(--user); }
+  .ans { color: var(--txt); }
+  .dim { color: var(--txt-dim); }
+  .faint { color: var(--txt-faint); }
+  .tool { color: var(--txt-dim); }
+  .tool b { color: var(--txt); font-weight: 600; }
+  .ok { color: var(--accent); }
+  .gap { height: 10px; }
+
+  /* thinking block */
+  .think {
+    border-left: 2px solid var(--accent);
+    background: linear-gradient(90deg, var(--accent-soft), transparent 85%);
+    padding: 8px 10px;
+    margin: 4px 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .think-head { color: var(--txt); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .caret { color: var(--accent); }
+  .think-line { color: var(--txt-dim); }
+  .think-more {
+    margin-top: 6px; padding-top: 6px;
+    border-top: 1px dashed var(--line);
+    color: var(--txt-faint); font-size: 11.5px;
+  }
+
+  /* frontier / done line */
+  .done { color: var(--txt-dim); }
+  .done .ok { font-weight: 600; }
+
+  /* dock */
+  .dock {
+    margin-top: 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: var(--txt-faint);
+    background: var(--term-bg-soft);
+  }
+
+  /* popup overlay */
+  .stage { position: relative; }
+  .overlay {
+    position: absolute;
+    left: 16px; right: 16px; top: 54px;
+    background: #0f141b;
+    border: 1px solid #2f3a48;
+    border-radius: 10px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55);
+    padding: 12px 13px;
+  }
+  .overlay .ov-head {
+    display: flex; justify-content: space-between; align-items: center;
+    color: var(--txt); font-weight: 600;
+    padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  .overlay .esc { font-size: 11px; color: var(--txt-faint); font-weight: 500; }
+  .scrollbar {
+    position: absolute; right: 6px; top: 44px; bottom: 12px; width: 4px;
+    background: var(--line); border-radius: 4px;
+  }
+  .scrollbar::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 10%; height: 34%;
+    background: var(--txt-faint); border-radius: 4px;
+  }
+  .blurred { filter: blur(1.1px); opacity: 0.5; }
+
+  .foot {
+    margin-top: 34px;
+    background: var(--panel-bg);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .foot h4 { font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+  .foot p { color: var(--txt-dim); font-size: 14px; max-width: 880px; }
+  .foot p + p { margin-top: 8px; }
+  .hint { margin-top: 22px; text-align: center; color: var(--txt-faint); font-size: 13px; }
+  .hint b { color: var(--accent); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="eyebrow">ShellPilot · UI v2 · full-screen app pane</div>
+    <h1>Thinking Trail — three directions</h1>
+    <p class="lede">Same turn rendered three ways so we can feel the trade-off between <b>transparency</b> and <b>noise</b>. Click the one you like; I lean toward <b>A</b> for the feature branch because it ships the trail without inventing an overlay system.</p>
+
+    <div class="grid">
+
+      <!-- OPTION A -->
+      <div class="opt" data-choice="A">
+        <div class="opt-head">
+          <div class="opt-tag">Option A</div>
+          <h3>Inline · collapsed <span class="pill rec">Recommended</span></h3>
+          <p>A compact, capped trail that lives in the thread but never floods it.</p>
+        </div>
+        <div class="term">
+          <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">shellpilot — gemma4:e4b</span></div>
+          <div class="term-body">
+            <div class="ln user">❯ why is test_app_ui failing?</div>
+            <div class="gap"></div>
+            <div class="think">
+              <div class="think-head"><span class="caret">▾</span> thinking <span class="dim">· 1.1k reasoning</span></div>
+              <div class="think-line">The failure is in the turn-indicator expectations…</div>
+              <div class="think-line">Likely the trail state isn't cleared on cancel…</div>
+              <div class="think-more">… +18 lines · press <b>t</b> to expand</div>
+            </div>
+            <div class="gap"></div>
+            <div class="ln tool">⏺ <b>read_file</b>(path='tests/test_app_ui.py')</div>
+            <div class="ln dim">  ⎿ ✓ 642 lines</div>
+            <div class="gap"></div>
+            <div class="ln ans">The cancel path leaves a stale indicator; clear it in <span class="dim">abort_turn</span>.</div>
+            <div class="gap"></div>
+            <div class="ln done"><span class="ok">✓ done</span> · 7s · 1.1k reasoning · 240 total</div>
+            <div class="dock">╭ type a message…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- OPTION B -->
+      <div class="opt" data-choice="B">
+        <div class="opt-head">
+          <div class="opt-tag">Option B</div>
+          <h3>Inline · always open</h3>
+          <p>Maximum transparency, but long reasoning pushes answers down the pane.</p>
+        </div>
+        <div class="term">
+          <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">shellpilot — gemma4:e4b</span></div>
+          <div class="term-body">
+            <div class="ln user">❯ why is test_app_ui failing?</div>
+            <div class="gap"></div>
+            <div class="think">
+              <div class="think-head"><span class="caret">▾</span> thinking trail</div>
+              <div class="think-line">Map the runtime callbacks first.</div>
+              <div class="think-line">Thinking streams before content.</div>
+              <div class="think-line">AppUI only stores the char count today.</div>
+              <div class="think-line">Appending every fragment will churn the pane.</div>
+              <div class="think-line">Cap render height; keep raw text separate.</div>
+              <div class="think-line">Now check cancel + stale-indicator reset…</div>
+              <div class="think-line">Confirm turn_finished freezes the summary.</div>
+            </div>
+            <div class="gap"></div>
+            <div class="ln tool">⏺ <b>read_file</b>(path='shellpilot/cli/app_ui.py')</div>
+            <div class="ln done"><span class="ok">✓ done</span> · 7s · 1.1k reasoning · 240 total</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- OPTION C -->
+      <div class="opt" data-choice="C">
+        <div class="opt-head">
+          <div class="opt-tag">Option C</div>
+          <h3>Toggleable popup</h3>
+          <p>Cleanest thread, but needs new focus, scroll &amp; dismissal handling.</p>
+        </div>
+        <div class="term">
+          <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">shellpilot — gemma4:e4b</span></div>
+          <div class="term-body stage">
+            <div class="blurred">
+              <div class="ln user">❯ why is test_app_ui failing?</div>
+              <div class="gap"></div>
+              <div class="ln dim">✦ thinking · 1.1k reasoning · press <b>t</b> to view</div>
+              <div class="gap"></div>
+              <div class="ln tool">⏺ <b>read_file</b>(path='tests/test_app_ui.py')</div>
+              <div class="ln ans">The cancel path leaves a stale indicator…</div>
+            </div>
+            <div class="overlay">
+              <div class="ov-head">Thinking Trail <span class="esc">Esc to close</span></div>
+              <div class="think-line">The failure is in the turn-indicator expectations…</div>
+              <div class="think-line">The app has no transcript popup primitive yet…</div>
+              <div class="think-line">This means overlay focus + scroll state…</div>
+              <div class="think-line">…plus key handling that the dock doesn't own.</div>
+              <div class="scrollbar"></div>
+            </div>
+            <div class="dock">╭ overlay open · ↑↓ scroll · Esc closes</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="foot">
+      <h4>What I want to learn</h4>
+      <p>Does the capped trail in <b style="color:var(--txt)">A</b> feel useful, or is even two lines of reasoning too much noise for a normal turn?</p>
+      <p>If A is close, the next decision is what a <i>finished</i> turn keeps: just the <span class="dim">✓ done · reasoning</span> summary, or a collapsed trail you can reopen later in history.</p>
+    </div>
+
+    <div class="hint" id="hint">Click an option to mark a pick — or just tell me <b>A / B / C</b> and what to change.</div>
+  </div>
+
+<script>
+  (function () {
+    var hint = document.getElementById('hint');
+    document.querySelectorAll('.opt').forEach(function (opt) {
+      opt.addEventListener('click', function () {
+        document.querySelectorAll('.opt').forEach(function (o) { o.classList.remove('selected'); });
+        opt.classList.add('selected');
+        var choice = opt.getAttribute('data-choice');
+        hint.innerHTML = '<b>Option ' + choice + ' selected</b> — return to the chat and tell me what to change.';
+      });
+    });
+  })();
+</script>
+</body>
+</html>

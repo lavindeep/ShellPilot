@@ -17,6 +17,7 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
+from shellpilot.cli.app import StatusValues
 from shellpilot.cli.app_approval import ApprovalGate
 from shellpilot.cli.app_main import run_app
 from shellpilot.cli.app_slash import SlashRouter
@@ -732,6 +733,18 @@ def run_interactive(
             is_busy=lambda: runner.busy,
             glyphs=glyphs,
         )
+
+        def _status_values() -> StatusValues:
+            # Live status-bar inputs, one runtime.status() per render (§31.18).
+            st = runtime.status()
+            return StatusValues(
+                workspace=st.workspace,
+                model=runtime.model,
+                profile=settings.runtime.security_profile,
+                is_cloud=is_egressing(runtime.model, settings.model.base_url),
+                ctx_pct=ctx_percent(st.estimated_prompt_tokens, st.budget.model_context_tokens),
+            )
+
         return run_app(
             runtime,
             app_runner,
@@ -748,6 +761,9 @@ def run_interactive(
             ),
             approval_gate=approval_gate,
             on_slash=router.route,
+            is_busy=lambda: runner.busy,
+            register_idle=lambda cb: setattr(app_runner, "on_idle", cb),
+            status_fn=_status_values,
         )
 
     console.print(
