@@ -16,6 +16,8 @@ from shellpilot.cli.app import (
     UNICODE_BOX,
     BoxChars,
     _read_git_branch,
+    _scroll_down,
+    _scroll_up,
     build_app,
     horizontal_border,
 )
@@ -66,6 +68,29 @@ def test_horizontal_border_degenerate_widths() -> None:
             assert len(horizontal_border(width, box, top=True)) == width
     # Width 2 is just the two corners, no fill.
     assert horizontal_border(2, UNICODE_BOX, top=True) == "╭╮"
+
+
+def test_scroll_up_from_follow_leaves_bottom() -> None:
+    # Following (None) → cursor sits at last_line; PageUp moves up one page and
+    # pins a concrete line (leaves follow mode).
+    assert _scroll_up(None, last_line=20, page=8) == 12
+
+
+def test_scroll_up_clamps_to_top() -> None:
+    assert _scroll_up(3, last_line=20, page=8) == 0
+
+
+def test_scroll_down_moves_toward_bottom() -> None:
+    assert _scroll_down(2, last_line=20, page=8) == 10
+
+
+def test_scroll_down_resumes_follow_at_bottom() -> None:
+    # Paging down to (or past) the last line returns None → auto-follow resumes.
+    assert _scroll_down(18, last_line=20, page=8) is None
+
+
+def test_scroll_down_while_following_stays_following() -> None:
+    assert _scroll_down(None, last_line=20, page=8) is None
 
 
 def test_box_chars_are_single_cells() -> None:

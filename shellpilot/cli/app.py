@@ -26,6 +26,7 @@ from pathlib import Path
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.input import Input
@@ -111,20 +112,27 @@ def _read_git_branch(workspace: Path) -> str | None:
     return None
 
 
-def _scroll_pane(window: Window, direction: int) -> None:
-    """Scroll the (unfocused) chat pane one page, clamped to its content.
+def _scroll_up(scroll: int | None, last_line: int, page: int) -> int:
+    """PageUp: move the pane's pinned cursor line up ``page`` lines.
 
-    The dock holds focus, so PageUp/PageDown and the wheel can't fall through to
-    the pane on their own — this nudges the pane window's own vertical scroll
-    using the public ``WindowRenderInfo`` heights, so wrapping is accounted for
-    and we never scroll past the ends.
+    ``scroll`` is the currently pinned line, or None when following the bottom
+    (then the cursor sits at ``last_line``). Returns the new pinned line — always
+    an int, so PageUp leaves follow mode and the reader stays put as new output
+    appends below.
     """
-    info = window.render_info
-    if info is None:
-        return
-    page = max(1, info.window_height - 1)
-    max_scroll = max(0, info.content_height - info.window_height)
-    window.vertical_scroll = max(0, min(max_scroll, window.vertical_scroll + direction * page))
+    current = last_line if scroll is None else scroll
+    return max(0, current - page)
+
+
+def _scroll_down(scroll: int | None, last_line: int, page: int) -> int | None:
+    """PageDown: move the pane's pinned cursor line down ``page`` lines.
+
+    Returns None once the cursor reaches the last line — i.e. scrolling back to
+    the bottom resumes following (auto-scroll as the response streams in).
+    """
+    current = last_line if scroll is None else scroll
+    new = min(last_line, current + page)
+    return None if new >= last_line else new
 
 
 def build_app(
@@ -170,10 +178,40 @@ def build_app(
     # Explicit AppUI annotation (not AppUI | None) so the closures below capture a
     # non-optional type; ui is already narrowed to AppUI by the guard above.
     _ui: AppUI = ui
+
+    # Pane scroll state: "line" is the transcript line the pane keeps in view, or
+    # None to follow the bottom (auto-scroll as a response streams in). A bare
+    # FormattedTextControl has no cursor, so prompt_toolkit defaults it to (0,0)
+    # and snaps the pane to the TOP every render — overriding any manual
+    # vertical_scroll. Exposing this line as the UIContent cursor instead makes
+    # pt scroll to keep it visible (independent of focus): following → bottom, and
+    # a reader who paged up (a pinned line) is not yanked down when output appends.
+    pane_scroll: dict[str, int | None] = {"line": None}
+
+    def _pane_last_line() -> int:
+        text = _ui._render_ansi()
+        n = text.count("\n")
+        # Rich ends each renderable with a newline, so the last real line is n-1.
+        return max(0, n - 1) if text.endswith("\n") else n
+
+    def _pane_cursor() -> Point:
+        last = _pane_last_line()
+        line = pane_scroll["line"]
+        return Point(x=0, y=last if line is None else max(0, min(line, last)))
+
     pane_window = Window(
-        FormattedTextControl(lambda: ANSI(_ui._render_ansi()), focusable=False),
+        FormattedTextControl(
+            lambda: ANSI(_ui._render_ansi()),
+            focusable=False,
+            show_cursor=False,
+            get_cursor_position=_pane_cursor,
+        ),
         wrap_lines=False,
     )
+
+    def _pane_page() -> int:
+        info = pane_window.render_info
+        return max(1, (info.window_height - 1) if info is not None else 10)
 
     # Input dock: a focused, multi-line buffer with slash completion.
     dock_buffer = Buffer(
@@ -271,19 +309,21 @@ def build_app(
 
     @kb.add("pageup")
     def _page_up(event: KeyPressEvent) -> None:
-        _scroll_pane(pane_window, -1)
+        pane_scroll["line"] = _scroll_up(pane_scroll["line"], _pane_last_line(), _pane_page())
 
     @kb.add("pagedown")
     def _page_down(event: KeyPressEvent) -> None:
-        _scroll_pane(pane_window, 1)
+        pane_scroll["line"] = _scroll_down(pane_scroll["line"], _pane_last_line(), _pane_page())
 
     @kb.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
         _ui.show_status(_IDLE_HINT)
 
-    # NOTE: mouse-wheel scroll over the pane needs no binding — prompt_toolkit
-    # routes wheel events to the window under the cursor (the pane), whose own
-    # ``_mouse_handler`` scrolls it, regardless of which window holds focus.
+    # NOTE: keyboard PageUp/PageDown drive the pane via the cursor-line model
+    # above (auto-follow + scroll-back). Mouse-wheel scroll-back is deferred to
+    # branch 9: the wheel nudges the window's own vertical_scroll, which the
+    # cursor-follow re-derives on the next render, so unifying the wheel with this
+    # model belongs with the rest of the input-dock polish.
     return Application[None](
         layout=Layout(root, focused_element=dock_window),
         key_bindings=kb,
