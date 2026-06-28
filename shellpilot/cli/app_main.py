@@ -13,7 +13,7 @@ ordering note in :func:`run_app`.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,6 +40,7 @@ def run_app(
     is_cloud: bool = False,
     ctx_pct: int = 0,
     approval_gate: ApprovalGate | None = None,
+    on_slash: Callable[[str], None] | None = None,
 ) -> int:
     """Build the full-screen app around an already-wired conversation and run it.
 
@@ -73,6 +74,7 @@ def run_app(
         ui=app_ui,
         on_submit=runner.start,
         on_interrupt=runner.request_cancel,
+        on_slash=on_slash,
         approval_gate=approval_gate,
     )
     runner.app = app

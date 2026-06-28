@@ -95,6 +95,85 @@ def command_words() -> list[str]:
     return words
 
 
+def needs_terminal(line: str) -> bool:
+    """True when a slash line must run with the real terminal (run_in_terminal):
+    it confirms, prompts for cloud consent, prints to its own stdout, or preloads.
+
+    The full-screen app (§31.17) runs fast, display-only commands on the loop
+    thread with a pane-capturing console; the forms below instead call
+    ``self._confirm`` / the cloud-consent prompt, print to their own
+    ``Console()`` (``/doctor`` → ``run_doctor``), or do slow preload work
+    (``/model use``), none of which can run on the event-loop thread.
+
+    NOTE: this enumerates every confirm()/consent/own-stdout/preload command. If
+    a new one is added (a new ``self._confirm`` call site, a cloud-consent path,
+    a handler that builds its own console, or a slow preload), add it here too.
+    """
+    parts = line.strip().split()
+    if not parts:
+        return False
+    cmd = parts[0].lower()
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    if cmd == "/shell":  # manual shell
+        return True
+    if cmd == "/clear":  # confirm
+        return True
+    if cmd == "/doctor":  # run_doctor prints to its own Console()/stdout
+        return True
+    if cmd == "/plan" and sub == "cancel":  # confirm
+        return True
+    if cmd == "/cwd" and sub == "set":  # confirm
+        return True
+    if cmd == "/config" and sub in ("set", "reset"):  # confirm
+        return True
+    if cmd == "/memory" and sub in ("add", "forget", "compact"):  # confirm
+        return True
+    if cmd == "/model" and sub == "use":  # cloud-consent prompt + slow preload
+        return True
+    return False
+
+
+def needs_worker(line: str) -> bool:
+    """True for a slash command that runs a model turn, so it must execute on the
+    worker thread — NOT the loop thread (would freeze the UI and the approval-gate
+    Future could only be resolved by the now-blocked loop) and NOT under
+    ``run_in_terminal`` (which suspends the app while the turn marshals to it).
+
+    Currently only ``/plan revise <text>`` (it calls ``runtime.run_turn``). A bare
+    ``/plan revise`` with no text only prints usage, so it stays on the loop path.
+
+    NOTE: if another slash command starts driving ``run_turn``, add it here.
+    """
+    parts = line.strip().split()
+    return len(parts) >= 3 and parts[0].lower() == "/plan" and parts[1].lower() == "revise"
+
+
+def needs_background(line: str) -> bool:
+    """True for a NON-interactive slash command that makes a blocking network/IO
+    call. It must run off the loop thread (the event loop must never block — a
+    hung Ollama would otherwise freeze the TUI for the client timeout with no
+    Ctrl-C), but it needs no real terminal (no confirm/consent/own-stdout), so the
+    router runs it on the worker and marshals the captured output into the pane.
+
+    ``/model list`` (``GET /api/tags``) and ``/attach <path>`` (``POST /api/show``
+    for the vision-capability check + image load). A bare ``/attach`` only lists
+    already-staged images in memory, so it stays on the loop path.
+
+    NOTE: add any other non-interactive command that makes a blocking network/IO
+    call here — the criterion is "blocks the loop", not just confirm/consent.
+    """
+    parts = line.strip().split()
+    if not parts:
+        return False
+    cmd = parts[0].lower()
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    if cmd == "/model" and sub == "list":
+        return True
+    if cmd == "/attach" and len(parts) > 1:  # /attach <path> probes /api/show
+        return True
+    return False
+
+
 def render_config(loaded: LoadedConfig, console: Console) -> None:
     table = Table(title="Resolved configuration")
     table.add_column("Key")

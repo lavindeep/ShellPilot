@@ -240,6 +240,56 @@ def test_full_turn_runs_on_worker_and_marshals(tmp_path: Path) -> None:
     assert runner._busy is False
 
 
+def test_start_action_runs_on_worker_and_clears_busy(tmp_path: Path) -> None:
+    # The /plan revise + /model list slash paths run via start_action. Prove the
+    # fn runs on a REAL separate thread and busy is cleared only by the MARSHALED
+    # _mark_done (not inline on the worker) — the real-threading ordering the
+    # injected-fake router tests can't cover.
+    app_ui = AppUI(glyphs=UNICODE_GLYPHS, workspace=tmp_path, width_fn=lambda: 80)
+    q: queue.Queue[Scheduled] = queue.Queue()
+    runner = TurnRunner(inner_ui=app_ui, schedule=q.put)
+
+    ran = threading.Event()
+    worker_ident: dict[str, int] = {}
+
+    def action() -> None:
+        worker_ident["id"] = threading.get_ident()
+        ran.set()
+
+    assert runner.start_action(action) is True
+    assert runner._busy is True  # set synchronously in start_action
+    assert runner._thread is not None
+    runner._thread.join(5.0)
+    assert not runner._thread.is_alive()
+    assert ran.is_set()
+    assert worker_ident["id"] != threading.get_ident()  # ran off the test thread
+    # _mark_done was marshaled, not run inline — busy stays set until the queue drains.
+    assert runner._busy is True
+    while not q.empty():
+        q.get()()
+    assert runner._busy is False
+
+
+def test_start_action_rejects_when_busy(tmp_path: Path) -> None:
+    app_ui = AppUI(glyphs=UNICODE_GLYPHS, workspace=tmp_path, width_fn=lambda: 80)
+    q: queue.Queue[Scheduled] = queue.Queue()
+    runner = TurnRunner(inner_ui=app_ui, schedule=q.put)
+    gate = threading.Event()
+
+    assert runner.start_action(gate.wait) is True
+    assert runner._busy is True
+    # A second action is rejected (returns False) while the first is in flight.
+    second_ran = threading.Event()
+    assert runner.start_action(second_ran.set) is False
+    assert not second_ran.is_set()
+    gate.set()
+    assert runner._thread is not None
+    runner._thread.join(5.0)
+    while not q.empty():
+        q.get()()
+    assert runner._busy is False
+
+
 def test_busy_guard_ignores_second_start(tmp_path: Path) -> None:
     gate = threading.Event()
     entered = threading.Event()

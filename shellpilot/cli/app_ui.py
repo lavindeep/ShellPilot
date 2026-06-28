@@ -295,6 +295,17 @@ class AppUI:
         echo = f"{self._glyphs.chevron} {_sanitize_line(text)}"
         self._add_renderable(Text(echo, style="sp.accent"))
 
+    def show_slash_output(self, text: str) -> None:
+        # Slash output rendered by the dispatcher's capturing console (ANSI)
+        # becomes a pane renderable (§31.17). Text.from_ansi parses the ANSI
+        # styling back into a Rich Text so the pane re-emits it. _add_renderable
+        # closes any open response first, so the slash block lands after it.
+        # NOTE: captured at the call-time width; a later resize will not re-wrap
+        # this block (acceptable for slash output).
+        stripped = text.rstrip("\n")
+        if stripped:
+            self._add_renderable(Text.from_ansi(stripped))
+
     def show_status(self, text: str) -> None:
         self._add_renderable(Text(_sanitize_line(text), style="sp.dim"))
 
