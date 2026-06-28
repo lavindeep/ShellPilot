@@ -67,14 +67,14 @@ class ThreadedUI:
     def stream_token(self, token: str) -> None:
         self._schedule(functools.partial(self._inner.stream_token, token))
 
-    # NOTE: stream_thinking is marshaled even though AppUI's is a no-op today;
-    # branch 5 gives it a real reasoning-readout consumer.
+    # stream_thinking drives the live reasoning readout in AppUI (§31.14); it is
+    # marshaled onto the loop thread like every other content call.
     def stream_thinking(self, text: str) -> None:
         self._schedule(functools.partial(self._inner.stream_thinking, text))
 
-    # NOTE: begin_response is marshaled even though AppUI's is a no-op today; the
-    # waiting/thinking indicator is wired in branch 5. No args → the bound method
-    # is already a zero-arg Scheduled, so no partial is needed.
+    # begin_response starts AppUI's turn-scoped thinking indicator (§31.14). No
+    # args → the bound method is already a zero-arg Scheduled, so no partial is
+    # needed.
     def begin_response(self) -> None:
         self._schedule(self._inner.begin_response)
 
