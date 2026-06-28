@@ -90,7 +90,7 @@ class _Trail:
 
     ``text`` accumulates raw model thinking (display only — never fed back to the
     model or recorded in history). ``expanded`` is the per-trail collapse state
-    that ``t`` toggles on the LATEST trail. The collapsed view shows the first
+    that ``Ctrl-T`` toggles on the LATEST trail. The collapsed view shows the first
     ``TRAIL_COLLAPSED_LINES`` non-blank lines; a footer reports the hidden
     remainder. No ``finished`` flag is needed — a trail stops accumulating the
     moment it is no longer ``AppUI._active_trail``.
@@ -116,6 +116,7 @@ class AppUI:
         width_fn: Callable[[], int],
         show_reasoning: bool = True,
         time_fn: Callable[[], float] = time.monotonic,
+        intro: RenderableType | None = None,
     ) -> None:
         self._glyphs = glyphs
         # Workspace for display-integrity (design section 14.5): when set, a
@@ -136,8 +137,11 @@ class AppUI:
         # fixed time_fn rather than the wall clock.
         self._time_fn = time_fn
         # Source of truth: every committed renderable in the transcript. A _Trail
-        # entry is a live thinking block rendered via _render_trail (§31.19).
-        self._renderables: list[RenderableType | _Trail] = []
+        # entry is a live thinking block rendered via _render_trail (§31.19). The
+        # boot banner (when provided) is seeded as the first transcript entry so it
+        # renders inside the alt-screen pane — a console.print would be lost behind
+        # the full-screen app (§31.13).
+        self._renderables: list[RenderableType | _Trail] = [intro] if intro is not None else []
         # Accumulated token text for the current open response.
         # None means no response is open; an open response is the last renderable
         # in spirit but lives here until end_response() finalizes it.
@@ -272,13 +276,14 @@ class AppUI:
         shown = lines if trail.expanded else lines[:TRAIL_COLLAPSED_LINES]
         parts.extend(Text("  " + _sanitize_line(ln), style="sp.faint") for ln in shown)
         if trail.expanded:
-            parts.append(Text("  press t to collapse", style="sp.faint"))
+            parts.append(Text("  press ctrl-t to collapse", style="sp.faint"))
         else:
             hidden = len(lines) - len(shown)
             if hidden > 0:
                 parts.append(
                     Text(
-                        f"  {self._glyphs.ellipsis} +{hidden} hidden lines · press t to expand",
+                        f"  {self._glyphs.ellipsis} +{hidden} hidden lines"
+                        " · press ctrl-t to expand",
                         style="sp.faint",
                     )
                 )
@@ -348,11 +353,11 @@ class AppUI:
         self._add_renderable(Text(f"{marker} aborted", style="sp.warn"))
 
     def toggle_thinking_trail(self) -> bool:
-        # Flip the LATEST trail's collapse state (§31.19). `t` toggles the active
+        # Flip the LATEST trail's collapse state (§31.19). Ctrl-T toggles the active
         # trail while running and the most-recent finished trail after — older
         # trails freeze (no per-trail selection, by design). Returns False when there
-        # is no trail (fresh session, or show_reasoning off) so the keybinding can
-        # treat `t` as ordinary text input instead of swallowing it.
+        # is no trail (fresh session, or show_reasoning off) so the keybinding is a
+        # harmless no-op rather than acting on nothing.
         if self._latest_trail is None:
             return False
         self._latest_trail.expanded = not self._latest_trail.expanded

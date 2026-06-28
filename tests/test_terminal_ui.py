@@ -780,7 +780,7 @@ def test_bang_prefix_runs_manual_shell_not_model(
     monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
 
-    rc = terminal_mod.run_interactive(tmp_path, model_override=model)
+    rc = terminal_mod.run_interactive(tmp_path, model_override=model, legacy_ui=True)
 
     assert bang_calls == ["echo hi"], "'!<cmd>' must run via the manual-shell path"
     assert model_turns == [], "a '!' line must NOT be sent to the model"
@@ -856,7 +856,7 @@ def test_slash_branch_survives_keyboard_interrupt(
     monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
 
     # Must return normally, not propagate the KeyboardInterrupt out of the REPL.
-    rc = terminal_mod.run_interactive(tmp_path, model_override=model)
+    rc = terminal_mod.run_interactive(tmp_path, model_override=model, legacy_ui=True)
 
     assert rc == 0
     events = [
@@ -930,7 +930,7 @@ def test_resume_existing_session_still_loads(
     monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
 
-    rc = terminal_mod.run_interactive(tmp_path, resume=sid, model_override=model)
+    rc = terminal_mod.run_interactive(tmp_path, resume=sid, model_override=model, legacy_ui=True)
 
     assert rc == 0
     assert preload_calls == [model], "an existing resume target still warms the model"
@@ -938,6 +938,99 @@ def test_resume_existing_session_still_loads(
         json.loads(line) for line in (fake_paths.state_dir / "audit.jsonl").read_text().splitlines()
     ]
     assert any(e["event"] == "session_resume" for e in events), "resume load must still happen"
+
+
+def test_app_is_default_on_tty_and_audits_session_end(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An interactive TTY with no opt-out boots the full-screen app (§31.13), and
+    the session is still audited as ended once the app loop exits."""
+    import shellpilot.cli.terminal as terminal_mod
+
+    model = "gemma4:e4b"
+    fake_paths = _boot_fake_paths(tmp_path)
+    monkeypatch.setattr(terminal_mod, "OllamaClient", lambda *a, **k: _make_fake_client(model)())
+    monkeypatch.setattr(terminal_mod.AppPaths, "default", classmethod(lambda cls: fake_paths))
+
+    run_app_calls: list[object] = []
+    monkeypatch.setattr(
+        terminal_mod, "run_app", lambda runtime, runner, ui, **k: run_app_calls.append(ui) or 0
+    )
+
+    def _no_reader(*a: object, **k: object) -> object:
+        raise AssertionError("app mode must not build the legacy input reader")
+
+    monkeypatch.setattr(terminal_mod, "make_input", _no_reader)
+    monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    rc = terminal_mod.run_interactive(tmp_path, model_override=model)
+
+    assert rc == 0
+    assert len(run_app_calls) == 1, "the full-screen app must drive an interactive TTY by default"
+    events = [
+        json.loads(line) for line in (fake_paths.state_dir / "audit.jsonl").read_text().splitlines()
+    ]
+    assert any(e["event"] == "session_end" for e in events), "app mode must audit session_end"
+
+
+def test_app_audits_session_end_even_if_run_app_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unexpected app crash still records session_end (audit durability, AUD-1).
+
+    The exception propagates (parity with the legacy loop), but the finally writes
+    the event first so the audit log is never left without a session boundary.
+    """
+    import shellpilot.cli.terminal as terminal_mod
+
+    model = "gemma4:e4b"
+    fake_paths = _boot_fake_paths(tmp_path)
+    monkeypatch.setattr(terminal_mod, "OllamaClient", lambda *a, **k: _make_fake_client(model)())
+    monkeypatch.setattr(terminal_mod.AppPaths, "default", classmethod(lambda cls: fake_paths))
+
+    def _boom(*a: object, **k: object) -> int:
+        raise RuntimeError("app crashed mid-run")
+
+    monkeypatch.setattr(terminal_mod, "run_app", _boom)
+    monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    with pytest.raises(RuntimeError, match="app crashed"):
+        terminal_mod.run_interactive(tmp_path, model_override=model)
+
+    events = [
+        json.loads(line) for line in (fake_paths.state_dir / "audit.jsonl").read_text().splitlines()
+    ]
+    assert any(e["event"] == "session_end" for e in events), "session_end must survive an app crash"
+
+
+def test_legacy_ui_opt_out_skips_app_on_tty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """legacy_ui forces the line-based REPL even on a TTY — run_app never starts."""
+    import shellpilot.cli.terminal as terminal_mod
+
+    model = "gemma4:e4b"
+    fake_paths = _boot_fake_paths(tmp_path)
+    monkeypatch.setattr(terminal_mod, "OllamaClient", lambda *a, **k: _make_fake_client(model)())
+    monkeypatch.setattr(terminal_mod.AppPaths, "default", classmethod(lambda cls: fake_paths))
+
+    def _no_app(*a: object, **k: object) -> int:
+        raise AssertionError("legacy_ui must not start the full-screen app")
+
+    monkeypatch.setattr(terminal_mod, "run_app", _no_app)
+
+    class _Reader:
+        def read(self, context: object) -> str:
+            raise EOFError
+
+    monkeypatch.setattr(terminal_mod, "make_input", lambda *a, **k: _Reader())
+    monkeypatch.setattr(terminal_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+
+    rc = terminal_mod.run_interactive(tmp_path, model_override=model, legacy_ui=True)
+    assert rc == 0
 
 
 # ---------------------------------------------------------------------------

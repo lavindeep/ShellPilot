@@ -1,11 +1,11 @@
-"""Opt-in runnable entry for the full-screen app (design section 31.13).
+"""Runnable entry for the full-screen app (design section 31.13).
 
 This is the LIVE glue that constructs the full-screen ``Application``, drives a
 :class:`~shellpilot.runtime.conversation.ConversationRuntime` through a
 worker-thread :class:`~shellpilot.cli.app_turn.TurnRunner`, and ``app.run()``s
-it. It is reached ONLY via an explicit opt-in (``SHELLPILOT_UI=app``) from
-``run_interactive`` so the default REPL stays byte-identical; nothing here runs
-on a default ``shellpilot`` session.
+it. It is the DEFAULT path for an interactive TTY (``run_interactive`` selects it
+unless ``--legacy-ui`` / ``SHELLPILOT_UI=legacy`` is set or the session is
+non-TTY, in which case the legacy line-based REPL runs instead).
 
 The construction cycle is broken by deferred attribute assignment — see the
 ordering note in :func:`run_app`.
@@ -62,9 +62,10 @@ def run_app(
        BEFORE ``app.run()`` — both are read only once a turn runs, by which time
        ``app.run()`` has set ``app.loop``.
 
-    NOTE: this opt-in entry does not write the ``session_end`` audit event that
-    the default REPL writes after its loop; it is a dev/live-test entry, not the
-    shipping path. Returns 0 so ``run_interactive`` can ``return run_app(...)``.
+    NOTE: ``run_app`` stays UI-only and does not itself write the ``session_end``
+    audit event — the caller (``run_interactive``) writes it right after this
+    returns, mirroring the legacy REPL so both UIs audit the session identically.
+    Returns the app's exit code.
     """
     app = build_app(
         workspace=workspace,

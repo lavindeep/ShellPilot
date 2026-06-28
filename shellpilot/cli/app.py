@@ -444,23 +444,17 @@ def build_app(
         pending["text"] = None
 
     @kb.add(
-        "t",
-        filter=dock_focused
-        & Condition(lambda: not dock_buffer.text)
-        & Condition(lambda: approval_gate is None or not approval_gate.active),
+        "c-t",
+        filter=dock_focused & Condition(lambda: approval_gate is None or not approval_gate.active),
     )
     def _toggle_trail(event: KeyPressEvent) -> None:
-        # `t` on an EMPTY dock with no active approval toggles the latest thinking
-        # trail's collapse state (§31.19) — works while the model runs or after.
-        # If there is no trail to toggle (fresh session / show_reasoning off), fall
-        # through and type the key so a message that starts with 't' still works.
-        # Mirror prompt_toolkit's self-insert (event.data * event.arg) rather than a
-        # literal so a numeric-argument prefix (e.g. `Esc 5 t`) still repeats. NOTE:
-        # when a trail DOES exist, a bare 't' on an empty dock is the toggle, not the
-        # first char of a word — the spec's explicit dock-empty gate; type the 't'
-        # after any other char, or it toggles.
-        if not _ui.toggle_thinking_trail():
-            dock_buffer.insert_text(event.data * event.arg)
+        # Ctrl-T toggles the latest thinking trail's collapse state (§31.19) —
+        # works while the model runs or after. A modifier key (not a bare letter)
+        # so it never collides with typing a message that starts with 't'; this
+        # overrides prompt_toolkit's default c-t (transpose) the same way the app's
+        # c-c/c-d bindings override their defaults. No-op when there is no trail
+        # (fresh session / show_reasoning off), so a stray press is harmless.
+        _ui.toggle_thinking_trail()
 
     @kb.add("escape", "enter", filter=dock_focused)
     def _newline(event: KeyPressEvent) -> None:

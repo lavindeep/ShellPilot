@@ -23,6 +23,17 @@ def make_ui(workspace: Path | None = None, width: int = 80) -> AppUI:
     return AppUI(glyphs=GLYPHS, workspace=workspace, width_fn=lambda: width)
 
 
+def test_intro_renders_as_first_pane_content() -> None:
+    """The boot banner passed as `intro` is seeded into the pane (§31.13).
+
+    Without this it console.prints behind the alt-screen and is never seen.
+    """
+    from rich.text import Text
+
+    ui = AppUI(glyphs=GLYPHS, width_fn=lambda: 80, intro=Text("BANNER-MARKER"))
+    assert "BANNER-MARKER" in ui._render_ansi()
+
+
 def ansi_text(ui: AppUI) -> str:
     """Raw ANSI string from _render_ansi."""
     return ui._render_ansi()
@@ -679,7 +690,7 @@ def test_thinking_trail_collapsed_hides_overflow_with_footer() -> None:
     for i in range(10):
         assert f"line{i}" in out  # first 10 shown
     assert "line10" not in out  # 11th+ hidden
-    assert "+5 hidden lines · press t to expand" in out
+    assert "+5 hidden lines · press ctrl-t to expand" in out
 
 
 def test_toggle_expands_and_collapses_latest_trail() -> None:
@@ -692,12 +703,12 @@ def test_toggle_expands_and_collapses_latest_trail() -> None:
     out = plain(ui)
     for i in range(15):
         assert f"row{i}" in out
-    assert "press t to collapse" in out
+    assert "press ctrl-t to collapse" in out
     assert "hidden lines" not in out
     assert ui.toggle_thinking_trail() is True
     out2 = plain(ui)
     assert "row14" not in out2
-    assert "+5 hidden lines · press t to expand" in out2
+    assert "+5 hidden lines · press ctrl-t to expand" in out2
 
 
 def test_toggle_with_no_trail_returns_false() -> None:

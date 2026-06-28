@@ -91,6 +91,11 @@ PACKAGE_MANAGERS: Final = frozenset(
 )
 NETWORK_COMMANDS: Final = frozenset({"curl", "wget", "nc", "ssh", "scp", "rsync", "ftp"})
 WRITE_COMMANDS: Final = frozenset({"mv", "cp", "mkdir", "touch", "ln", "tee", "patch"})
+# Open-with-default-handler launchers (macOS `open`, Linux `xdg-open`). Not
+# read-only: they launch an arbitrary application or navigate to a URL, so they
+# stay approval-gated (MEDIUM) rather than auto-running — but they are recognized
+# commands, not "unknown executables".
+LAUNCHER_COMMANDS: Final = frozenset({"open", "xdg-open"})
 HIGH_COMMANDS: Final = frozenset(
     {
         "sudo",
@@ -356,6 +361,8 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
         return CommandRisk(RiskLevel.MEDIUM, (f"{executable} package operation",))
     if executable in NETWORK_COMMANDS:
         return CommandRisk(RiskLevel.MEDIUM, (f"{executable} performs network activity",))
+    if executable in LAUNCHER_COMMANDS:
+        return CommandRisk(RiskLevel.MEDIUM, (f"{executable} launches an application or URL",))
     if executable in WRITE_COMMANDS:
         outside = _path_arg_outside_workspace(argv, workspace)
         if outside:

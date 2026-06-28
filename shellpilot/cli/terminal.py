@@ -434,7 +434,11 @@ def _decline(_prompt: str) -> bool:
 
 
 def run_interactive(
-    workspace: Path, resume: str | None = None, model_override: str | None = None
+    workspace: Path,
+    resume: str | None = None,
+    model_override: str | None = None,
+    *,
+    legacy_ui: bool = False,
 ) -> int:
     console = build_console(Settings())
     env = dict(os.environ)
@@ -628,12 +632,25 @@ def run_interactive(
         console.print("[sp.dim]Continuing without stored memory this session.[/sp.dim]")
         memory = None
 
-    # Opt-in full-screen app (design section 31.13). The default REPL is
-    # byte-identical: app_mode is False unless SHELLPILOT_UI=app, and the else
-    # branch builds the exact same TerminalUI as before. In app mode the
-    # conversation is driven through the marshaling ThreadedUI from the start, so
-    # its plan tools capture the marshaling UI's bound methods at construction.
-    app_mode = env.get("SHELLPILOT_UI") == "app"
+    # The boot banner (built once, used by both UIs). In app mode it is seeded as
+    # the pane's first renderable so it shows inside the alt-screen; the legacy
+    # REPL console.prints the same Panel below.
+    banner = render_banner(
+        chosen,
+        is_cloud=egressing_session,
+        profile=settings.runtime.security_profile,
+        skills=settings.skills.enabled,
+        recent_sessions=recent_sessions,
+    )
+
+    # Full-screen app (design section 31.13) is the default for an interactive
+    # TTY; the legacy line-based REPL is opt-out via --legacy-ui, the
+    # SHELLPILOT_UI=legacy env var, or any non-TTY (piped/redirected) session,
+    # which the full-screen app cannot drive. In app mode the conversation is
+    # driven through the marshaling ThreadedUI from the start, so its plan tools
+    # capture the marshaling UI's bound methods at construction.
+    use_legacy = legacy_ui or env.get("SHELLPILOT_UI") == "legacy"
+    app_mode = tty and not use_legacy
     app_ui: AppUI | None = None
     app_runner: TurnRunner | None = None
     approval_gate: ApprovalGate | None = None
@@ -645,6 +662,7 @@ def run_interactive(
             workspace_fn=lambda: runtime.status().workspace,
             width_fn=lambda: get_app().output.get_size().columns,
             show_reasoning=settings.ui.show_reasoning_summary,
+            intro=banner,
         )
         app_runner = TurnRunner(inner_ui=app_ui)
         # The focus-swap gate handles the two blocking approval methods (§31.16):
@@ -675,6 +693,9 @@ def run_interactive(
     if restored is not None:
         runtime.restore_history(restored.messages)
         runtime.restore_active_plan(restored.active_plan_task_id)
+        # Audited at restore time so BOTH UIs record it (app mode returns before the
+        # legacy tail); the legacy REPL still prints its own "Resumed session" notice.
+        audit.write("session_resume", summary=restored.session_id)
         restored_plan = runtime.plan_manager.active
         if restored_plan is not None:
             console.print(plan_panel(restored_plan, glyphs))
@@ -762,42 +783,40 @@ def run_interactive(
                 ctx_pct=ctx_percent(st.estimated_prompt_tokens, st.budget.model_context_tokens),
             )
 
-        return run_app(
-            runtime,
-            app_runner,
-            app_ui,
-            workspace=workspace,
-            model=runtime.model,
-            profile=settings.runtime.security_profile,
-            glyphs=glyphs,
-            commands=command_words(),
-            is_cloud=egressing_session,
-            ctx_pct=ctx_percent(
-                runtime.status().estimated_prompt_tokens,
-                runtime.status().budget.model_context_tokens,
-            ),
-            approval_gate=approval_gate,
-            on_slash=router.route,
-            is_busy=lambda: runner.busy,
-            register_idle=lambda cb: setattr(app_runner, "on_idle", cb),
-            status_fn=_status_values,
-        )
+        try:
+            rc = run_app(
+                runtime,
+                app_runner,
+                app_ui,
+                workspace=workspace,
+                model=runtime.model,
+                profile=settings.runtime.security_profile,
+                glyphs=glyphs,
+                commands=command_words(),
+                is_cloud=egressing_session,
+                ctx_pct=ctx_percent(
+                    runtime.status().estimated_prompt_tokens,
+                    runtime.status().budget.model_context_tokens,
+                ),
+                approval_gate=approval_gate,
+                on_slash=router.route,
+                is_busy=lambda: runner.busy,
+                register_idle=lambda cb: setattr(app_runner, "on_idle", cb),
+                status_fn=_status_values,
+            )
+        finally:
+            # Mirror the legacy REPL: the session is audited as ended once the app
+            # loop exits — in a finally so an unexpected app crash still records it
+            # (run_app itself stays UI-only; the audit logger lives here).
+            audit.write("session_end")
+        return rc
 
-    console.print(
-        render_banner(
-            runtime.model,
-            is_cloud=egressing_session,
-            profile=settings.runtime.security_profile,
-            skills=settings.skills.enabled,
-            recent_sessions=recent_sessions,
-        )
-    )
+    console.print(banner)
     if restored is not None:
         console.print(
             f"[sp.dim]Resumed session {escape(restored.session_id)} "
             f"({len(restored.messages)} messages).[/sp.dim]"
         )
-        audit.write("session_resume", summary=restored.session_id)
     reader = make_input(console, paths.state_dir, command_words(), glyphs)
 
     # When a turn completes (normally or via the inner KeyboardInterrupt handler)
