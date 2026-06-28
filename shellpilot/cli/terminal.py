@@ -6,10 +6,12 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from prompt_toolkit.application import get_app
+from prompt_toolkit.application.run_in_terminal import run_in_terminal
 from rich.console import Console
 from rich.markup import escape
 from rich.padding import Padding
@@ -17,6 +19,7 @@ from rich.text import Text
 
 from shellpilot.cli.app_approval import ApprovalGate
 from shellpilot.cli.app_main import run_app
+from shellpilot.cli.app_slash import SlashRouter
 from shellpilot.cli.app_turn import ThreadedUI, TurnRunner
 from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
@@ -43,7 +46,12 @@ from shellpilot.cli.render import (
 from shellpilot.cli.render import (
     tool_result as render_tool_result,
 )
-from shellpilot.cli.slash import SlashAction, SlashDispatcher, command_words
+from shellpilot.cli.slash import (
+    SlashAction,
+    SlashDispatcher,
+    _default_confirm,
+    command_words,
+)
 from shellpilot.cli.status_bar import ctx_percent
 from shellpilot.cli.streaming import AviationSpinner, DiffReveal, ResponseStream
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs, build_console, resolve_glyphs
@@ -407,6 +415,13 @@ def _relative_age(mtime: float, *, now: float | None = None) -> str:
     return f"{int(delta // 86400)}d ago"
 
 
+def _decline(_prompt: str) -> bool:
+    """Loop-path confirm safety net (§31.17): a slash form misclassified as
+    fast (display-only) can never block the event loop on ``input()`` — it
+    declines instead. The terminal path uses the real ``_default_confirm``."""
+    return False
+
+
 def run_interactive(
     workspace: Path, resume: str | None = None, model_override: str | None = None
 ) -> int:
@@ -648,12 +663,75 @@ def run_interactive(
             tid = escape(restored_plan.task_id)
             console.print(f"[sp.dim]Active plan restored: {tid} ({restored_plan.status}).[/sp.dim]")
 
+    # Slash dispatcher + attachment queue: shared by BOTH the full-screen app
+    # (the SlashRouter dispatches against this one instance, §31.17) and the
+    # default REPL below. Hoisted above the app-mode hand-off so the router can
+    # close over it; every dep was resolved earlier in run_interactive.
+    attachments = AttachmentQueue()
+    dispatcher = SlashDispatcher(
+        runtime=runtime,
+        client=client,
+        console=console,
+        loaded=loaded,
+        user_config_file=user_file,
+        reload_config=load,
+        glyphs=glyphs,
+        preload=_preload,
+        attachments=attachments,
+        tty=tty,
+    )
+
     # Hand off to the full-screen app loop (opt-in, design section 31.13). Placed
     # after the conversation + restore so the worker-thread turn drives the same
     # fully-configured runtime; the default REPL below is reached only when
     # app_mode is False, so it stays byte-identical.
     if app_mode:
         assert app_runner is not None and app_ui is not None and approval_gate is not None
+        runner = app_runner  # non-optional local for the closures/lambdas below
+        real_console = console
+
+        def dispatch(line: str, target: Console) -> SlashAction:
+            # Run the ONE dispatcher against the given console. Loop path (a
+            # capturing console, not real_console) gets the _decline confirm so a
+            # misclassified confirm-caller can never block the event loop;
+            # terminal path gets the real blocking confirm. Restore in finally.
+            on_loop = target is not real_console
+            dispatcher._console = target
+            dispatcher._confirm = _decline if on_loop else _default_confirm
+            try:
+                return dispatcher.handle(line)
+            finally:
+                dispatcher._console = real_console
+                dispatcher._confirm = _default_confirm
+
+        def app_manual_shell(line: str) -> None:
+            # `!<cmd>` → one audited raw command; bare `!` / `/shell` → the loop.
+            # Live workspace from the runtime so a prior /cwd set is honoured.
+            ws = runtime.status().workspace
+            command = line[1:].strip() if line.startswith("!") else ""
+            if command:
+                run_manual_command(command, ws, audit)
+            else:
+                manual_shell_loop(console, ws, audit)
+
+        def schedule_terminal(fn: Callable[[], None]) -> None:
+            # Suspend the app, run fn synchronously on the real terminal, redraw.
+            # Fire-and-forget: the returned Future is intentionally not awaited.
+            run_in_terminal(fn)
+
+        router = SlashRouter(
+            ui=app_ui,
+            dispatch=dispatch,
+            real_console=console,
+            width_fn=lambda: get_app().output.get_size().columns,
+            run_terminal=schedule_terminal,
+            run_worker=runner.start_action,
+            schedule=runner.schedule,
+            manual_shell=app_manual_shell,
+            on_exit=lambda: get_app().exit(),
+            is_busy=lambda: runner.busy,
+            glyphs=glyphs,
+        )
         return run_app(
             runtime,
             app_runner,
@@ -669,20 +747,8 @@ def run_interactive(
                 runtime.status().budget.model_context_tokens,
             ),
             approval_gate=approval_gate,
+            on_slash=router.route,
         )
-    attachments = AttachmentQueue()
-    dispatcher = SlashDispatcher(
-        runtime=runtime,
-        client=client,
-        console=console,
-        loaded=loaded,
-        user_config_file=user_file,
-        reload_config=load,
-        glyphs=glyphs,
-        preload=_preload,
-        attachments=attachments,
-        tty=tty,
-    )
 
     console.print(
         render_banner(

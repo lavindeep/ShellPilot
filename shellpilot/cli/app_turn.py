@@ -181,6 +181,12 @@ class TurnRunner:
         # injects a synchronous one.
         self._schedule: Schedule = schedule if schedule is not None else self.schedule
 
+    @property
+    def busy(self) -> bool:
+        """Whether a turn is in flight. Read on the loop thread (slash routing
+        rejects a slash while busy, §31.17), consistent with the _busy invariant."""
+        return self._busy
+
     def schedule(self, fn: Scheduled) -> None:
         """Marshal ``fn`` onto the loop thread, then request one repaint.
 
@@ -232,6 +238,29 @@ class TurnRunner:
         # relying on the _busy guard to keep self._cancel from being reassigned.
         self._thread = threading.Thread(target=self._run, args=(text, cancel), daemon=True)
         self._thread.start()
+
+    def start_action(self, fn: Callable[[], None]) -> bool:
+        """Run a model-invoking slash command (e.g. ``/plan revise``) on the worker.
+
+        Like :meth:`start` but runs an arbitrary ``fn`` — which itself drives a
+        model turn through the runtime's marshaling UI and the approval gate —
+        instead of ``run_turn`` directly. A ``/plan revise`` must NOT run on the
+        loop thread (it would freeze the UI and the approval-gate Future could
+        only be resolved by the now-blocked loop) nor under ``run_in_terminal``
+        (which suspends the app while the turn marshals to it). Returns False when
+        a turn is already in flight so the caller can surface a hint.
+
+        # NOTE: no cancel event — a /plan revise turn is not Ctrl-C-cancellable
+        # yet (it does not thread a cancel into run_turn). Fold it into the cancel
+        # spine if that gap bites.
+        """
+        if self._busy:
+            return False
+        self._busy = True
+        self._cancel = None
+        self._thread = threading.Thread(target=self._run_action, args=(fn,), daemon=True)
+        self._thread.start()
+        return True
 
     def request_cancel(self) -> bool:
         """Signal the in-flight turn to abort. Runs on the loop thread (Ctrl-C).
@@ -285,6 +314,16 @@ class TurnRunner:
             self._schedule(self._inner_ui.abort_turn)
         except Exception as exc:  # noqa: BLE001 - surface ANY worker failure to the pane
             self._schedule(functools.partial(self._inner_ui.show_error, f"Turn failed: {exc}"))
+        finally:
+            self._schedule(self._mark_done)
+
+    def _run_action(self, fn: Callable[[], None]) -> None:
+        """Worker body for :meth:`start_action`: run ``fn``, surface any failure to
+        the pane, and always clear busy on the loop thread (mirrors :meth:`_run`)."""
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - surface ANY worker failure to the pane
+            self._schedule(functools.partial(self._inner_ui.show_error, f"Command failed: {exc}"))
         finally:
             self._schedule(self._mark_done)
 
