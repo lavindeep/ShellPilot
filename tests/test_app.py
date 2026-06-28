@@ -316,3 +316,127 @@ def test_c_c_shows_idle_hint_when_on_interrupt_none(tmp_path: Path) -> None:
     # Back-compat: with no on_interrupt (the inert shell), Ctrl-C shows the hint.
     ui = _run_with_interrupt(tmp_path, on_interrupt=None)
     assert "idle" in ui._render_ansi()
+
+
+# --- Branch-7 approval focus-swap routing (§31.16) ----------------------------
+
+
+class _FakeGate:
+    """Records the keybinding handshake without the real Future plumbing.
+
+    One ``submit``/``cancel`` resolves the fake prompt (``active`` flips False),
+    mirroring the real gate clearing ``_pending`` once the future resolves.
+    """
+
+    def __init__(self, *, active: bool = True) -> None:
+        self._active = active
+        self.submitted: list[str] = []
+        self.cancelled = 0
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def submit(self, line: str) -> None:
+        self.submitted.append(line)
+        self._active = False
+
+    def cancel(self) -> None:
+        self.cancelled += 1
+        self._active = False
+
+
+def _build_with_gate(
+    tmp_path: Path,
+    inp: object,
+    gate: _FakeGate,
+    *,
+    on_interrupt: object | None = None,
+) -> tuple[Application[None], AppUI]:
+    ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+    app = build_app(
+        workspace=tmp_path,
+        model="gemma4:e4b",
+        profile="balanced",
+        glyphs=UNICODE_GLYPHS,
+        commands=command_words(),
+        input=inp,  # type: ignore[arg-type]
+        output=DummyOutput(),
+        ui=ui,
+        on_interrupt=on_interrupt,  # type: ignore[arg-type]
+        approval_gate=gate,  # type: ignore[arg-type]
+    )
+    return app, ui
+
+
+def test_approval_active_submit_routes_to_gate(tmp_path: Path) -> None:
+    gate = _FakeGate(active=True)
+    with create_pipe_input() as inp:
+        app, ui = _build_with_gate(tmp_path, inp, gate)
+        inp.send_text("y\n")  # gate active → gate.submit("y"), gate deactivates
+        inp.send_text("/exit\n")  # gate now inactive → real /exit quits
+        app.run()
+    assert gate.submitted == ["y"]
+    assert gate.cancelled == 0
+    # The routed answer did NOT fall through to the inert show_status echo path
+    # (that path runs only when no gate intercepts the submit).
+    assert ui._renderables == []
+
+
+def test_approval_active_intercepts_exit(tmp_path: Path) -> None:
+    # A mid-approval "/exit" is an approval answer (gate.submit), NOT a quit — the
+    # gate check sits BEFORE the /exit check.
+    gate = _FakeGate(active=True)
+    with create_pipe_input() as inp:
+        app, ui = _build_with_gate(tmp_path, inp, gate)
+        inp.send_text("/exit\n")  # routed to the gate, deactivates it
+        inp.send_text("/exit\n")  # now inactive → quits
+        app.run()
+    assert gate.submitted == ["/exit"]
+    assert "/exit" not in ui._render_ansi()
+
+
+def test_approval_active_ctrl_c_cancels_gate_not_interrupt(tmp_path: Path) -> None:
+    gate = _FakeGate(active=True)
+    interrupts: list[int] = []
+
+    def on_interrupt() -> bool:
+        interrupts.append(1)
+        return True
+
+    with create_pipe_input() as inp:
+        app, _ = _build_with_gate(tmp_path, inp, gate, on_interrupt=on_interrupt)
+        inp.send_text("\x03")  # Ctrl-C while gate active → gate.cancel()
+        inp.send_text("/exit\n")  # gate now inactive → quits
+        app.run()
+    assert gate.cancelled == 1
+    assert interrupts == []  # model cancel did NOT fire during the approval
+
+
+def test_ctrl_c_falls_through_to_interrupt_when_gate_inactive(tmp_path: Path) -> None:
+    # Existing behavior preserved: with no active approval, Ctrl-C reaches
+    # on_interrupt (the turn-level cancel), not the gate.
+    gate = _FakeGate(active=False)
+    interrupts: list[int] = []
+
+    def on_interrupt() -> bool:
+        interrupts.append(1)
+        return True
+
+    with create_pipe_input() as inp:
+        app, _ = _build_with_gate(tmp_path, inp, gate, on_interrupt=on_interrupt)
+        inp.send_text("\x03")
+        inp.send_text("/exit\n")
+        app.run()
+    assert interrupts == [1]
+    assert gate.cancelled == 0
+
+
+def test_eof_cancels_active_gate(tmp_path: Path) -> None:
+    gate = _FakeGate(active=True)
+    with create_pipe_input() as inp:
+        app, _ = _build_with_gate(tmp_path, inp, gate)
+        inp.send_text("\x04")  # Ctrl-D (EOF) while gate active → gate.cancel()
+        inp.send_text("/exit\n")  # gate now inactive → quits
+        app.run()
+    assert gate.cancelled == 1

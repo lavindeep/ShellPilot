@@ -14,8 +14,9 @@ callable is injected):
 * :class:`ThreadedUI` — a ``RuntimeUI`` that wraps the real ``AppUI`` and
   enqueues every fire-and-forget content call onto the loop thread instead of
   running it inline. The blocking approval methods cannot be fire-and-forget
-  (they return a value), so they delegate straight to the inner UI and run on
-  the worker thread.
+  (they return a value): with an :class:`ApprovalGate` wired they hand off to it
+  (the worker blocks on the gate's Future); with no gate they raise
+  ``NotImplementedError`` so an approval can never silently default.
 * :class:`TurnRunner` — owns the single worker thread for one turn and a
   ``busy`` flag that is only ever touched on the loop thread (no lock needed).
 """
@@ -32,10 +33,11 @@ from shellpilot.llm.client import GenerationCancelled
 if TYPE_CHECKING:
     from prompt_toolkit.application import Application
 
+    from shellpilot.cli.app_approval import ApprovalGate
     from shellpilot.cli.app_ui import AppUI
     from shellpilot.policy.approvals import ApprovalReply, ApprovalRequest
     from shellpilot.runtime.conversation import ConversationRuntime
-    from shellpilot.runtime.events import RuntimeUI, TurnStats
+    from shellpilot.runtime.events import TurnStats
     from shellpilot.runtime.planner import TaskPlan
 
 # A zero-arg callback scheduled to run on the loop thread.
@@ -59,9 +61,19 @@ class ThreadedUI:
     ``"b"``, not ``"b"``, ``"b"``.
     """
 
-    def __init__(self, *, inner: RuntimeUI, schedule: Schedule) -> None:
+    def __init__(
+        self,
+        *,
+        inner: AppUI,
+        schedule: Schedule,
+        approval_gate: ApprovalGate | None = None,
+    ) -> None:
         self._inner = inner
         self._schedule = schedule
+        # Branch 7 (§31.16): the focus-swap handshake for the two blocking
+        # approval methods. None falls back to the inner UI (back-compat — the
+        # inner raises NotImplementedError until a gate is wired).
+        self._approval_gate = approval_gate
 
     # ------------------------------------------------------------------
     # Fire-and-forget content methods — enqueued, never run inline.
@@ -110,16 +122,21 @@ class ThreadedUI:
     # They delegate straight to the inner UI and run on the worker thread.
     # ------------------------------------------------------------------
 
-    # NOTE: branch 7 replaces these with a thread-safe Future focus-swap
-    # handshake (marshal the prompt to the loop thread, block the worker on a
-    # Future for the reply). Until then the inner AppUI raises NotImplementedError
-    # here — no approval may silently default — and the worker's try/except
-    # surfaces that as a pane error (see TurnRunner._run).
+    # Branch 7 (§31.16): with a gate wired, the worker blocks on the gate's
+    # Future while the loop thread renders the prompt and reads the dock. With no
+    # gate (CI back-compat only — the real app always wires one), they raise so an
+    # approval can never silently default; the worker's try/except surfaces it as
+    # a pane error (see TurnRunner._run). The inner AppUI is content-only and has
+    # no approval methods, hence the direct raise rather than an inner delegation.
     def ask_approval(self, request: ApprovalRequest) -> ApprovalReply:
-        return self._inner.ask_approval(request)
+        if self._approval_gate is not None:
+            return self._approval_gate.ask_command(request)
+        raise NotImplementedError("approval requires an ApprovalGate (no gate wired)")
 
     def ask_plan_approval(self, plan: TaskPlan, path: str) -> tuple[str, str]:
-        return self._inner.ask_plan_approval(plan, path)
+        if self._approval_gate is not None:
+            return self._approval_gate.ask_plan(plan, path)
+        raise NotImplementedError("plan approval requires an ApprovalGate (no gate wired)")
 
 
 class TurnRunner:
