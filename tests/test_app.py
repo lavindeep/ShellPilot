@@ -261,3 +261,58 @@ def test_app_alt_enter_inserts_newline_then_submits(tmp_path: Path) -> None:
         texts = [r.plain for r in ui._renderables if isinstance(r, RichText)]
         assert any("a\nb" in t for t in texts)
         assert not any("/exit" in t for t in texts)
+
+
+# --- Branch-6 Ctrl-C on_interrupt wiring (§31.15) -----------------------------
+
+
+def _run_with_interrupt(tmp_path: Path, *, on_interrupt: object) -> AppUI:
+    """Build a headless app with on_interrupt wired, press Ctrl-C, then /exit."""
+    ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_interrupt=on_interrupt,  # type: ignore[arg-type]
+        )
+        inp.send_text("\x03")  # Ctrl-C (ETX) — a key press, not a SIGINT
+        inp.send_text("/exit\n")
+        app.run()
+    return ui
+
+
+def test_c_c_calls_on_interrupt_and_skips_idle_hint_when_true(tmp_path: Path) -> None:
+    calls: list[int] = []
+
+    def on_interrupt() -> bool:
+        calls.append(1)
+        return True  # a turn was cancelled
+
+    ui = _run_with_interrupt(tmp_path, on_interrupt=on_interrupt)
+    assert calls == [1]
+    # A cancelled turn shows its own marker (from abort_turn), NOT the idle hint.
+    assert "idle" not in ui._render_ansi()
+
+
+def test_c_c_shows_idle_hint_when_on_interrupt_returns_false(tmp_path: Path) -> None:
+    calls: list[int] = []
+
+    def on_interrupt() -> bool:
+        calls.append(1)
+        return False  # nothing in flight
+
+    ui = _run_with_interrupt(tmp_path, on_interrupt=on_interrupt)
+    assert calls == [1]
+    assert "idle" in ui._render_ansi()
+
+
+def test_c_c_shows_idle_hint_when_on_interrupt_none(tmp_path: Path) -> None:
+    # Back-compat: with no on_interrupt (the inert shell), Ctrl-C shows the hint.
+    ui = _run_with_interrupt(tmp_path, on_interrupt=None)
+    assert "idle" in ui._render_ansi()

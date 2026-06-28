@@ -1,7 +1,10 @@
 """Tests for the unified conversation runtime with the fake model."""
 
 import json
+import threading
 from pathlib import Path
+
+import pytest
 
 from shellpilot.config.model import (
     ContextSettings,
@@ -10,6 +13,7 @@ from shellpilot.config.model import (
     SkillSettings,
     ToolSettings,
 )
+from shellpilot.llm.client import GenerationCancelled
 from shellpilot.llm.messages import Message
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
@@ -59,6 +63,37 @@ def test_history_accumulates_across_turns(tmp_path: Path) -> None:
     assert "first" in contents
     assert "one" in contents
     assert "second" in contents
+
+
+def test_cancelled_turn_discards_partial_reply(tmp_path: Path) -> None:
+    """History integrity (§31.15): a cancelled turn keeps the user message but no reply."""
+    # FakeLLM raises GenerationCancelled when the cancel event is set, mirroring
+    # OllamaClient aborting mid-stream. The scripted answer must NEVER be recorded.
+    fake = FakeLLM(script=[answer("partial reply that must never be recorded")])
+    runtime = make_runtime(fake, FakeUI(), tmp_path)
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(GenerationCancelled):
+        runtime.run_turn("do a thing", cancel=cancel)
+
+    # The user message was recorded (the turn happened) ...
+    assert [m.role for m in runtime._history] == ["user"]
+    assert runtime._history[0].content == "do a thing"
+    # ... but NO assistant reply landed in history — the partial is gone.
+    assert all(m.role != "assistant" for m in runtime._history)
+
+
+def test_normal_turn_records_assistant_reply(tmp_path: Path) -> None:
+    """Control for the cancel test: an uncancelled turn still records the reply."""
+    fake = FakeLLM(script=[answer("the answer")])
+    runtime = make_runtime(fake, FakeUI(), tmp_path)
+    cancel = threading.Event()  # never set
+
+    runtime.run_turn("question", cancel=cancel)
+
+    assert [m.role for m in runtime._history] == ["user", "assistant"]
+    assert runtime._history[1].content == "the answer"
 
 
 def test_oversized_user_message_is_refused(tmp_path: Path) -> None:
