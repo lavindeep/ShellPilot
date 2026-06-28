@@ -52,6 +52,10 @@ if TYPE_CHECKING:
 # the glide is a pure function of the (injected) clock — no animation thread.
 FRAME_SECONDS = 0.15
 
+# A collapsed thinking trail shows this many non-blank reasoning lines; the rest
+# fold behind a "+N hidden lines" footer until `t` expands it (design section 31.19).
+TRAIL_COLLAPSED_LINES = 10
+
 
 def _fmt_count(n: int) -> str:
     """k/m abbreviation for token counts (design section 31.14).
@@ -78,6 +82,22 @@ class _TurnIndicator:
 
     start: float
     reasoning_chars: int = 0
+
+
+@dataclass
+class _Trail:
+    """An inline, display-only thinking trail for one reasoning phase (§31.19).
+
+    ``text`` accumulates raw model thinking (display only — never fed back to the
+    model or recorded in history). ``expanded`` is the per-trail collapse state
+    that ``t`` toggles on the LATEST trail. The collapsed view shows the first
+    ``TRAIL_COLLAPSED_LINES`` non-blank lines; a footer reports the hidden
+    remainder. No ``finished`` flag is needed — a trail stops accumulating the
+    moment it is no longer ``AppUI._active_trail``.
+    """
+
+    text: str = ""
+    expanded: bool = False
 
 
 class AppUI:
@@ -110,8 +130,9 @@ class AppUI:
         # Injected clock so the indicator's elapsed/animation is testable with a
         # fixed time_fn rather than the wall clock.
         self._time_fn = time_fn
-        # Source of truth: every committed renderable in the transcript.
-        self._renderables: list[RenderableType] = []
+        # Source of truth: every committed renderable in the transcript. A _Trail
+        # entry is a live thinking block rendered via _render_trail (§31.19).
+        self._renderables: list[RenderableType | _Trail] = []
         # Accumulated token text for the current open response.
         # None means no response is open; an open response is the last renderable
         # in spirit but lives here until end_response() finalizes it.
@@ -120,6 +141,13 @@ class AppUI:
         # _TurnIndicator while a turn runs. begin_response starts it; turn_finished
         # freezes it to a permanent done line and clears it.
         self._indicator: _TurnIndicator | None = None
+        # Inline thinking trails (§31.19): _active_trail is the one currently
+        # accumulating stream_thinking text (None between reasoning phases);
+        # _latest_trail is the most-recent trail ever created — the toggle target
+        # for `t` (older trails freeze at their last state but stay visible). Both
+        # are part of _renderables; these are just pointers into it.
+        self._active_trail: _Trail | None = None
+        self._latest_trail: _Trail | None = None
         # Width-keyed ANSI cache: (width, ansi_string), or None when stale.
         self._cache: tuple[int, str] | None = None
 
@@ -134,12 +162,22 @@ class AppUI:
             self._open_response = None
             self._cache = None
 
+    def _finalize_active_trail(self) -> None:
+        # Any non-thinking transcript content ends the active reasoning phase. The
+        # trail STAYS in _renderables (finished trails remain visible and the latest
+        # stays `t`-toggleable until a new turn supersedes it); it just stops
+        # accumulating. This is the ONLY cleanup the spec's "clear active unfinished
+        # trail state, never reset prior finished trails" needs — we touch a single
+        # pointer, never another trail's expanded state.
+        self._active_trail = None
+
     def _add_renderable(self, renderable: RenderableType) -> None:
         """Close any open response first, then append a renderable to the transcript.
 
         Preserves ordering: response → tool call → response produces three distinct
         transcript entries (the open response closes around the tool call).
         """
+        self._finalize_active_trail()
         self._close_open_response()
         self._renderables.append(renderable)
         self._cache = None
@@ -169,7 +207,7 @@ class AppUI:
             theme=SHELLPILOT_THEME,
             width=width,
         )
-        renderables: list[RenderableType] = list(self._renderables)
+        renderables: list[RenderableType | _Trail] = list(self._renderables)
         if self._open_response is not None:
             # Include in-progress response without committing it yet. Sanitize the
             # model text at the sink (mirrors ResponseStream, streaming.py:171) —
@@ -180,7 +218,10 @@ class AppUI:
             # content, so it "moves down" as tool calls/responses append above it.
             renderables.append(self._indicator_line())
         for renderable in renderables:
-            console.print(renderable)
+            if isinstance(renderable, _Trail):
+                console.print(self._render_trail(renderable))
+            else:
+                console.print(renderable)
         ansi = buf.getvalue()
         if not active:
             self._cache = (width, ansi)
@@ -209,12 +250,44 @@ class AppUI:
             line.append(f" · {_fmt_count(reasoning)} reasoning", style="sp.dim")
         return line
 
+    def _render_trail(self, trail: _Trail) -> Text:
+        # Display-only thinking (§31.19), faint + indented, header carries the
+        # reasoning-token estimate. Model-controlled text → EVERY line sanitized.
+        # Blank lines are dropped so the 10-line cap counts real reasoning lines.
+        lines = [ln for ln in trail.text.splitlines() if ln.strip()]
+        reasoning = math.ceil(len(trail.text) / CHARS_PER_TOKEN)
+        caret = (
+            ("▾" if trail.expanded else "▸")
+            if self._glyphs == UNICODE_GLYPHS
+            else ("v" if trail.expanded else ">")
+        )
+        parts: list[Text] = [
+            Text(f"{caret} thinking · {_fmt_count(reasoning)} reasoning", style="sp.dim")
+        ]
+        shown = lines if trail.expanded else lines[:TRAIL_COLLAPSED_LINES]
+        parts.extend(Text("  " + _sanitize_line(ln), style="sp.faint") for ln in shown)
+        if trail.expanded:
+            parts.append(Text("  press t to collapse", style="sp.faint"))
+        else:
+            hidden = len(lines) - len(shown)
+            if hidden > 0:
+                parts.append(
+                    Text(
+                        f"  {self._glyphs.ellipsis} +{hidden} hidden lines · press t to expand",
+                        style="sp.faint",
+                    )
+                )
+        return Text("\n").join(parts)
+
     # ------------------------------------------------------------------
     # RuntimeUI content methods — mirroring TerminalUI exactly
     # ------------------------------------------------------------------
 
     def stream_token(self, token: str) -> None:
         """Accumulate a streaming token into the open response."""
+        # Answer text ends any active reasoning phase (§31.19): the next thinking
+        # chunk starts a fresh trail block below the streamed answer.
+        self._finalize_active_trail()
         if self._open_response is None:
             self._open_response = token
         else:
@@ -269,15 +342,41 @@ class AppUI:
         marker = "⏹" if self._glyphs == UNICODE_GLYPHS else self._glyphs.cross
         self._add_renderable(Text(f"{marker} aborted", style="sp.warn"))
 
+    def toggle_thinking_trail(self) -> bool:
+        # Flip the LATEST trail's collapse state (§31.19). `t` toggles the active
+        # trail while running and the most-recent finished trail after — older
+        # trails freeze (no per-trail selection, by design). Returns False when there
+        # is no trail (fresh session, or show_reasoning off) so the keybinding can
+        # treat `t` as ordinary text input instead of swallowing it.
+        if self._latest_trail is None:
+            return False
+        self._latest_trail.expanded = not self._latest_trail.expanded
+        self._cache = None
+        return True
+
     def stream_thinking(self, text: str) -> None:
-        # The reasoning count climbs ONLY while the model is thinking, so it
-        # freezes naturally when thinking stops and resumes if it thinks again. No
-        # reasoning TEXT is ever rendered — only its char count, as a token
-        # estimate. A no-op when no turn is active (defensive; begin_response runs
-        # first in the runtime's tool loop).
-        if self._indicator is not None:
-            self._indicator.reasoning_chars += len(text)
-            self._cache = None
+        # The reasoning count climbs ONLY while the model is thinking, so it freezes
+        # naturally when thinking stops and resumes if it thinks again. A no-op when
+        # no turn is active (defensive; begin_response runs first in the tool loop).
+        if self._indicator is None:
+            return  # no active turn — nothing to attribute the thinking to
+        self._indicator.reasoning_chars += len(text)
+        self._cache = None
+        # Inline trail (§31.19): retain the thinking TEXT for display only (never fed
+        # back to the model). Gated on show_reasoning — when off, no trail is built
+        # (the readout is hidden too). A new reasoning phase (no active trail) opens a
+        # fresh trail block at the current transcript position; close any open
+        # response first so the block lands after streamed answer text.
+        if not self._show_reasoning:
+            return
+        if self._active_trail is None:
+            self._close_open_response()
+            trail = _Trail()
+            self._renderables.append(trail)
+            self._active_trail = trail
+            self._latest_trail = trail
+        self._active_trail.text += text
+        self._cache = None
 
     def show_user_message(self, text: str) -> None:
         # Echo the submitted user message into the transcript. App-side (NOT a
@@ -345,7 +444,11 @@ class AppUI:
 
     def show_plan_progress(self, plan: TaskPlan) -> None:
         # Uses plan_step_line (not plan_panel) with 2-cell left indent, then a blank
-        # line — mirroring TerminalUI.show_plan_progress exactly.
+        # line — mirroring TerminalUI.show_plan_progress exactly. This is the one
+        # content-appender that bypasses _add_renderable, so it finalizes the active
+        # trail itself — keeping the §31.19 invariant (any non-thinking content ends
+        # the reasoning phase) uniformly true rather than relying on the caller.
+        self._finalize_active_trail()
         self._close_open_response()
         for index, step in enumerate(plan.steps, 1):
             self._renderables.append(

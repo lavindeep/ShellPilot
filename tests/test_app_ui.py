@@ -646,3 +646,192 @@ def test_frontier_ordering_user_then_content_then_done() -> None:
     i_tool = out.index("read_file")
     i_done = out.index("done")
     assert i_msg < i_tool < i_done
+
+
+# ---------------------------------------------------------------------------
+# §31.19 — inline collapsible thinking trail
+# ---------------------------------------------------------------------------
+
+
+def _trail_ui() -> AppUI:
+    return AppUI(glyphs=GLYPHS, width_fn=lambda: 80, time_fn=lambda: 0.0)
+
+
+def test_thinking_trail_created_collapsed_no_footer() -> None:
+    # stream_thinking during an active turn builds an inline trail, collapsed by
+    # default; with <=10 lines all are shown and there is NO hidden-lines footer.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("alpha\nbeta\ngamma")
+    out = plain(ui)
+    assert "thinking" in out  # the trail header
+    assert "alpha" in out and "beta" in out and "gamma" in out
+    assert "hidden lines" not in out
+
+
+def test_thinking_trail_collapsed_hides_overflow_with_footer() -> None:
+    # More than TRAIL_COLLAPSED_LINES non-blank lines → first 10 shown, the rest
+    # hidden behind the exact footer wording with the correct remainder count.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("\n".join(f"line{i}" for i in range(15)))
+    out = plain(ui)
+    for i in range(10):
+        assert f"line{i}" in out  # first 10 shown
+    assert "line10" not in out  # 11th+ hidden
+    assert "+5 hidden lines · press t to expand" in out
+
+
+def test_toggle_expands_and_collapses_latest_trail() -> None:
+    # toggle returns True and expands to all lines + the collapse hint; toggling
+    # again collapses back to the first 10 + the hidden footer.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("\n".join(f"row{i}" for i in range(15)))
+    assert ui.toggle_thinking_trail() is True
+    out = plain(ui)
+    for i in range(15):
+        assert f"row{i}" in out
+    assert "press t to collapse" in out
+    assert "hidden lines" not in out
+    assert ui.toggle_thinking_trail() is True
+    out2 = plain(ui)
+    assert "row14" not in out2
+    assert "+5 hidden lines · press t to expand" in out2
+
+
+def test_toggle_with_no_trail_returns_false() -> None:
+    ui = make_ui()
+    assert ui.toggle_thinking_trail() is False  # no trail → no-op, no raise
+
+
+def test_show_reasoning_false_builds_no_trail() -> None:
+    # With the reasoning readout off, no trail is built and the toggle is a no-op;
+    # the live indicator stays free of any reasoning readout (existing behavior).
+    ui = AppUI(glyphs=GLYPHS, width_fn=lambda: 80, show_reasoning=False, time_fn=lambda: 0.0)
+    ui.begin_response()
+    ui.stream_thinking("secret thoughts here")
+    out = plain(ui)
+    assert "thinking" not in out
+    assert "secret thoughts here" not in out
+    assert ui.toggle_thinking_trail() is False
+    assert "reasoning" not in out
+
+
+def test_two_phases_separate_trails_toggle_latest_only() -> None:
+    # Two reasoning phases separated by a tool call produce two distinct trail
+    # blocks; the latest is the second, and the toggle only flips the latest.
+    from shellpilot.cli.app_ui import _Trail
+
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("phase one A\nphase one B")
+    ui.show_tool_call("read_file", {"path": "x"})
+    ui.stream_thinking("phase two A\nphase two B")
+    trails = [r for r in ui._renderables if isinstance(r, _Trail)]
+    assert len(trails) == 2
+    assert ui._latest_trail is trails[1]
+    assert ui._latest_trail is not trails[0]
+    assert ui.toggle_thinking_trail() is True
+    assert trails[1].expanded is True
+    assert trails[0].expanded is False  # the older trail is untouched
+
+
+def test_new_turn_trail_defaults_collapsed_older_keeps_state() -> None:
+    # A fresh turn's trail is collapsed even if the prior turn's trail was expanded;
+    # the older trail keeps its expanded state.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("first turn thinking")
+    assert ui.toggle_thinking_trail() is True
+    first = ui._latest_trail
+    assert first is not None and first.expanded is True
+    ui.show_user_message("next")
+    ui.begin_response()
+    ui.stream_thinking("second turn thinking")
+    second = ui._latest_trail
+    assert second is not first
+    assert second is not None and second.expanded is False
+    assert first.expanded is True
+
+
+def test_abort_turn_preserves_trail_state() -> None:
+    # abort_turn keeps the active trail visible and never resets a prior finished
+    # trail's expanded state; the active-trail pointer is cleared afterwards.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("phase one thoughts")
+    ui.show_tool_call("read_file", {"path": "x"})  # finalize phase one
+    assert ui.toggle_thinking_trail() is True  # expand the finished trail
+    first = ui._latest_trail
+    ui.stream_thinking("phase two thoughts")  # a fresh active trail
+    ui.abort_turn()
+    out = plain(ui)
+    assert "phase two thoughts" in out  # active trail still visible
+    assert ui._active_trail is None
+    assert first is not None and first.expanded is True
+
+
+def test_show_user_message_finalizes_active_trail() -> None:
+    # A new turn's user echo finalizes a dangling active trail without resetting
+    # any prior trail's expanded state.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("dangling thoughts")
+    assert ui._active_trail is not None
+    assert ui.toggle_thinking_trail() is True
+    ui.show_user_message("new question")
+    assert ui._active_trail is None
+    assert ui._latest_trail is not None and ui._latest_trail.expanded is True
+
+
+def test_trail_sanitizes_control_chars() -> None:
+    # Thinking text is model-controlled → every displayed line is sanitized; no raw
+    # BEL or escape-injection bytes reach the pane.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("danger\x07\x1b[31mred")
+    raw = ansi_text(ui)
+    assert "\x07" not in raw
+    assert "\x1b[31m" not in raw
+    assert "danger" in plain(ui)
+
+
+def test_trail_header_reasoning_count() -> None:
+    # The trail header carries the reasoning-token estimate (chars / CHARS_PER_TOKEN),
+    # matching the indicator's estimate.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("x" * 2000)  # 2000 / 4 = 500 tokens
+    assert "500 reasoning" in plain(ui)
+
+
+def test_show_plan_progress_finalizes_active_trail() -> None:
+    # show_plan_progress is the one content-appender that bypasses _add_renderable;
+    # it must still finalize the active trail so the §31.19 invariant holds and the
+    # next reasoning phase opens a fresh block (not merge into the prior one).
+    from shellpilot.cli.app_ui import _Trail
+
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("pre-plan thoughts")
+    assert ui._active_trail is not None
+    ui.show_plan_progress(make_plan())
+    assert ui._active_trail is None  # finalized
+    ui.stream_thinking("post-plan thoughts")
+    trails = [r for r in ui._renderables if isinstance(r, _Trail)]
+    assert len(trails) == 2  # a fresh trail, not appended to the first
+
+
+def test_toggle_finished_trail_while_idle_rerenders() -> None:
+    # Toggling a FINISHED trail after the turn ended (indicator None → the width
+    # cache is live) must still re-render: the toggle invalidates the cache, so the
+    # newly-shown lines appear. Guards the idle-toggle path the live UI uses.
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("\n".join(f"idle{i}" for i in range(15)))
+    ui.turn_finished(make_stats())  # indicator → None
+    assert ui._indicator is None
+    assert "idle14" not in plain(ui)  # collapsed: 15th line hidden
+    assert ui.toggle_thinking_trail() is True
+    assert "idle14" in plain(ui)  # expanded render reflects the toggle (cache busted)
