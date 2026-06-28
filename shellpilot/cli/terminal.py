@@ -9,11 +9,15 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from prompt_toolkit.application import get_app
 from rich.console import Console
 from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
+from shellpilot.cli.app_main import run_app
+from shellpilot.cli.app_turn import ThreadedUI, TurnRunner
+from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.banner import render_banner
 from shellpilot.cli.input import PromptContext, make_input
@@ -65,7 +69,7 @@ from shellpilot.persistence.workspace_state import (
 from shellpilot.policy.approvals import ApprovalReply, ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
-from shellpilot.runtime.events import TurnStats
+from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.planner import TaskPlan
 from shellpilot.skills.loader import discover_skills
 from shellpilot.tools.base import workspace_display
@@ -597,7 +601,25 @@ def run_interactive(
         console.print("[sp.dim]Continuing without stored memory this session.[/sp.dim]")
         memory = None
 
-    ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner, workspace=workspace)
+    # Opt-in full-screen app (design section 31.13). The default REPL is
+    # byte-identical: app_mode is False unless SHELLPILOT_UI=app, and the else
+    # branch builds the exact same TerminalUI as before. In app mode the
+    # conversation is driven through the marshaling ThreadedUI from the start, so
+    # its plan tools capture the marshaling UI's bound methods at construction.
+    app_mode = env.get("SHELLPILOT_UI") == "app"
+    app_ui: AppUI | None = None
+    app_runner: TurnRunner | None = None
+    ui: RuntimeUI
+    if app_mode:
+        app_ui = AppUI(
+            glyphs=glyphs,
+            workspace=workspace,
+            width_fn=lambda: get_app().output.get_size().columns,
+        )
+        app_runner = TurnRunner(inner_ui=app_ui)
+        ui = ThreadedUI(inner=app_ui, schedule=app_runner.schedule)
+    else:
+        ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner, workspace=workspace)
     runtime = ConversationRuntime(
         llm=client,
         settings=settings,
@@ -619,6 +641,28 @@ def run_interactive(
             console.print(plan_panel(restored_plan, glyphs))
             tid = escape(restored_plan.task_id)
             console.print(f"[sp.dim]Active plan restored: {tid} ({restored_plan.status}).[/sp.dim]")
+
+    # Hand off to the full-screen app loop (opt-in, design section 31.13). Placed
+    # after the conversation + restore so the worker-thread turn drives the same
+    # fully-configured runtime; the default REPL below is reached only when
+    # app_mode is False, so it stays byte-identical.
+    if app_mode:
+        assert app_runner is not None and app_ui is not None
+        return run_app(
+            runtime,
+            app_runner,
+            app_ui,
+            workspace=workspace,
+            model=runtime.model,
+            profile=settings.runtime.security_profile,
+            glyphs=glyphs,
+            commands=command_words(),
+            is_cloud=egressing_session,
+            ctx_pct=ctx_percent(
+                runtime.status().estimated_prompt_tokens,
+                runtime.status().budget.model_context_tokens,
+            ),
+        )
     attachments = AttachmentQueue()
     dispatcher = SlashDispatcher(
         runtime=runtime,
