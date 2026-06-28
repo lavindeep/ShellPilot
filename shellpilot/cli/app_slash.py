@@ -54,6 +54,7 @@ class SlashRouter:
         run_worker: Callable[[Callable[[], None]], bool],
         schedule: Callable[[Callable[[], None]], None],
         manual_shell: Callable[[str], None],
+        run_shell: Callable[[str], tuple[int, str]],
         on_exit: Callable[[], None],
         is_busy: Callable[[], bool],
         glyphs: Glyphs = UNICODE_GLYPHS,
@@ -67,7 +68,10 @@ class SlashRouter:
         # Marshal a callback from the worker thread back onto the loop thread (for
         # the worker path's captured output → pane); = TurnRunner.schedule.
         self._schedule = schedule
+        # Bare `!` / `/shell` → the interactive manual-shell loop (real terminal).
         self._manual_shell = manual_shell
+        # One-shot `!<cmd>` → run captured, returns (exit_code, output) for the pane.
+        self._run_shell = run_shell
         self._on_exit = on_exit
         self._is_busy = is_busy
         self._glyphs = glyphs
@@ -83,8 +87,18 @@ class SlashRouter:
             self._ui.show_status("Busy — finish or cancel the current turn first.")
             return
         if stripped.startswith("!"):
-            # `!<cmd>` / bare `!` → manual shell, always via the real terminal.
-            self._run_terminal(lambda: self._manual_shell(stripped))
+            command = stripped[1:].strip()
+            if command:
+                # One-shot `!<cmd>` → run captured on the worker and render its
+                # output in the pane (no app suspend, no terminal flash, §31.17).
+                # Echo the command first like a turn submission so the transcript
+                # shows what ran. The loop thread must not block on the subprocess.
+                self._ui.show_user_message(stripped)
+                self._run_worker(lambda: self._dispatch_shell(command))
+            else:
+                # Bare `!` → the interactive manual shell, which needs the real
+                # terminal (it reads live stdin), so it suspends the app.
+                self._run_terminal(lambda: self._manual_shell(stripped))
             return
         if needs_worker(stripped) or needs_background(stripped):
             # Off the loop thread, both via TurnRunner.start_action:
@@ -141,6 +155,22 @@ class SlashRouter:
         # (blank is ignored by show_slash_output), then handle the action.
         self._ui.show_slash_output(output)
         self._after_action(action)
+
+    def _dispatch_shell(self, command: str) -> None:
+        # WORKER thread: run one `!<cmd>` capturing its combined output, then
+        # marshal the result to the pane on the loop thread (§31.17). Blocking the
+        # worker (not the loop) keeps a slow command from freezing the UI.
+        exit_code, output = self._run_shell(command)
+        self._schedule(lambda: self._deliver_shell(exit_code, output))
+
+    def _deliver_shell(self, exit_code: int, output: str) -> None:
+        # Loop thread: render captured output through the sanitizing command-output
+        # sink (per line, control chars stripped), then a dim exit-code note when
+        # the command failed — mirroring the manual-shell loop's own feedback.
+        for line in output.splitlines():
+            self._ui.show_command_output(line)
+        if exit_code != 0:
+            self._ui.show_status(f"exit code {exit_code}")
 
     def _dispatch_terminal(self, line: str) -> None:
         # Runs inside run_in_terminal (app suspended, real terminal available).

@@ -8,11 +8,13 @@ decision and the pane-capture path are exercised deterministically.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 from rich.console import Console
 
 from shellpilot.cli.app_slash import SlashRouter
 from shellpilot.cli.app_ui import AppUI
+from shellpilot.cli.manual_shell import run_manual_command_captured
 from shellpilot.cli.slash import SlashAction, needs_background, needs_terminal, needs_worker
 from shellpilot.cli.theme import SHELLPILOT_THEME
 
@@ -130,17 +132,32 @@ class FakeWorker:
         return True
 
 
+class FakeShell:
+    """Records `!<cmd>` runs; returns a canned (exit_code, output)."""
+
+    def __init__(self, exit_code: int = 0, output: str = "") -> None:
+        self.exit_code = exit_code
+        self.output = output
+        self.commands: list[str] = []
+
+    def __call__(self, command: str) -> tuple[int, str]:
+        self.commands.append(command)
+        return self.exit_code, self.output
+
+
 def make_router(
     *,
     dispatch: FakeDispatch | None = None,
     terminal: FakeTerminal | None = None,
     worker: FakeWorker | None = None,
+    shell: FakeShell | None = None,
     is_busy: bool = False,
 ) -> tuple[SlashRouter, AppUI, FakeDispatch, FakeTerminal, list[str], list[int], io.StringIO]:
     ui = AppUI(width_fn=lambda: 80)
     dispatch = dispatch or FakeDispatch()
     terminal = terminal or FakeTerminal()
     worker = worker or FakeWorker()
+    shell = shell or FakeShell()
     manual_lines: list[str] = []
     exits: list[int] = []
     real_buf = io.StringIO()
@@ -154,6 +171,7 @@ def make_router(
         run_worker=worker,
         schedule=lambda fn: fn(),  # marshal runs inline in tests
         manual_shell=manual_lines.append,
+        run_shell=shell,
         on_exit=lambda: exits.append(1),
         is_busy=lambda: is_busy,
     )
@@ -186,19 +204,58 @@ def test_interactive_command_routes_to_terminal_real_console() -> None:
     assert "TERM-OUT" not in ui._render_ansi()
 
 
-def test_bang_command_runs_manual_shell_via_terminal() -> None:
-    router, _, dispatch, terminal, manual_lines, _, _ = make_router()
+def test_bang_command_runs_captured_in_pane() -> None:
+    # `!<cmd>` runs captured on the worker and its output lands in the pane — NOT a
+    # suspend-to-terminal flash (§31.17). The command is echoed first.
+    shell = FakeShell(output="total 0\nfile.txt\n")
+    router, ui, dispatch, terminal, manual_lines, _, _ = make_router(shell=shell)
     router.route("!ls -la")
-    assert len(terminal.fns) == 1
-    assert manual_lines == ["!ls -la"]
+    assert shell.commands == ["ls -la"]  # ran the stripped command, captured
+    assert terminal.fns == []  # never suspended the app to the real terminal
+    assert manual_lines == []  # the interactive loop is not entered
     assert dispatch.calls == []  # the dispatcher is never consulted for `!`
+    pane = ui._render_ansi()
+    assert "!ls -la" in pane  # echoed what ran
+    assert "file.txt" in pane  # captured output rendered in the pane
+
+
+def test_bang_command_strips_whitespace() -> None:
+    shell = FakeShell()
+    router, *_ = make_router(shell=shell)
+    router.route("!   echo hi   ")
+    assert shell.commands == ["echo hi"]
+
+
+def test_bang_command_nonzero_exit_shows_code() -> None:
+    shell = FakeShell(exit_code=2, output="boom\n")
+    router, ui, _, _, _, _, _ = make_router(shell=shell)
+    router.route("!false")
+    pane = ui._render_ansi()
+    assert "boom" in pane
+    assert "exit code 2" in pane
 
 
 def test_bare_bang_runs_manual_shell_via_terminal() -> None:
-    router, _, _, terminal, manual_lines, _, _ = make_router()
+    # Bare `!` is the interactive shell loop, which still needs the real terminal.
+    shell = FakeShell()
+    router, _, _, terminal, manual_lines, _, _ = make_router(shell=shell)
     router.route("!")
     assert len(terminal.fns) == 1
     assert manual_lines == ["!"]
+    assert shell.commands == []  # no captured one-shot for a bare `!`
+
+
+def test_run_manual_command_captured_returns_output(tmp_path: Path) -> None:
+    code, output = run_manual_command_captured("echo hello", tmp_path, None)
+    assert code == 0
+    assert output == "hello\n"
+
+
+def test_run_manual_command_captured_merges_stderr_and_reports_exit(tmp_path: Path) -> None:
+    # stderr is interleaved into the captured output; the real exit code is returned.
+    code, output = run_manual_command_captured("echo oops 1>&2; exit 3", tmp_path, None)
+    assert code == 3
+    assert "oops" in output
 
 
 def test_shell_command_drops_into_manual_shell() -> None:

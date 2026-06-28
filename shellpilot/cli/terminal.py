@@ -26,7 +26,11 @@ from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.attachments import AttachmentError, AttachmentQueue, load_image
 from shellpilot.cli.banner import render_banner
 from shellpilot.cli.input import PromptContext, make_input
-from shellpilot.cli.manual_shell import manual_shell_loop, run_manual_command
+from shellpilot.cli.manual_shell import (
+    manual_shell_loop,
+    run_manual_command,
+    run_manual_command_captured,
+)
 from shellpilot.cli.model_picker import (
     choose_model,
     confirm_last_model,
@@ -744,14 +748,16 @@ def run_interactive(
                 dispatcher._confirm = _default_confirm
 
         def app_manual_shell(line: str) -> None:
-            # `!<cmd>` → one audited raw command; bare `!` / `/shell` → the loop.
-            # Live workspace from the runtime so a prior /cwd set is honoured.
-            ws = runtime.status().workspace
-            command = line[1:].strip() if line.startswith("!") else ""
-            if command:
-                run_manual_command(command, ws, audit)
-            else:
-                manual_shell_loop(console, ws, audit)
+            # Bare `!` / `/shell` → the interactive manual-shell loop on the real
+            # terminal. A one-shot `!<cmd>` no longer reaches here — the router runs
+            # it captured on the worker via app_run_shell and renders the output in
+            # the pane (§31.17). Live workspace so a prior /cwd set is honoured.
+            manual_shell_loop(console, runtime.status().workspace, audit)
+
+        def app_run_shell(command: str) -> tuple[int, str]:
+            # One-shot `!<cmd>` for app mode: run captured against the LIVE
+            # workspace (honours a prior /cwd); the router renders (exit, output).
+            return run_manual_command_captured(command, runtime.status().workspace, audit)
 
         def schedule_terminal(fn: Callable[[], None]) -> None:
             # Suspend the app, run fn synchronously on the real terminal, redraw.
@@ -767,6 +773,7 @@ def run_interactive(
             run_worker=runner.start_action,
             schedule=runner.schedule,
             manual_shell=app_manual_shell,
+            run_shell=app_run_shell,
             on_exit=lambda: get_app().exit(),
             is_busy=lambda: runner.busy,
             glyphs=glyphs,
