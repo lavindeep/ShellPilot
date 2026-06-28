@@ -692,21 +692,21 @@ def test_thinking_trail_created_collapsed_no_footer() -> None:
 
 
 def test_thinking_trail_collapsed_hides_overflow_with_footer() -> None:
-    # More than TRAIL_COLLAPSED_LINES non-blank lines → first 10 shown, the rest
+    # More than TRAIL_COLLAPSED_LINES non-blank lines → first 6 shown, the rest
     # hidden behind the exact footer wording with the correct remainder count.
     ui = _trail_ui()
     ui.begin_response()
     ui.stream_thinking("\n".join(f"line{i}" for i in range(15)))
     out = plain(ui)
-    for i in range(10):
-        assert f"line{i}" in out  # first 10 shown
-    assert "line10" not in out  # 11th+ hidden
-    assert "+5 hidden lines · click to expand" in out
+    for i in range(6):
+        assert f"line{i}" in out  # first 6 shown
+    assert "line6" not in out  # 7th+ hidden
+    assert "+9 hidden lines · click to expand" in out
 
 
 def test_click_expands_and_collapses_trail() -> None:
     # Clicking a trail (toggle_at on a line in its range) expands it to all lines +
-    # the collapse hint; clicking again collapses back to the first 10 + the footer.
+    # the collapse hint; clicking again collapses back to the first 6 + the footer.
     from shellpilot.cli.app_ui import _Trail
 
     ui = _trail_ui()
@@ -722,7 +722,7 @@ def test_click_expands_and_collapses_trail() -> None:
     assert _click_toggle(ui, trail) is True
     out2 = plain(ui)
     assert "row14" not in out2
-    assert "+5 hidden lines · click to expand" in out2
+    assert "+9 hidden lines · click to expand" in out2
 
 
 def test_click_outside_any_element_returns_false() -> None:

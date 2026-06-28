@@ -55,7 +55,7 @@ FRAME_SECONDS = 0.15
 
 # A collapsed thinking trail shows this many non-blank reasoning lines; the rest
 # fold behind a "+N hidden lines" footer until the trail is clicked (design §31.19).
-TRAIL_COLLAPSED_LINES = 10
+TRAIL_COLLAPSED_LINES = 6
 
 
 def _fmt_count(n: int) -> str:
