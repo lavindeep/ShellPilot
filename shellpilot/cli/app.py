@@ -155,6 +155,7 @@ def build_app(
     ui: AppUI | None = None,
     on_submit: Callable[[str], None] | None = None,
     on_interrupt: Callable[[], bool] | None = None,
+    on_slash: Callable[[str], None] | None = None,
     approval_gate: ApprovalGate | None = None,
 ) -> Application[None]:
     """Build the full-screen app shell.
@@ -312,6 +313,14 @@ def build_app(
         text = dock_buffer.text
         if text.strip() == "/exit":
             event.app.exit()
+            return
+        stripped = text.strip()
+        if on_slash is not None and stripped and stripped[0] in "/!":
+            # A typed slash or `!` line is a harness control, not a model turn:
+            # route it to the SlashRouter (capture / run_in_terminal / manual
+            # shell / exit). /exit stays a direct quit (handled above), §31.17.
+            dock_buffer.reset()
+            on_slash(text)
             return
         if text.strip():
             if on_submit is not None:
