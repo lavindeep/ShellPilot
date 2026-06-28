@@ -455,6 +455,17 @@ def test_begin_response_starts_active_indicator() -> None:
     assert "0s" in plain(ui)
 
 
+def test_is_animating_gates_to_active_turn() -> None:
+    # is_animating drives run_app's gated refresh loop: True only while a turn is in
+    # flight, so an idle app schedules no timer redraws (§31.14, perf).
+    ui = AppUI(glyphs=GLYPHS, width_fn=lambda: 80, time_fn=lambda: 0.0)
+    assert ui.is_animating is False  # idle
+    ui.begin_response()
+    assert ui.is_animating is True  # turn in flight → animate
+    ui.turn_finished(make_stats())
+    assert ui.is_animating is False  # frozen done line, indicator cleared → idle again
+
+
 def test_second_begin_response_does_not_restart_indicator() -> None:
     # First begin_response at t=0 starts the indicator; a second at t=30 must NOT
     # restart it — the elapsed timer keeps climbing from the original start.

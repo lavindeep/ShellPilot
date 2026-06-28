@@ -210,6 +210,13 @@ class AppUI:
         # Width-keyed ANSI cache: (width, ansi_string), or None when stale.
         self._cache: tuple[int, str] | None = None
 
+    @property
+    def is_animating(self) -> bool:
+        """True while a turn's live indicator should keep animating (a turn is in
+        flight). ``run_app``'s gated refresh loop polls this to invalidate the app
+        ONLY during a turn, so an idle app schedules no timer redraws (§31.14)."""
+        return self._indicator is not None
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

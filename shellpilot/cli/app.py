@@ -239,11 +239,28 @@ def build_app(
     # Loop-thread-only state, like pane_scroll.
     pending: dict[str, str | None] = {"text": None}
 
-    def _pane_last_line() -> int:
+    # Pane render cache (perf): _render_ansi already returns the SAME string object
+    # while the transcript content and width are unchanged (its width cache), so we
+    # parse the ANSI and count its lines ONLY when that string actually changes — an
+    # identity compare, O(1) on a scroll or idle-refresh tick. Constructing ANSI(...)
+    # re-parses the whole transcript (ANSI parses in __init__) and prompt_toolkit's
+    # FormattedTextControl cache is keyed by the per-render counter, so without this
+    # every redraw re-parsed the entire transcript — the source of the scroll lag.
+    pane_render: dict[str, tuple[str, ANSI, int]] = {}
+
+    def _pane_view() -> tuple[ANSI, int]:
         text = _ui._render_ansi()
-        n = text.count("\n")
-        # Rich ends each renderable with a newline, so the last real line is n-1.
-        return max(0, n - 1) if text.endswith("\n") else n
+        cached = pane_render.get("v")
+        if cached is None or cached[0] is not text:
+            n = text.count("\n")
+            # Rich ends each renderable with a newline, so the last real line is n-1.
+            last = max(0, n - 1) if text.endswith("\n") else n
+            cached = (text, ANSI(text), last)
+            pane_render["v"] = cached
+        return cached[1], cached[2]
+
+    def _pane_last_line() -> int:
+        return _pane_view()[1]
 
     def _pane_cursor() -> Point:
         last = _pane_last_line()
@@ -274,7 +291,7 @@ def build_app(
 
     pane_window = Window(
         _PaneControl(
-            lambda: ANSI(_ui._render_ansi()),
+            lambda: _pane_view()[0],
             focusable=False,
             show_cursor=False,
             get_cursor_position=_pane_cursor,
@@ -617,12 +634,12 @@ def build_app(
         key_bindings=kb,
         full_screen=True,
         mouse_support=True,
-        # Periodic repaint so the live thinking indicator's timer ticks and the
-        # plane glides even between thinking chunks (design section 31.14). When
-        # idle the per-tick AppUI._render_ansi is a width-cache hit (cheap no-op).
-        # NOTE: gating the refresh on an active turn is the upgrade path if
-        # profiling ever shows the idle tick costs anything (branch 5).
-        refresh_interval=0.1,
+        # No built-in refresh_interval (perf, §31.14): it starts ONE background task
+        # that invalidates on a fixed timer forever, redrawing the static transcript
+        # even when idle — wasted CPU the old REPL never spent. The live thinking
+        # indicator is instead animated by run_app's gated refresh loop, which
+        # invalidates ONLY while a turn is in flight (AppUI.is_animating); idle stays
+        # purely event-driven (a redraw happens on a keystroke or scroll, not a timer).
         input=input,
         output=output,
     )

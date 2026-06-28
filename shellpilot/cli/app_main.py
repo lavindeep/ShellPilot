@@ -13,12 +13,18 @@ ordering note in :func:`run_app`.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shellpilot.cli.app import StatusValues, build_app
 from shellpilot.cli.app_turn import TurnRunner
+
+# Active-turn indicator animation cadence (§31.14). Only fires while a turn is in
+# flight, so the cost is bounded to when the app is genuinely working; idle ticks
+# do no work (the loop just sleeps). ~0.15s matches the plane-glide FRAME_SECONDS.
+_REFRESH_SECONDS = 0.15
 
 if TYPE_CHECKING:
     from shellpilot.cli.app_approval import ApprovalGate
@@ -86,5 +92,20 @@ def run_app(
     )
     runner.app = app
     runner.conversation = runtime
-    app.run()
+
+    async def _refresh_loop() -> None:
+        # Animate the live thinking indicator while a turn runs; when idle, do
+        # nothing (redraws stay event-driven) so the app spends no CPU sitting at
+        # the prompt — replacing prompt_toolkit's unconditional refresh_interval.
+        while True:
+            await asyncio.sleep(_REFRESH_SECONDS)
+            if app_ui.is_animating:
+                app.invalidate()
+
+    def _start_refresh() -> None:
+        # pre_run fires once the event loop is up, so create_background_task is safe;
+        # prompt_toolkit cancels the task when the app exits.
+        app.create_background_task(_refresh_loop())
+
+    app.run(pre_run=_start_refresh)
     return 0
