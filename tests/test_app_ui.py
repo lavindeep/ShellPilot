@@ -835,3 +835,36 @@ def test_toggle_finished_trail_while_idle_rerenders() -> None:
     assert "idle14" not in plain(ui)  # collapsed: 15th line hidden
     assert ui.toggle_thinking_trail() is True
     assert "idle14" in plain(ui)  # expanded render reflects the toggle (cache busted)
+
+
+# ---------------------------------------------------------------------------
+# Live workspace (workspace_fn): mid-session /cwd staleness fix
+# ---------------------------------------------------------------------------
+
+
+def test_tool_call_path_uses_live_workspace(tmp_path: Path) -> None:
+    """workspace_fn is re-evaluated at each show_tool_call, so a mid-session
+    /cwd change is honoured immediately in the tool-call summary line."""
+    from shellpilot.tools.base import OUTSIDE_WORKSPACE_DISPLAY
+
+    ws_a = tmp_path
+    ws_b = tmp_path / "sub"
+    holder: dict[str, Path] = {"ws": ws_a}
+
+    # workspace_fn returns the live workspace from the holder.
+    ui = AppUI(glyphs=GLYPHS, workspace_fn=lambda: holder["ws"], width_fn=lambda: 80)
+
+    # The absolute path is inside ws_a but outside ws_b.
+    abs_path = str(ws_a / "file.txt")
+    ui.show_tool_call("read_file", {"path": abs_path})
+    out_before = plain(ui)
+    # Under ws_a: resolves to the relative "file.txt" — inside workspace.
+    assert "file.txt" in out_before
+    assert OUTSIDE_WORKSPACE_DISPLAY not in out_before
+
+    # Simulate /cwd set to ws_b — the same abs_path is now outside the workspace.
+    holder["ws"] = ws_b
+    ui.show_tool_call("read_file", {"path": abs_path})
+    out_after = plain(ui)
+    # The SECOND tool-call line must reflect the live workspace, not the stale one.
+    assert OUTSIDE_WORKSPACE_DISPLAY in out_after

@@ -956,3 +956,36 @@ def test_stream_thinking_is_noop() -> None:
     ui.stream_thinking("I am reasoning about this…")
     captured = console.end_capture()
     assert captured == ""
+
+
+# ---------------------------------------------------------------------------
+# Live workspace (workspace_fn): mid-session /cwd staleness fix
+# ---------------------------------------------------------------------------
+
+
+def test_tool_call_path_uses_live_workspace(tmp_path: Path) -> None:
+    """workspace_fn is re-evaluated at each show_tool_call, so a mid-session
+    /cwd change is honoured immediately in the tool-call summary line."""
+    from shellpilot.tools.base import OUTSIDE_WORKSPACE_DISPLAY
+
+    ws_a = tmp_path
+    ws_b = tmp_path / "sub"
+    holder: dict[str, Path] = {"ws": ws_a}
+
+    console = make_console()
+    ui = TerminalUI(console, glyphs=GLYPHS, spinner=False, workspace_fn=lambda: holder["ws"])
+
+    # The absolute path is inside ws_a but outside ws_b.
+    abs_path = str(ws_a / "file.txt")
+    ui.show_tool_call("read_file", {"path": abs_path})
+    out_before = console.export_text()
+    # Under ws_a: resolves to the relative "file.txt" — inside workspace.
+    assert "file.txt" in out_before
+    assert OUTSIDE_WORKSPACE_DISPLAY not in out_before
+
+    # Simulate /cwd set to ws_b — the same abs_path is now outside the workspace.
+    holder["ws"] = ws_b
+    ui.show_tool_call("read_file", {"path": abs_path})
+    out_after = console.export_text()
+    # The SECOND tool-call line must reflect the live workspace, not the stale one.
+    assert OUTSIDE_WORKSPACE_DISPLAY in out_after
