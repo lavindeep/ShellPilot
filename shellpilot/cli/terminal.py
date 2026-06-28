@@ -615,6 +615,7 @@ def run_interactive(
             glyphs=glyphs,
             workspace=workspace,
             width_fn=lambda: get_app().output.get_size().columns,
+            show_reasoning=settings.ui.show_reasoning_summary,
         )
         app_runner = TurnRunner(inner_ui=app_ui)
         ui = ThreadedUI(inner=app_ui, schedule=app_runner.schedule)
