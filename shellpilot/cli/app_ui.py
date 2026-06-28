@@ -514,6 +514,12 @@ class AppUI:
     def show_status(self, text: str) -> None:
         self._add_renderable(Text(_sanitize_line(text), style="sp.dim"))
 
+    def show_choices(self, choices: Text) -> None:
+        # The styled approval/plan choice line (colored y/e/n) — already built by
+        # render.approval_choices / plan_choices from hardcoded tokens (no user or
+        # model content), so it carries its own styling and needs no sanitization.
+        self._add_renderable(choices)
+
     def show_error(self, text: str) -> None:
         self._add_renderable(Text(_sanitize_line(text), style="sp.error"))
 

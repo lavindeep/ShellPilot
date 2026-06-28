@@ -21,7 +21,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from shellpilot.cli.render import _sanitize_line
+from shellpilot.cli.render import _sanitize_line, approval_choices, plan_choices
 from shellpilot.cli.theme import UNICODE_GLYPHS, Glyphs
 from shellpilot.policy.approvals import APPROVE, DECLINE, ApprovalReply
 from shellpilot.policy.risk import RiskLevel
@@ -145,11 +145,7 @@ class ApprovalGate:
         # ("Turn failed") rather than wedging the app. Never approves by accident.
         try:
             self._ui.show_approval(request)
-            if request.risk is RiskLevel.HIGH and request.kind == "command":
-                hint = '  Type "run" to execute, [e]dit to steer, or Enter to cancel'
-            else:
-                hint = "  Approve? [y]es / [e]dit / [n]o"
-            self._ui.show_status(hint)
+            self._ui.show_choices(approval_choices(request))
         except Exception as exc:  # noqa: BLE001 - never leave the worker hung
             self._pending = None
             if not future.done():
@@ -175,12 +171,11 @@ class ApprovalGate:
         self._pending = _Pending(future, feed, lambda: future.set_result(DECLINE))
 
     def _enter_plan(self, plan: TaskPlan, path: str, future: Future[object]) -> None:
-        hint = "  Approve plan? [y]es / [e]dit / [n]o"
         # Fail closed (see _enter_command): a render sink raising here resolves
         # the worker's Future rather than wedging it on result().
         try:
             self._ui.show_plan_approval(plan, path)
-            self._ui.show_status(hint)
+            self._ui.show_choices(plan_choices())
         except Exception as exc:  # noqa: BLE001 - never leave the worker hung
             self._pending = None
             if not future.done():
@@ -195,7 +190,8 @@ class ApprovalGate:
                 return True
             choice = parse_plan_choice(line)
             if choice is None:
-                self._ui.show_status(hint)  # re-prompt (matches the TerminalUI loop)
+                # Re-prompt on an unparseable answer (matches the TerminalUI loop).
+                self._ui.show_choices(plan_choices())
                 return False
             if choice == "e":
                 phase["revision"] = True

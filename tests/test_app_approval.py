@@ -260,8 +260,9 @@ class _BoomUI:
     """AppUI stand-in whose chosen sink raises, to prove the gate fails closed.
 
     ``boom_on="approval"`` raises in the setup render (``_enter_*``); ``"echo"``
-    lets setup succeed (hint is status call #1) then raises on the echo (call #2,
-    inside ``feed`` before the Future is resolved).
+    lets setup succeed (the choice line goes through ``show_choices``, not
+    ``show_status``) then raises on the echo — the first ``show_status``, inside
+    ``feed`` before the Future is resolved.
     """
 
     def __init__(self, *, boom_on: str) -> None:
@@ -276,9 +277,13 @@ class _BoomUI:
         if self.boom_on == "approval":
             raise RuntimeError("boom-approval")
 
+    def show_choices(self, choices: object) -> None:
+        # The styled choice line; setup must succeed for the "echo" case.
+        return None
+
     def show_status(self, text: str) -> None:
         self._status_calls += 1
-        if self.boom_on == "echo" and self._status_calls >= 2:
+        if self.boom_on == "echo" and self._status_calls >= 1:
             raise RuntimeError("boom-echo")
 
 

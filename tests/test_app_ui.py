@@ -351,8 +351,8 @@ def test_show_approval_renders_diff_info_and_cwd() -> None:
     ui.show_approval(request)
     text = plain(ui)
     assert "HIGH" in text  # risk badge
-    assert "recursive delete" in text  # classifier reason
-    assert "CWD: /tmp/ws" in text  # working directory
+    assert "recursive delete" in text  # classifier reason (the WHY row)
+    assert "CWD" in text and "/tmp/ws" in text  # working directory (stat block)
     assert "oldline" in text and "newline" in text  # the diff content rendered
 
 

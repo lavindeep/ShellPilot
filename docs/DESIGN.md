@@ -2721,13 +2721,16 @@ Monochrome hierarchy on the user's terminal background — the app never sets it
 
 | Style | Value | Used for |
 |---|---|---|
-| Emphasis | bold, bright white | Banner title, tool names, current plan step |
+| Emphasis | bold, bright white | Banner title, tool names, current plan step; the shell command under approval (`sp.cmd`, `run_command`) |
 | Body | terminal default foreground | Conversation text, approval questions |
-| Dim | `#6b6b6b` | Machinery: tool args, results, context line, reasons |
+| Value | `#cfcfcf` | Approval stat-block values (`sp.value`): the why / effect / cwd — readable, never buried in gray |
+| Dim | `#6b6b6b` | Machinery: tool args, results, context line, stat-block labels (`sp.label`) |
 | Faint | `#444444` | Panel borders, turn stats, ellipsis markers |
-| Accent green | `#98c379` | Prompt chevron, success ✓, plan checks, diff additions |
-| Red | `#e06c75` | High risk, diff removals, errors ✗ |
-| Amber | `#e5c07b` | BLOCKED badge, context-usage warning |
+| Accent green | `#98c379` | Prompt chevron, success ✓, plan checks, diff additions; approval `[y]es` (`sp.choice.yes`) |
+| Red | `#e06c75` | High risk, diff removals, errors ✗; approval `[n]o` (`sp.choice.no`) and the typed-`run` confirm |
+| Amber | `#e5c07b` | BLOCKED badge, context-usage warning; approval `[e]dit` (`sp.choice.edit`) |
+
+The v2 style pass (`feat/ui-style-pass`) keeps this palette — no new hues — and spends contrast and weight on the *actionable* surfaces (command under approval, the y/e/n choices, the stat-block values), while secondary machinery (reasoning trails, metadata, labels) stays dim. Color remains a meaning system: green = yes/success/local, amber = edit/warning, red = no/high-risk.
 
 Colors are truecolor values; rich downgrades automatically on 256/16-color terminals. All named styles live in one `rich.theme.Theme` in `cli/theme.py` — no inline hex anywhere else.
 
@@ -2744,7 +2747,7 @@ Input is provided by `prompt_toolkit`: persistent up-arrow history (state dir `h
 
 ### 31.3 Activity lines
 
-Tool calls render as `⏺` + bold tool name + dim `(args) · summary`. Results and continuations indent under a dim `⎿`, with a green `✓` or red `✗`. Command output streams dim-indented under `⎿`; when display truncation applies, a faint `… +N lines` marker is shown (capture and audit limits are unchanged from section 13).
+Tool calls render as `⏺` + bold tool name + dim `(args) · summary` — except `run_command`, whose command argument renders bright (`sp.cmd`, bold bright white) so the action under approval is impossible to miss; every other tool's args stay dim so routine reads don't shout. Results and continuations indent under a dim `⎿`, with a green `✓` or red `✗`. Command output streams dim-indented under `⎿`; when display truncation applies, a faint `… +N lines` marker is shown (capture and audit limits are unchanged from section 13).
 
 ### 31.4 Diffs
 
@@ -2754,13 +2757,13 @@ When a file write/edit is proposed, the approval diff appears with a brief scrol
 
 ### 31.5 Approvals
 
-Badge blocks: an inverse chip anchors the request, followed by the dim reason or deterministic purpose, then the question.
+Approvals are the focal control (v2 style pass). The shell command renders bright in the tool-call line directly above (§31.3); an inverse risk-badge chip then anchors the block, followed by a **stat block** — muted fixed-width labels (`WHY` the action is gated, its `EFFECT` from the deterministic purpose, the `CWD`) with readable values (`sp.value`) so the reason and consequence can't be buried in gray — then the colored choice line. The stat block replaces the old single dim `kind · reasons · purpose` line; the shared builders `approval_info` / `approval_cwd` produce it for both the app pane and the legacy REPL.
 
 - ` MEDIUM ` — white on gray `#3a3a3a`.
 - ` HIGH ` — white on red `#c14949`; keeps the typed-`run` flow, with `"run"` in red.
 - ` BLOCKED ` — black on amber; used by the roadblock protocol (section 11.6).
 
-The approval question is `Approve? [y]es / [e]dit / [n]o` — uniform lowercase. It accepts `y`/`yes`/`n`/`no` case-insensitively and **Enter means no**; default-deny semantics are unchanged. `[e]dit` rejects-and-steers: it does not run the action but prompts `Tell the model what to do instead:` for one line of guidance fed back to the model (section 14.6); empty guidance is a plain decline. A HIGH-risk command keeps its typed-`run` gate, with `[e]dit` offered alongside (`Type "run" to execute, [e]dit to steer, or press Enter to cancel`). When color is unavailable, chips degrade to plain `[MEDIUM]` text.
+The approval question is `Approve? [y]es / [e]dit / [n]o`, with the choices carried as a meaning system — `[y]es` green, `[e]dit` amber, `[n]o` red — so the actionable answer is unmistakable. One shared builder (`approval_choices` for commands/tools, `plan_choices` for plans) feeds both the app pane and the legacy input prompt, so the colors can't drift between UIs; the literal tokens are unchanged, so the deterministic input parsing is untouched. It accepts `y`/`yes`/`n`/`no` case-insensitively and **Enter means no**; default-deny semantics are unchanged. `[e]dit` rejects-and-steers: it does not run the action but prompts `Tell the model what to do instead:` for one line of guidance fed back to the model (section 14.6); empty guidance is a plain decline. A HIGH-risk **command** keeps its typed-`run` gate, with `"run"` in red and `[e]dit` in amber (`Type "run" to execute, [e]dit to steer, or press Enter to cancel`); a HIGH-risk **tool** (a sensitive read) keeps the standard y/e/n prompt. When color is unavailable, chips degrade to plain `[MEDIUM]` text and the choice tokens render uncolored.
 
 ### 31.6 Plans
 

@@ -19,6 +19,7 @@ from rich.text import Text
 
 from shellpilot.cli.theme import Glyphs
 from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.planner import PlanStep, TaskPlan
 
 WORD_HIGHLIGHT_RATIO = 0.5
@@ -62,10 +63,13 @@ def context_line(
 
 
 def tool_call(name: str, args_summary: str, glyphs: Glyphs) -> Text:
+    # The shell command under approval must be impossible to miss (§31.5); every
+    # other tool's argument summary stays calm/dim so routine reads don't shout.
+    arg_style = "sp.cmd" if name == "run_command" else "sp.dim"
     return Text.assemble(
         (f"{glyphs.bullet} ", ""),
         (_sanitize_line(name), "sp.emph"),
-        (f"({_sanitize_line(args_summary)})", "sp.dim"),
+        (f"({_sanitize_line(args_summary)})", arg_style),
     )
 
 
@@ -319,18 +323,67 @@ def badge(level: str, *, plain: bool = False) -> Text:
     return Text(f" {label} ", style=_BADGE_STYLES.get(level.lower(), "sp.badge.medium"))
 
 
+def _stat_row(info: Text, label: str, value: str) -> None:
+    # One stat-block row (§31.5): a muted fixed-width label and a readable value.
+    # The value is sanitized — defense in depth even though reasons/purpose are
+    # classifier/template strings, not model output. Callers own the line break
+    # between rows so a standalone row (approval_cwd) carries no leading blank.
+    info.append(f"  {label:<6} ", style="sp.label")
+    info.append(_sanitize_line(value), style="sp.value")
+
+
 def approval_info(request: ApprovalRequest, *, plain_badge: bool = False) -> Text:
+    # Stat block (§31.5): a colored risk badge, then muted labels with readable
+    # values, so WHY the action is gated and its EFFECT can't be missed — the old
+    # single dim "kind · reasons · purpose" line buried all of it in gray.
     info = Text("  ")
     info.append_text(badge(request.risk.value, plain=plain_badge))
-    details = [request.kind, *request.reasons]
+    if request.reasons:
+        info.append("\n")
+        _stat_row(info, "WHY", " · ".join(request.reasons))
     if request.purpose:
-        details.append(f'"{request.purpose}"')
-    info.append(" " + " · ".join(details), style="sp.dim")
+        info.append("\n")
+        _stat_row(info, "EFFECT", request.purpose)
     return info
 
 
 def approval_cwd(request: ApprovalRequest) -> Text:
-    return Text(f"  CWD: {request.cwd}", style="sp.dim")
+    info = Text()
+    _stat_row(info, "CWD", str(request.cwd))
+    return info
+
+
+def approval_choices(request: ApprovalRequest) -> Text:
+    """The actionable choice line (§31.5): yes=green, edit=amber, no=red.
+
+    A HIGH-risk *command* requires typing "run" (red); a HIGH-risk *tool* (a
+    sensitive read) keeps the standard y/e/n prompt. Display only — the input
+    parsing in the approval gates is unchanged, so the literal tokens stay put.
+    """
+    if request.risk is RiskLevel.HIGH and request.kind == "command":
+        run = Text("  Type ")
+        run.append('"run"', style="sp.risk.high")
+        run.append(" to execute, ")
+        run.append("[e]dit", style="sp.choice.edit")
+        run.append(" to steer, or press Enter to cancel: ")
+        return run
+    return _yes_edit_no("  Approve? ")
+
+
+def plan_choices() -> Text:
+    """The plan-approval choice line (§31.5): same colored y/e/n as commands."""
+    return _yes_edit_no("  Approve plan? ")
+
+
+def _yes_edit_no(lead: str) -> Text:
+    line = Text(lead)
+    line.append("[y]es", style="sp.choice.yes")
+    line.append(" / ")
+    line.append("[e]dit", style="sp.choice.edit")
+    line.append(" / ")
+    line.append("[n]o", style="sp.choice.no")
+    line.append(" ")
+    return line
 
 
 def plan_step_line(index: int, step: PlanStep, glyphs: Glyphs) -> Text:

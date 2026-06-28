@@ -39,8 +39,10 @@ from shellpilot.cli.model_picker import (
 )
 from shellpilot.cli.render import (
     _sanitize_line,
+    approval_choices,
     approval_cwd,
     approval_info,
+    plan_choices,
     plan_panel,
     plan_step_line,
     render_diff,
@@ -338,20 +340,13 @@ class TerminalUI:
             # tool is a sensitive-path read (design section 15): it gets the
             # standard prompt, with the classifier reason already shown above.
             if request.risk is RiskLevel.HIGH and request.kind == "command":
-                answer = self._console.input(
-                    '  Type [sp.risk.high]"run"[/sp.risk.high] to execute, '
-                    "[sp.dim]\\[e]dit[/sp.dim] to steer, or press Enter to cancel: "
-                ).strip()
+                answer = self._console.input(approval_choices(request)).strip()
                 if answer.lower() == "run":
                     return ApprovalReply(approved=True)
                 if answer.lower() in ("e", "edit"):
                     return self._read_steer()
                 return ApprovalReply(approved=False)
-            answer = (
-                self._console.input("  Approve? [sp.dim]\\[y]es / \\[e]dit / \\[n]o[/sp.dim] ")
-                .strip()
-                .lower()
-            )
+            answer = self._console.input(approval_choices(request)).strip().lower()
             if answer in ("y", "yes"):
                 return ApprovalReply(approved=True)
             if answer in ("e", "edit"):
@@ -372,13 +367,7 @@ class TerminalUI:
         self._console.print(f"[sp.faint]{escape(path)}[/sp.faint]")
         try:
             while True:
-                answer = (
-                    self._console.input(
-                        "Approve plan? [sp.dim]\\[y]es / \\[e]dit / \\[n]o[/sp.dim] "
-                    )
-                    .strip()
-                    .lower()
-                )
+                answer = self._console.input(plan_choices()).strip().lower()
                 if answer in ("y", "yes"):
                     return "y", ""
                 if answer in ("e", "edit"):

@@ -32,6 +32,15 @@ SHELLPILOT_THEME = Theme(
         "sp.warn": COLOR_WARN,
         "sp.error": "#e06c75",
         "sp.risk.high": "bold #e06c75",
+        # Approval hierarchy (§31.5): the command under approval and the
+        # actionable choices must be impossible to miss; the WHY/EFFECT values
+        # stay readable; only their labels recede.
+        "sp.cmd": "bold bright_white",
+        "sp.label": COLOR_DIM,
+        "sp.value": "#cfcfcf",
+        "sp.choice.yes": f"bold {COLOR_ACCENT}",
+        "sp.choice.edit": f"bold {COLOR_WARN}",
+        "sp.choice.no": "bold #e06c75",
         "sp.badge.medium": "bold white on #3a3a3a",
         "sp.badge.high": "bold white on #c14949",
         "sp.badge.blocked": "bold black on #e5c07b",

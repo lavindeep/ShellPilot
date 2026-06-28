@@ -9,9 +9,13 @@ from pathlib import Path
 from rich.console import Console, RenderableType
 
 from shellpilot.cli.render import (
+    approval_choices,
+    approval_cwd,
+    approval_info,
     badge,
     context_line,
     output_truncation,
+    plan_choices,
     plan_panel,
     plan_step_line,
     render_diff,
@@ -20,6 +24,8 @@ from shellpilot.cli.render import (
     word_highlight_ranges,
 )
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS
+from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.planner import PlanStep, TaskPlan
 
 GLYPHS = UNICODE_GLYPHS
@@ -342,3 +348,96 @@ def test_plan_step_line_normal_title_unchanged() -> None:
     step = PlanStep(title="Run the tests", status="active")
     line = plan_step_line(1, step, GLYPHS)
     assert "Run the tests" in line.plain
+
+
+# --- Approval restyle (design §31.5): commands/descriptions/choices must not be gray ---
+
+
+def _styles(text: object) -> set[str]:
+    return {span.style for span in text.spans}  # type: ignore[attr-defined]
+
+
+def _req(
+    risk: RiskLevel,
+    *,
+    kind: str = "command",
+    reasons: tuple[str, ...] = ("recursive delete",),
+    purpose: str = "",
+    cwd: str = "/tmp/ws",
+) -> ApprovalRequest:
+    return ApprovalRequest(
+        kind=kind,
+        display="cmd",
+        risk=risk,
+        reasons=reasons,
+        cwd=Path(cwd),
+        purpose=purpose,
+    )
+
+
+def test_tool_call_command_is_bright_other_args_dim() -> None:
+    """The shell command under approval is bright; other tools' args stay dim."""
+    cmd = tool_call("run_command", "command='pytest -q'", GLYPHS)
+    assert "sp.cmd" in _styles(cmd)
+    assert "sp.dim" not in _styles(cmd)
+    other = tool_call("read_file", "path='x.py'", GLYPHS)
+    assert "sp.cmd" not in _styles(other)
+    assert "sp.dim" in _styles(other)
+
+
+def test_approval_info_stat_block_labels_and_bright_values() -> None:
+    info = approval_info(
+        _req(RiskLevel.HIGH, reasons=("recursive delete",), purpose="deletes files permanently")
+    )
+    assert "HIGH" in info.plain  # colored badge
+    assert "recursive delete" in info.plain  # the why
+    assert "deletes files permanently" in info.plain  # the effect/purpose
+    styles = _styles(info)
+    assert "sp.value" in styles  # values are readable, not dim
+    assert "sp.label" in styles  # labels are muted
+
+
+def test_approval_info_sanitizes_reason_and_purpose() -> None:
+    info = approval_info(
+        _req(RiskLevel.HIGH, reasons=("recur\x1b[2Jsive\x00",), purpose="del\x1betes")
+    )
+    assert "\x1b" not in info.plain
+    assert "\x00" not in info.plain
+
+
+def test_approval_cwd_labeled_readable_value() -> None:
+    info = approval_cwd(_req(RiskLevel.MEDIUM, cwd="/tmp/ws"))
+    assert "/tmp/ws" in info.plain
+    assert "CWD" in info.plain
+    assert "sp.value" in _styles(info)
+
+
+def test_approval_choices_colored_yes_edit_no() -> None:
+    ch = approval_choices(_req(RiskLevel.MEDIUM))
+    assert "[y]es / [e]dit / [n]o" in ch.plain
+    styles = _styles(ch)
+    assert "sp.choice.yes" in styles
+    assert "sp.choice.edit" in styles
+    assert "sp.choice.no" in styles
+
+
+def test_approval_choices_high_command_requires_run() -> None:
+    ch = approval_choices(_req(RiskLevel.HIGH, kind="command"))
+    assert "run" in ch.plain
+    assert "[y]es" not in ch.plain
+    styles = _styles(ch)
+    assert "sp.risk.high" in styles  # the typed-run confirm is red
+    assert "sp.choice.edit" in styles
+
+
+def test_approval_choices_high_tool_uses_yes_no() -> None:
+    """A HIGH-risk sensitive READ (kind=tool) keeps the y/e/n prompt, not typed-run."""
+    ch = approval_choices(_req(RiskLevel.HIGH, kind="tool"))
+    assert "[y]es / [e]dit / [n]o" in ch.plain
+    assert "sp.choice.yes" in _styles(ch)
+
+
+def test_plan_choices_colored() -> None:
+    ch = plan_choices()
+    assert "[y]es / [e]dit / [n]o" in ch.plain
+    assert {"sp.choice.yes", "sp.choice.edit", "sp.choice.no"} <= _styles(ch)
