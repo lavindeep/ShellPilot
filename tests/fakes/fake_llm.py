@@ -7,11 +7,12 @@ fixed script, and records every request it receives.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from shellpilot.llm.client import TokenCallback
+from shellpilot.llm.client import GenerationCancelled, TokenCallback
 from shellpilot.llm.messages import Message, ToolCall, ToolDefinition, assistant
 from shellpilot.llm.ollama import LocalModel
 
@@ -61,7 +62,13 @@ class FakeLLM:
         options: dict[str, Any] | None = None,
         on_token: TokenCallback | None = None,
         on_thinking: TokenCallback | None = None,
+        cancel: threading.Event | None = None,
     ) -> Message:
+        # Branch 6: honor a set cancel event the same way OllamaClient does —
+        # abort before consuming the script, so a cancelled turn never produces a
+        # (partial) reply. A None/unset event leaves every existing test unchanged.
+        if cancel is not None and cancel.is_set():
+            raise GenerationCancelled
         self.calls.append(
             RecordedCall(
                 model=model,
