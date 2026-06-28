@@ -177,6 +177,10 @@ class TurnRunner:
         # read only during/after run().
         self.app: Application[None] | None = None
         self.conversation: ConversationRuntime | None = None
+        # Loop-thread callback fired once a turn ends (set after construction,
+        # like .app/.conversation). The input dock wires it to fire a staged
+        # message at turn end (§31.18); None in CI / the inert shell.
+        self.on_idle: Callable[[], None] | None = None
         # Default to the loop-marshaling schedule (reads self.app lazily); CI
         # injects a synchronous one.
         self._schedule: Schedule = schedule if schedule is not None else self.schedule
@@ -217,9 +221,9 @@ class TurnRunner:
         """Spawn the worker for one turn. Runs on the loop thread (dock submit).
 
         Ignores the call when a turn is already in flight — single model, single
-        conversation, single worker; no parallel turns. NOTE: branch 9 adds the
-        one-message queue + Up-arrow recall; until then a submit-while-busy is
-        dropped.
+        conversation, single worker; no parallel turns. A submit-while-busy is
+        NOT dropped: the dock stages it (one slot) and fires it here at turn end
+        via ``on_idle`` (§31.18).
 
         A fresh cancel ``Event`` is created here (before the worker spawns, so the
         worker sees it) and passed into ``run_turn``; ``request_cancel`` signals
@@ -328,6 +332,10 @@ class TurnRunner:
             self._schedule(self._mark_done)
 
     def _mark_done(self) -> None:
-        """Clear the busy flag. Scheduled onto the loop thread, so the flag is
-        only ever mutated there (paired with the set in :meth:`start`)."""
+        """Clear the busy flag, then fire the idle callback. Scheduled onto the
+        loop thread, so the flag is only ever mutated there (paired with the set
+        in :meth:`start`). ``on_idle`` (when wired) fires a staged dock message at
+        turn end (§31.18); it runs AFTER busy clears so the fired turn sees idle."""
         self._busy = False
+        if self.on_idle is not None:
+            self.on_idle()

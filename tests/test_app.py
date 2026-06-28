@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TypedDict
 
 import pytest
 from prompt_toolkit.application import Application
-from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.application.current import set_app
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.formatted_text import StyleAndTextTuples, to_formatted_text
 from prompt_toolkit.input.defaults import create_pipe_input
+from prompt_toolkit.layout.containers import ConditionalContainer
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 
 from shellpilot.cli.app import (
     ASCII_BOX,
     UNICODE_BOX,
     BoxChars,
+    StatusValues,
     _read_git_branch,
     _scroll_down,
     _scroll_up,
@@ -494,3 +501,326 @@ def test_slash_without_on_slash_falls_through_to_on_submit(tmp_path: Path) -> No
         inp.send_text("/exit\n")
         app.run()
     assert submits == ["/help"]
+
+
+# --- Branch-9 input-dock polish (§31.18) --------------------------------------
+
+
+def _find_control_text(app: Application[None], needle: str) -> str:
+    """Rendered text of the first FormattedTextControl whose line contains needle.
+
+    Calls the control's text callable directly (under ``set_app`` so the borders
+    can read the size), bypassing the render-counter fragment cache that never
+    advances without a live render loop. Returns ``""`` when no control matches.
+    """
+    with set_app(app):
+        for control in app.layout.find_all_controls():
+            text = getattr(control, "text", None)
+            if not callable(text):
+                continue
+            try:
+                fragments = to_formatted_text(text())
+            except Exception:  # noqa: BLE001 - a non-fragment control just won't match
+                continue
+            rendered = "".join(fragment[1] for fragment in fragments)
+            if needle in rendered:
+                return rendered
+    return ""
+
+
+def _chip_visible(app: Application[None]) -> bool:
+    """Whether the queued-message chip is shown (its ConditionalContainer filter)."""
+    for container in app.layout.walk():
+        if isinstance(container, ConditionalContainer):
+            return bool(container.filter())
+    raise AssertionError("chip ConditionalContainer not found")
+
+
+def _pane_control(app: Application[None]) -> FormattedTextControl:
+    for control in app.layout.find_all_controls():
+        if type(control).__name__ == "_PaneControl":
+            assert isinstance(control, FormattedTextControl)
+            return control
+    raise AssertionError("pane control not found")
+
+
+def _scroll_event(event_type: MouseEventType) -> MouseEvent:
+    return MouseEvent(
+        position=Point(0, 0),
+        event_type=event_type,
+        button=MouseButton.NONE,
+        modifiers=frozenset(),
+    )
+
+
+def test_queue_stages_while_busy_and_fires_at_idle(tmp_path: Path) -> None:
+    # A submit while a turn is in flight is staged (chip shown), not dispatched;
+    # the registered idle callback fires it once the turn ends (§31.18).
+    busy = {"on": True}
+    idle: list[Callable[[], None]] = []
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+            is_busy=lambda: busy["on"],
+            register_idle=idle.append,
+        )
+        inp.send_text("hello\n")  # busy → staged, NOT submitted
+        inp.send_text("/exit\n")  # /exit quits even while busy
+        app.run()
+    assert submits == []  # staged, never dispatched
+    assert _chip_visible(app) is True
+    assert "queued: hello" in _find_control_text(app, "queued")
+    assert len(idle) == 1  # build_app registered exactly one idle callback
+    # Turn ends (busy clears); the idle callback fires the staged line as a turn.
+    busy["on"] = False
+    idle[0]()
+    assert submits == ["hello"]
+    assert _chip_visible(app) is False  # slot drained
+
+
+def test_queue_one_slot_replaces_prior(tmp_path: Path) -> None:
+    # A second submit while busy replaces the first — one slot, latest wins.
+    idle: list[Callable[[], None]] = []
+    submits: list[str] = []
+    busy = {"on": True}
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+            is_busy=lambda: busy["on"],
+            register_idle=idle.append,
+        )
+        inp.send_text("first\n")
+        inp.send_text("second\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert "queued: second" in _find_control_text(app, "queued")
+    busy["on"] = False
+    idle[0]()
+    assert submits == ["second"]  # only the latest, never both
+
+
+def test_up_arrow_recalls_staged_message(tmp_path: Path) -> None:
+    # is_busy is True only for the FIRST submit, so the recalled line (submitted
+    # next) dispatches — proving Up pulled the staged text back into the dock and
+    # cleared the slot (§31.18).
+    calls = {"n": 0}
+
+    def is_busy() -> bool:
+        calls["n"] += 1
+        return calls["n"] == 1
+
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+            is_busy=is_busy,
+        )
+        inp.send_text("recall me\n")  # staged (busy #1)
+        inp.send_text("\x1b[A")  # Up in an empty dock → recall into the box
+        inp.send_text("\n")  # submit the recalled line (busy #2 False) → dispatch
+        inp.send_text("/exit\n")
+        app.run()
+    assert submits == ["recall me"]
+    assert _chip_visible(app) is False  # recall cleared the slot
+
+
+def test_up_arrow_passthrough_when_nothing_staged(tmp_path: Path) -> None:
+    # With nothing staged the filter is false, so Up is the default (cursor/history)
+    # and never wipes the in-progress line; the typed text submits intact.
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+            is_busy=lambda: False,
+        )
+        inp.send_text("hello")  # no newline → stays in the box
+        inp.send_text("\x1b[A")  # Up: nothing staged → NOT recall
+        inp.send_text("\n")  # submit "hello" intact
+        inp.send_text("/exit\n")
+        app.run()
+    assert submits == ["hello"]
+
+
+def test_up_arrow_passthrough_when_box_nonempty(tmp_path: Path) -> None:
+    # With a message staged BUT text in the box the filter is false: Up does not
+    # recall (the staged slot survives) and the typed line submits as itself.
+    calls = {"n": 0}
+
+    def is_busy() -> bool:
+        calls["n"] += 1
+        return calls["n"] == 1
+
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+            is_busy=is_busy,
+        )
+        inp.send_text("staged\n")  # busy #1 → staged
+        inp.send_text("typed")  # box now non-empty
+        inp.send_text("\x1b[A")  # Up: box non-empty → NOT recall
+        inp.send_text("\n")  # submit "typed" (busy #2 False) → dispatch
+        inp.send_text("/exit\n")
+        app.run()
+    assert submits == ["typed"]  # the typed line, NOT the staged "staged"
+    assert _chip_visible(app) is True  # the staged slot is untouched
+
+
+def test_mouse_wheel_scroll_pins_then_resumes_follow(tmp_path: Path) -> None:
+    # Mouse-wheel scroll drives the SAME cursor-line model as PageUp/PageDown:
+    # SCROLL_UP pins a line (leaves follow), SCROLL_DOWN back to bottom resumes it.
+    with create_pipe_input() as inp:
+        app, ui = _build_headless(tmp_path, inp)
+        for i in range(30):
+            ui.show_status(f"line {i}")
+        pane = _pane_control(app)
+        last = pane.get_cursor_position().y
+        assert pane.mouse_handler(_scroll_event(MouseEventType.SCROLL_UP)) is None
+        assert pane.get_cursor_position().y < last  # pinned above the bottom
+        assert pane.mouse_handler(_scroll_event(MouseEventType.SCROLL_DOWN)) is None
+        assert pane.get_cursor_position().y == last  # back to bottom → follow
+
+
+def test_mouse_non_scroll_event_delegates_to_super(tmp_path: Path) -> None:
+    # A non-wheel mouse event is handled by the base control (returns NotImplemented),
+    # so clicks still reach prompt_toolkit's default handling.
+    with create_pipe_input() as inp:
+        app, _ = _build_headless(tmp_path, inp)
+        pane = _pane_control(app)
+        assert pane.mouse_handler(_scroll_event(MouseEventType.MOUSE_UP)) is NotImplemented
+
+
+def test_status_fn_reflects_live_values(tmp_path: Path) -> None:
+    # The status bar re-reads status_fn per render, so /model use (cloud!),
+    # /profile use, /cwd set, and context growth reflect immediately (§31.18).
+    state = {"model": "gemma4:e4b", "cloud": False, "ctx": 5}
+
+    def status_fn() -> StatusValues:
+        return StatusValues(
+            workspace=tmp_path,
+            model=state["model"],
+            profile="balanced",
+            is_cloud=bool(state["cloud"]),
+            ctx_pct=int(state["ctx"]),
+        )
+
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 120)
+        app = build_app(
+            workspace=tmp_path,
+            model="STATIC",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            status_fn=status_fn,
+        )
+        before = _find_control_text(app, " ctx")
+        assert "gemma4:e4b" in before
+        assert "● local" in before
+        assert "STATIC" not in before  # status_fn overrides the build-time model
+        # A mid-session switch to a cloud model + context growth.
+        state["model"] = "gemma4:31b-cloud"
+        state["cloud"] = True
+        state["ctx"] = 88
+        after = _find_control_text(app, " ctx")
+    assert "gemma4:31b-cloud" in after
+    assert "☁ CLOUD" in after  # the live, unspoofable cloud indicator
+    assert "88%" in after
+
+
+def test_status_fn_none_uses_static_values(tmp_path: Path) -> None:
+    # Back-compat: with no status_fn the bar shows the build-time params (the
+    # standalone shell + existing callers stay byte-identical).
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 120)
+        app = build_app(
+            workspace=tmp_path,
+            model="static-model",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            is_cloud=False,
+            ctx_pct=7,
+        )
+        text = _find_control_text(app, " ctx")
+    assert "static-model" in text
+    assert "7%" in text
+    assert "● local" in text
+
+
+def test_ascii_chip_uses_ascii_marker(tmp_path: Path) -> None:
+    # The queued chip degrades to an ASCII marker in ASCII mode (no unicode leak).
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=ASCII_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=ASCII_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            is_busy=lambda: True,
+            register_idle=lambda _cb: None,
+        )
+        inp.send_text("hello\n")  # busy → staged
+        inp.send_text("/exit\n")
+        app.run()
+    chip = _find_control_text(app, "queued")
+    # ASCII mode: the "queued:" label IS the marker; no unicode glyph leaks.
+    assert "queued:" in chip
+    assert "hello" in chip
+    assert "⏳" not in chip

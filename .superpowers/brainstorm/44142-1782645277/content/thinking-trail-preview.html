@@ -1,0 +1,99 @@
+<style>
+  .terminal-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+  @media (max-width: 1100px) { .terminal-grid { grid-template-columns: 1fr; } }
+  .terminal-card { cursor: pointer; }
+  .terminal { background: var(--color-background); border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; }
+  .terminal-top { padding: 8px 10px; border-bottom: 1px solid var(--color-border); color: var(--color-text-muted); }
+  .terminal-body { padding: 12px; min-height: 430px; }
+  .user-line { color: var(--color-accent); margin-bottom: 12px; }
+  .assistant { color: var(--color-text); margin-bottom: 12px; }
+  .dim { color: var(--color-text-muted); }
+  .tool { color: var(--color-text-muted); margin: 8px 0; }
+  .thinking { border-left: 2px solid var(--color-border); padding: 7px 0 7px 10px; margin: 10px 0; color: var(--color-text-muted); background: var(--color-surface); }
+  .thinking-title { color: var(--color-text); font-weight: 600; margin-bottom: 5px; }
+  .hidden { color: var(--color-text-muted); border-top: 1px dashed var(--color-border); margin-top: 6px; padding-top: 5px; }
+  .done { color: var(--color-text-muted); margin-top: 10px; }
+  .popup-preview { position: relative; }
+  .overlay { position: absolute; inset: 62px 18px 88px 18px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface); padding: 12px; }
+  .dock { margin-top: 16px; border: 1px solid var(--color-border); border-radius: 8px; color: var(--color-text-muted); padding: 8px; }
+</style>
+
+<h2>Thinking Trail UI Preview</h2>
+<p class="subtitle">Click the direction that feels best. I recommend A for the branch: it proves the feature without adding overlay mechanics.</p>
+
+<div class="terminal-grid">
+  <div class="card terminal-card" data-choice="a-inline-collapsed" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>A. Inline, Collapsed By Default</h3>
+      <p>Shows a small live trail near the frontier line, capped so long reasoning does not dominate the thread.</p>
+      <div class="terminal">
+        <div class="terminal-top">ShellPilot app pane</div>
+        <div class="terminal-body">
+          <div class="user-line">❯ inspect the failing tests</div>
+          <div class="thinking">
+            <div class="thinking-title">thinking · 1.1k reasoning</div>
+            <div>I need to find the failing test path and compare it with the recent UI branch changes...</div>
+            <div>The likely place is the AppUI state machine around turn finalization...</div>
+            <div class="hidden">... 18 hidden lines · press t to expand later</div>
+          </div>
+          <div class="tool">⏺ read_file(path='tests/test_app_ui.py')</div>
+          <div class="assistant">The failure is in the turn indicator expectations. The new trail needs to clear with the indicator on cancel.</div>
+          <div class="done">✓ done · 7s · 1.1k reasoning · 240 total</div>
+          <div class="dock">╭ type a message<br>╰────────────────────────</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card terminal-card" data-choice="b-inline-full" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>B. Inline, Normally Visible</h3>
+      <p>Most transparent, but it can quickly bury tool calls and answers when the model reasons for a while.</p>
+      <div class="terminal">
+        <div class="terminal-top">ShellPilot app pane</div>
+        <div class="terminal-body">
+          <div class="user-line">❯ inspect the failing tests</div>
+          <div class="thinking">
+            <div class="thinking-title">thinking trail</div>
+            <div>I need to map the current runtime callbacks.</div>
+            <div>The model streams thinking before content.</div>
+            <div>AppUI stores only the count today.</div>
+            <div>If I append every fragment directly, the pane may churn and grow quickly.</div>
+            <div>I should cap render height and keep raw accumulation separate...</div>
+            <div>Now check cancel behavior and stale indicators...</div>
+          </div>
+          <div class="tool">⏺ read_file(path='shellpilot/cli/app_ui.py')</div>
+          <div class="done">✓ done · 7s · 1.1k reasoning · 240 total</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card terminal-card" data-choice="c-popup" onclick="toggleSelect(this)">
+    <div class="card-body">
+      <h3>C. Toggleable Popup</h3>
+      <p>Keeps the thread clean, but needs new focus, scrolling, dismissal, and keyboard handling.</p>
+      <div class="terminal popup-preview">
+        <div class="terminal-top">ShellPilot app pane</div>
+        <div class="terminal-body">
+          <div class="user-line">❯ inspect the failing tests</div>
+          <div class="assistant dim">thinking · 1.1k reasoning · press t to view</div>
+          <div class="tool">⏺ read_file(path='tests/test_app_ui.py')</div>
+          <div class="assistant">The failure is in the turn indicator expectations...</div>
+          <div class="overlay">
+            <div class="thinking-title">Thinking Trail</div>
+            <div>I need to find the failing test path...</div>
+            <div>The app has no transcript popup primitive today...</div>
+            <div>Implementing this means overlay focus and scroll state...</div>
+          </div>
+          <div class="dock">╭ overlay open: Esc closes<br>╰────────────────────────</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>What I Want To Learn From This Preview</h3>
+  <p>Does option A feel useful enough, or does even the capped inline trail still add too much noise? If A feels close, the next design choice is whether finished turns keep only the summary line or keep a collapsed trail marker in history.</p>
+</div>

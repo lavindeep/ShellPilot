@@ -290,6 +290,29 @@ def test_start_action_rejects_when_busy(tmp_path: Path) -> None:
     assert runner._busy is False
 
 
+def test_mark_done_fires_on_idle_after_busy_clears(tmp_path: Path) -> None:
+    # The §31.18 queue fires at turn end via TurnRunner.on_idle, invoked by
+    # _mark_done. Prove the WIRING (not just _fire_pending in isolation): on_idle
+    # runs when the scheduled _mark_done drains, and only then — with busy already
+    # cleared, so the fired follow-up turn sees idle.
+    app_ui = AppUI(glyphs=UNICODE_GLYPHS, workspace=tmp_path, width_fn=lambda: 80)
+    q: queue.Queue[Scheduled] = queue.Queue()
+    runner = TurnRunner(inner_ui=app_ui, schedule=q.put)
+    fired_busy: list[bool] = []
+    runner.on_idle = lambda: fired_busy.append(runner.busy)  # record busy at fire time
+
+    assert runner.start_action(lambda: None) is True
+    assert runner._thread is not None
+    runner._thread.join(5.0)
+    # _mark_done is SCHEDULED, not yet drained → on_idle has not fired.
+    assert fired_busy == []
+    while not q.empty():
+        q.get()()
+    # Drained: on_idle fired exactly once, and saw busy already False.
+    assert fired_busy == [False]
+    assert runner.busy is False
+
+
 def test_busy_guard_ignores_second_start(tmp_path: Path) -> None:
     gate = threading.Event()
     entered = threading.Event()
