@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from shellpilot.config.model import Settings, is_egressing
-from shellpilot.llm.client import LLMClient
+from shellpilot.llm.client import GenerationCancelled, LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
 from shellpilot.llm.ollama import encode_tool
 from shellpilot.memory.agents_md import BehaviorInstructions
@@ -595,6 +595,7 @@ class ConversationRuntime:
             snapshots=self.snapshots,
             audit=self._audit,
             allow_sensitive_reads=self._settings.privacy.allow_sensitive_reads,
+            cancel=self._cancel,
         )
         tools = executor.available_definitions()
         tool_turns = 0
@@ -642,6 +643,10 @@ class ConversationRuntime:
             finally:
                 self._ui.end_response()
             self._turn_output_tokens += reply.output_tokens
+            # History length BEFORE this model step is recorded, so a mid-tool
+            # cancel (below) can roll the step back out and leave no orphaned
+            # tool_call behind (§31.15).
+            history_before_reply = len(self._history)
             self._record(reply)
             if not reply.tool_calls:
                 pending = self._pending_plan_step()
@@ -705,6 +710,18 @@ class ConversationRuntime:
             for call in reply.tool_calls:
                 self._ui.show_tool_call(call.name, call.arguments)
                 outcome = executor.execute(call)
+                if self._cancel is not None and self._cancel.is_set():
+                    # A Ctrl-C during tool execution (e.g. a long run_command just
+                    # killed by the cancel signal) aborts the turn. Roll THIS model
+                    # step's reply + any partial tool results back out of history so
+                    # no orphaned tool_call (an assistant tool_call with no matching
+                    # result) is re-sent on the next turn — the same clean discard as
+                    # the model-stream cancel, which never records its partial reply.
+                    # Prior completed steps stay; the worker then routes through
+                    # abort_turn (⏹ aborted), and partial command output already
+                    # streamed to the pane stays visible (§31.15).
+                    del self._history[history_before_reply:]
+                    raise GenerationCancelled
                 # Feed side-effecting tool outcomes to the plan completion guard.
                 # Key off the SPEC's side_effect (not the result's): a failed or
                 # denied result carries SideEffect.NONE, which would hide exactly

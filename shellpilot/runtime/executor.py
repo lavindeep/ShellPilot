@@ -7,6 +7,7 @@ failure twice stops tool use for the turn.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,7 @@ class ToolExecutor:
         snapshots: SnapshotStore | None = None,
         audit: AuditLogger | None = None,
         allow_sensitive_reads: str = "ask",
+        cancel: threading.Event | None = None,
     ) -> None:
         self._snapshots = snapshots
         self._audit = audit
@@ -78,6 +80,7 @@ class ToolExecutor:
         self._ask_approval = ask_approval
         self._emit_output = emit_output
         self._allow_sensitive_reads = allow_sensitive_reads
+        self._cancel = cancel
         self._spent_tokens = 0
 
     def available_definitions(self) -> list[ToolDefinition]:
@@ -108,6 +111,7 @@ class ToolExecutor:
             emit_output=self._emit_output,
             snapshots=self._snapshots,
             allow_sensitive_reads=self._allow_sensitive_reads,
+            cancel=self._cancel,
         )
 
         if spec.precheck is not None:
