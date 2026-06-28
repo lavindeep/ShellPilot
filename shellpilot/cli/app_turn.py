@@ -297,10 +297,10 @@ class TurnRunner:
         (success/cancel/error) so a turn never wedges the app.
 
         NOTE (branch 6b — subprocess killpg): a cancel requested while a tool
-        COMMAND is running does NOT kill that subprocess here; the command
-        finishes/times out, then the NEXT model call's stream-read sees the set
-        event and raises GenerationCancelled, aborting the turn. Killing the
-        running subprocess is branch 6b.
+        COMMAND is running now kills that child immediately. The same cancel
+        event threads through ToolContext to run_command_process, which polls it
+        and killpg's the child's process group; the tool loop then raises
+        GenerationCancelled, reaching this same clean-abort path (§31.15).
         """
         try:
             conversation = self.conversation
