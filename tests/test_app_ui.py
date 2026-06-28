@@ -323,12 +323,29 @@ def test_cache_invalidated_on_new_content() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Approval stubs — must raise, never silently default
+# Approval prompt content (§31.16) — the pane block for the focus-swap gate
 # ---------------------------------------------------------------------------
 
 
-def test_ask_approval_raises_not_implemented() -> None:
-    """ask_approval must raise NotImplementedError until branch 7 wires the focus-swap."""
+def test_show_approval_renders_diff_info_and_cwd() -> None:
+    ui = make_ui(workspace=Path("/tmp/ws"))
+    request = ApprovalRequest(
+        kind="command",
+        display="patch x.py",
+        risk=RiskLevel.HIGH,
+        reasons=("recursive delete",),
+        cwd=Path("/tmp/ws"),
+        diff="--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-oldline\n+newline\n",
+    )
+    ui.show_approval(request)
+    text = plain(ui)
+    assert "HIGH" in text  # risk badge
+    assert "recursive delete" in text  # classifier reason
+    assert "CWD: /tmp/ws" in text  # working directory
+    assert "oldline" in text and "newline" in text  # the diff content rendered
+
+
+def test_show_approval_without_diff_omits_panel() -> None:
     ui = make_ui()
     request = ApprovalRequest(
         kind="tool",
@@ -337,15 +354,26 @@ def test_ask_approval_raises_not_implemented() -> None:
         reasons=("writes inside workspace",),
         cwd=Path("/tmp/ws"),
     )
-    with pytest.raises(NotImplementedError):
-        ui.ask_approval(request)
+    ui.show_approval(request)
+    text = plain(ui)
+    assert "MEDIUM" in text
+    assert "writes inside workspace" in text
 
 
-def test_ask_plan_approval_raises_not_implemented() -> None:
-    """ask_plan_approval must raise NotImplementedError until branch 7."""
+def test_show_plan_approval_renders_panel_and_path() -> None:
     ui = make_ui()
-    with pytest.raises(NotImplementedError):
-        ui.ask_plan_approval(make_plan(), "/tmp/ws/PLAN.md")
+    ui.show_plan_approval(make_plan(), "/tmp/ws/PLAN.md")
+    text = plain(ui)
+    assert "Demo goal" in text  # plan panel goal
+    assert "/tmp/ws/PLAN.md" in text  # the artifact path
+
+
+def test_show_plan_approval_sanitizes_path() -> None:
+    ui = make_ui()
+    ui.show_plan_approval(make_plan(), "/tmp/ws/PL\x07AN.md")  # embedded bell
+    text = plain(ui)
+    assert "\x07" not in text
+    assert "/tmp/ws/PLAN.md" in text
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
@@ -47,6 +48,9 @@ from shellpilot.cli.theme import (
     UNICODE_GLYPHS,
     Glyphs,
 )
+
+if TYPE_CHECKING:
+    from shellpilot.cli.app_approval import ApprovalGate
 
 # The dock grows to fit multi-line input up to this many rows, then scrolls
 # internally. NOTE: a fixed cap — a per-terminal-height fraction would be nicer
@@ -151,6 +155,7 @@ def build_app(
     ui: AppUI | None = None,
     on_submit: Callable[[str], None] | None = None,
     on_interrupt: Callable[[], bool] | None = None,
+    approval_gate: ApprovalGate | None = None,
 ) -> Application[None]:
     """Build the full-screen app shell.
 
@@ -296,6 +301,14 @@ def build_app(
     @kb.add("enter", filter=dock_focused)
     @kb.add("c-j", filter=dock_focused)
     def _submit(event: KeyPressEvent) -> None:
+        # During an approval the dock IS the approval input: route the line to the
+        # gate (which resolves the worker's Future) BEFORE the /exit check, so a
+        # mid-approval "/exit" is an approval answer, not a quit (§31.16).
+        if approval_gate is not None and approval_gate.active:
+            line = dock_buffer.text
+            dock_buffer.reset()
+            approval_gate.submit(line)
+            return
         text = dock_buffer.text
         if text.strip() == "/exit":
             event.app.exit()
@@ -326,6 +339,14 @@ def build_app(
 
     @kb.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
+        # During an approval the worker is blocked on the gate's Future, not in a
+        # model-stream read, so on_interrupt (model cancel) would not fire. Ctrl-C
+        # must resolve the approval as a decline of THIS action; the turn continues
+        # and turn-level cancel is available again after the prompt returns (mirrors
+        # TerminalUI.ask_approval's KeyboardInterrupt → DECLINE) (§31.16).
+        if approval_gate is not None and approval_gate.active:
+            approval_gate.cancel()
+            return
         # Raw mode disables ISIG, so Ctrl-C is a normal key press, not a SIGINT
         # (branch 6, §31.15). When a turn is in flight, on_interrupt cancels it and
         # returns True (the worker aborts the stream and renders the marker), so we
@@ -333,6 +354,13 @@ def build_app(
         if on_interrupt is not None and on_interrupt():
             return
         _ui.show_status(_IDLE_HINT)
+
+    @kb.add("c-d", filter=dock_focused)
+    def _eof(event: KeyPressEvent) -> None:
+        # EOF during an approval declines THIS action (same as Ctrl-C). Otherwise a
+        # no-op: the dock owns c-d so a stray press never tears down the app.
+        if approval_gate is not None and approval_gate.active:
+            approval_gate.cancel()
 
     # NOTE: keyboard PageUp/PageDown drive the pane via the cursor-line model
     # above (auto-follow + scroll-back). Mouse-wheel scroll-back is deferred to
