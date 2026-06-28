@@ -21,3 +21,7 @@ htmlcov/
 
 # Local agent settings
 .claude/
+
+# Local harness / session scratch (never commit)
+.superpowers/
+thinking-trail-preview.html
