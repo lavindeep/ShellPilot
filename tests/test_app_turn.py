@@ -35,7 +35,7 @@ from shellpilot.llm.messages import Message
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import TurnStats
-from tests.fakes.fake_llm import FakeLLM, answer
+from tests.fakes.fake_llm import FakeLLM, answer, tool_call
 
 # --- helpers ------------------------------------------------------------------
 
@@ -484,6 +484,87 @@ def test_request_cancel_aborts_turn_cleanly_and_reruns(tmp_path: Path) -> None:
     runner.start("again")
     assert llm.entered.wait(5.0)
     llm.release.set()  # no cancel this time → chat returns a normal answer
+    runner._thread.join(5.0)
+    while not q.empty():
+        q.get()()
+    assert "turn_finished" in inner.names()
+    assert runner._busy is False
+
+
+def test_request_cancel_kills_running_command_and_aborts(tmp_path: Path) -> None:
+    """Branch 6b (§31.15): Ctrl-C during a running tool aborts cleanly and reruns.
+
+    A blocking tool stands in for a long run_command child: its handler waits on
+    the turn's cancel event, so request_cancel both releases it (a real kill in
+    production) and trips the tool-loop abort — reaching abort_turn, never the
+    failure path. A fresh turn then completes normally.
+    """
+    from shellpilot.llm.messages import ToolDefinition
+    from shellpilot.policy.risk import RiskLevel, SideEffect
+    from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
+    from shellpilot.tools.registry import ToolRegistry
+
+    app_ui = AppUI(glyphs=UNICODE_GLYPHS, workspace=tmp_path, width_fn=lambda: 80)
+    inner = _RecordingUI(forward=app_ui)
+    q: queue.Queue[Scheduled] = queue.Queue()
+    runner = TurnRunner(inner_ui=inner, schedule=q.put)
+    threaded = ThreadedUI(inner=inner, schedule=q.put)
+
+    entered = threading.Event()
+
+    def _blocking_handler(context: ToolContext, arguments: dict[str, object]) -> ToolResult:
+        entered.set()
+        assert context.cancel is not None
+        context.cancel.wait(5.0)  # blocks until request_cancel sets the turn's event
+        return ToolResult(success=True, summary="unblocked", content="")
+
+    spec = ToolSpec(
+        definition=ToolDefinition(name="block_tool", description="d", parameters={}, required=()),
+        side_effect=SideEffect.NONE,
+        default_risk=RiskLevel.LOW,
+        allowed_profiles=ALL_PROFILES,
+        handler=_blocking_handler,
+    )
+    registry = ToolRegistry()
+    registry.register(spec)
+    fake = FakeLLM(script=[tool_call("block_tool"), answer("a normal completion")])
+    runtime = ConversationRuntime(
+        llm=fake,
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=threaded,
+        registry=registry,
+    )
+    runner.conversation = runtime
+
+    runner.start("run something slow")
+    assert entered.wait(5.0)  # the worker is inside the blocking tool → in flight
+    assert runner._busy is True
+    assert runner.request_cancel() is True  # sets the turn's cancel → tool unblocks
+
+    assert runner._thread is not None
+    runner._thread.join(5.0)
+    assert not runner._thread.is_alive()  # aborted cleanly, not killed mid-stack
+    while not q.empty():
+        q.get()()
+
+    names = inner.names()
+    assert "abort_turn" in names  # the CLEAN abort path ran ...
+    assert "show_error" not in names  # ... NOT the "Turn failed" error path
+    assert "turn_finished" not in names  # the turn did not complete
+    assert runner._busy is False
+    assert "aborted" in app_ui._render_ansi()
+    # Isolates THIS branch's tool-loop raise from branch-6's model-stream backstop:
+    # without the raise the block_tool's "unblocked" result would be recorded and
+    # the model re-invoked one round later (the backstop still aborts, but leaves
+    # assistant+tool messages behind). The raise + history rollback leave only the
+    # user message — no recorded tool result, no orphaned tool_call.
+    assert [m.role for m in runtime._history] == ["user"]
+
+    # A fresh turn completes normally after the cancel.
+    runner.start("again")
+    assert runner._thread is not None
     runner._thread.join(5.0)
     while not q.empty():
         q.get()()

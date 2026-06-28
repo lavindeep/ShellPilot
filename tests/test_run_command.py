@@ -1,7 +1,9 @@
 """Tests for the shell=False command runner (design section 13.1)."""
 
 import os
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -84,6 +86,67 @@ def test_timeout_kills_process_group(tmp_path: Path) -> None:
     elapsed = time.monotonic() - start
     assert outcome.timed_out
     assert elapsed < 10
+
+
+def test_cancel_kills_process_group_fast(tmp_path: Path) -> None:
+    # Branch 6b (§31.15): a cancel event set mid-command kills the child's whole
+    # process group at once, instead of waiting out the (here, 30 s) timeout.
+    cancel = threading.Event()
+    captured: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def _capture(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        proc = real_popen(*args, **kwargs)
+        captured.append(proc)
+        return proc
+
+    baseline_threads = threading.active_count()
+    setter = threading.Thread(target=lambda: (time.sleep(0.2), cancel.set()))  # type: ignore[func-returns-value]
+    start = time.monotonic()
+    setter.start()
+    with patch("shellpilot.tools.command.subprocess.Popen", side_effect=_capture):
+        outcome = run_command_process(
+            CommandRequest(
+                argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=tmp_path,
+                timeout_seconds=30,
+            ),
+            max_capture_chars=1000,
+            cancel=cancel,
+        )
+    elapsed = time.monotonic() - start
+    setter.join()
+
+    # The cancel-kill is proven by the fast return (not the 30 s sleep) + the dead
+    # process group below, not by a flag: the turn abort is driven by the cancel
+    # Event in the tool loop, so the command outcome carries no "cancelled" flag.
+    assert outcome.timed_out is False
+    assert elapsed < 8  # returned promptly, not after the 30 s sleep
+
+    # The child's process group was SIGKILLed: start_new_session=True makes the
+    # child its own group leader (pgid == pid), so signalling it now raises.
+    pgid = captured[0].pid
+    try:
+        os.killpg(pgid, 0)
+        raise AssertionError("process group still alive after cancel")
+    except ProcessLookupError:
+        pass
+
+    # The reader thread was joined — no leak (active count back to baseline).
+    assert threading.active_count() == baseline_threads
+
+
+def test_cancel_none_completes_normally(tmp_path: Path) -> None:
+    # The legacy path (cancel=None, e.g. the default REPL executor) is unchanged:
+    # a fast command exits normally.
+    outcome = run_command_process(
+        CommandRequest(argv=["echo", "hi"], cwd=tmp_path, timeout_seconds=30),
+        max_capture_chars=1000,
+        cancel=None,
+    )
+    assert outcome.timed_out is False
+    assert outcome.exit_code == 0
+    assert "hi" in outcome.output
 
 
 def test_output_capture_is_bounded(tmp_path: Path) -> None:

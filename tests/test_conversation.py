@@ -14,12 +14,15 @@ from shellpilot.config.model import (
     ToolSettings,
 )
 from shellpilot.llm.client import GenerationCancelled
-from shellpilot.llm.messages import Message
+from shellpilot.llm.messages import Message, ToolDefinition
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
+from shellpilot.policy.risk import RiskLevel, SideEffect
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.skills.loader import discover_skills
 from shellpilot.skills.model import Skill, SkillTrigger
+from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpec
+from shellpilot.tools.registry import ToolRegistry
 from tests.fakes.fake_llm import FakeLLM, answer, tool_call
 from tests.fakes.fake_ui import FakeUI
 
@@ -82,6 +85,60 @@ def test_cancelled_turn_discards_partial_reply(tmp_path: Path) -> None:
     assert runtime._history[0].content == "do a thing"
     # ... but NO assistant reply landed in history — the partial is gone.
     assert all(m.role != "assistant" for m in runtime._history)
+
+
+def test_cancel_during_tool_execution_aborts(tmp_path: Path) -> None:
+    """Branch 6b (§31.15): a Ctrl-C landing during tool execution aborts the turn.
+
+    A fake tool sets the turn's cancel event via its ToolContext (simulating a
+    long run_command child being killed mid-execution). The tool loop then raises
+    GenerationCancelled, so the cancelled tool's RESULT is never recorded and the
+    model is not re-invoked.
+    """
+    cancel_seen: list[bool] = []
+
+    def _set_cancel(context: ToolContext, arguments: dict[str, object]) -> ToolResult:
+        cancel_seen.append(context.cancel is not None)
+        assert context.cancel is not None  # the turn's cancel threaded to the handler
+        context.cancel.set()
+        return ToolResult(success=True, summary="cancelled mid-run", content="discarded")
+
+    spec = ToolSpec(
+        definition=ToolDefinition(name="slow_tool", description="d", parameters={}, required=()),
+        side_effect=SideEffect.NONE,
+        default_risk=RiskLevel.LOW,
+        allowed_profiles=ALL_PROFILES,
+        handler=_set_cancel,
+    )
+    registry = ToolRegistry()
+    registry.register(spec)
+
+    fake = FakeLLM(script=[tool_call("slow_tool"), answer("must never be recorded")])
+    runtime = ConversationRuntime(
+        llm=fake,
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        registry=registry,
+    )
+    cancel = threading.Event()  # starts UNSET; the tool sets it
+
+    with pytest.raises(GenerationCancelled):
+        runtime.run_turn("go", cancel=cancel)
+
+    assert cancel_seen == [True]  # the handler saw the cancel event
+    # The cancelled model step is rolled fully out of history: only the user
+    # message remains — no orphaned assistant tool_call (an assistant reply whose
+    # tool_call has no matching result) survives to be re-sent next turn, and no
+    # tool result is recorded. Matches the model-stream cancel's clean discard,
+    # which never records its partial reply.
+    assert [m.role for m in runtime._history] == ["user"]
+    assert runtime._history[0].content == "go"
+    assert all(not m.tool_calls for m in runtime._history)
+    # ... and no follow-up answer landed — the model was not re-invoked.
+    assert all("must never be recorded" not in m.content for m in runtime._history)
+    assert len(fake.calls) == 1
 
 
 def test_normal_turn_records_assistant_reply(tmp_path: Path) -> None:
