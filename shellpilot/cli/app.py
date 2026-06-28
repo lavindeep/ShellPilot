@@ -144,6 +144,7 @@ def build_app(
     commands: Sequence[str],
     is_cloud: bool = False,
     ctx_pct: int = 0,
+    show_reasoning: bool = True,
     input: Input | None = None,
     output: Output | None = None,
     ui: AppUI | None = None,
@@ -174,6 +175,7 @@ def build_app(
             glyphs=glyphs,
             workspace=workspace,
             width_fn=lambda: get_app().output.get_size().columns,
+            show_reasoning=show_reasoning,
         )
     # Explicit AppUI annotation (not AppUI | None) so the closures below capture a
     # non-optional type; ui is already narrowed to AppUI by the guard above.
@@ -298,6 +300,11 @@ def build_app(
             return
         if text.strip():
             if on_submit is not None:
+                # Echo the typed line into the pane on the loop thread, then run
+                # the turn. The live indicator (started by the turn's first
+                # begin_response) renders just below this echo and moves down as
+                # content appends above it (design section 31.14).
+                _ui.show_user_message(text)
                 on_submit(text)
             else:
                 _ui.show_status(text)
@@ -329,6 +336,12 @@ def build_app(
         key_bindings=kb,
         full_screen=True,
         mouse_support=True,
+        # Periodic repaint so the live thinking indicator's timer ticks and the
+        # plane glides even between thinking chunks (design section 31.14). When
+        # idle the per-tick AppUI._render_ansi is a width-cache hit (cheap no-op).
+        # NOTE: gating the refresh on an active turn is the upgrade path if
+        # profiling ever shows the idle tick costs anything (branch 5).
+        refresh_interval=0.1,
         input=input,
         output=output,
     )
