@@ -1,10 +1,14 @@
 """Tests for OllamaClient.chat streaming (httpx.MockTransport, no live Ollama)."""
 
 import json
+import threading
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
+import pytest
 
+from shellpilot.llm.client import GenerationCancelled
 from shellpilot.llm.messages import ToolDefinition, user
 from shellpilot.llm.ollama import OllamaClient
 
@@ -227,6 +231,82 @@ def test_think_still_sent_for_other_models_after_fallback() -> None:
     client.chat("gemma4:e4b", [user("hi")], num_ctx=2048)
     assert len(attempts) == 1
     assert attempts[0].get("think") is True
+
+
+# ---------------------------------------------------------------------------
+# Branch-6 mid-stream cancellation (§31.15)
+# ---------------------------------------------------------------------------
+
+
+def test_stream_chat_cancel_stops_reading_mid_stream() -> None:
+    """A set cancel event aborts the stream read; the rest is never consumed."""
+    cancel = threading.Event()
+    pulled = {"count": 0}
+    total = 6
+
+    def gen() -> Iterator[bytes]:
+        for i in range(total):
+            pulled["count"] += 1
+            # The user hits Ctrl-C while the 2nd chunk streams.
+            if i == 1:
+                cancel.set()
+            chunk = {"message": {"role": "assistant", "content": f"c{i}"}, "done": i == total - 1}
+            yield (json.dumps(chunk) + "\n").encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=gen())
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(GenerationCancelled):
+        client.chat("gemma4:e4b", [user("hi")], num_ctx=4096, cancel=cancel)
+    # It raised at the read boundary after the cancelled chunk — it did NOT drain
+    # the whole stream (no `done` chunk was reached).
+    assert pulled["count"] < total
+
+
+def test_stream_chat_cancel_not_set_completes_normally() -> None:
+    """An unset (or absent) cancel event leaves streaming unaffected."""
+    cancel = threading.Event()  # never set
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stream_body(
+                {"message": {"role": "assistant", "content": "Hel"}, "done": False},
+                {"message": {"role": "assistant", "content": "lo"}, "done": True},
+            ),
+        )
+
+    client = OllamaClient(transport=httpx.MockTransport(handler))
+    reply = client.chat("gemma4:e4b", [user("hi")], num_ctx=4096, cancel=cancel)
+    assert reply.content == "Hello"
+
+
+def test_chat_threads_cancel_through_think_retry() -> None:
+    """A cancel set during the think attempt still aborts the retried (no-think) call."""
+    cancel = threading.Event()
+    cancel.set()  # cancel already requested before the call
+    attempts: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        attempts.append(payload)
+        if payload.get("think"):
+            # The think attempt fails the status check BEFORE the stream loop, so
+            # it raises OllamaResponseError (not the cancel) → triggers the retry.
+            return httpx.Response(400, json={"error": "model does not support thinking"})
+        # The retry streams; its read boundary sees the set cancel and raises.
+        return httpx.Response(
+            200,
+            content=stream_body({"message": {"role": "assistant", "content": "ok"}, "done": True}),
+        )
+
+    client = OllamaClient(reasoning=True, transport=httpx.MockTransport(handler))
+    with pytest.raises(GenerationCancelled):
+        client.chat("gemma4:e4b", [user("hi")], num_ctx=2048, cancel=cancel)
+    # The retry happened (think → no-think) AND it observed the cancel.
+    assert attempts[0].get("think") is True
+    assert "think" not in attempts[1]
 
 
 def test_model_context_length_reads_model_info() -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from shellpilot.cli.app_ui import AppUI
-from shellpilot.cli.theme import UNICODE_GLYPHS
+from shellpilot.cli.theme import ASCII_GLYPHS, UNICODE_GLYPHS
 from shellpilot.memory.redaction import REDACTED
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
@@ -480,6 +480,38 @@ def test_new_turn_after_error_starts_fresh_indicator() -> None:
     assert ui._indicator is not None
     assert ui._indicator.start == 100.0
     assert ui._indicator.reasoning_chars == 0
+
+
+def test_abort_turn_clears_indicator_and_marks_partial() -> None:
+    # Branch 6 (§31.15): a cancelled turn clears the dangling live indicator and
+    # marks the partial aborted, leaving the streamed-so-far text visible.
+    ui = AppUI(glyphs=GLYPHS, width_fn=lambda: 80, time_fn=lambda: 0.0)
+    ui.begin_response()  # turn starts → indicator active
+    ui.stream_token("partial answer so far")  # streamed text, response still open
+    assert ui._indicator is not None
+
+    ui.abort_turn()
+
+    # The live indicator is gone (no dangling timer/plane after a cancel).
+    assert ui._indicator is None
+    out = plain(ui)
+    # The partial streamed text was finalized and is still visible ...
+    assert "partial answer so far" in out
+    # ... with the aborted marker below it (unicode ⏹, style sp.warn).
+    assert "⏹ aborted" in out
+    # A later render does not resurrect the live indicator (no flight phrase).
+    assert "taxiing" not in plain(ui)
+
+
+def test_abort_turn_ascii_fallback_marker() -> None:
+    # ⏹ is not in the Glyphs set; in ASCII mode it degrades to the cross glyph.
+    ui = AppUI(glyphs=ASCII_GLYPHS, width_fn=lambda: 80)
+    ui.begin_response()
+    ui.abort_turn()
+    out = plain(ui)
+    assert ui._indicator is None
+    assert "⏹" not in out
+    assert f"{ASCII_GLYPHS.cross} aborted" in out
 
 
 def test_stream_thinking_climbs_reasoning_estimate() -> None:

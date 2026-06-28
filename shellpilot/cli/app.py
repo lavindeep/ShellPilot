@@ -54,8 +54,9 @@ from shellpilot.cli.theme import (
 # (branch 4) shows whether it bites.
 DOCK_MAX_ROWS = 10
 
-# Idle Ctrl-C hint. NOTE: there is no turn to cancel in this inert shell; branch
-# 6 replaces this with real turn cancellation / subprocess kill.
+# Idle Ctrl-C hint, shown only when no turn is in flight. Branch 6 (§31.15) wired
+# real turn cancellation through on_interrupt; this hint is the idle fallback.
+# NOTE: subprocess-kill on cancel is branch 6b.
 _IDLE_HINT = "(idle — type /exit to quit)"
 
 
@@ -149,6 +150,7 @@ def build_app(
     output: Output | None = None,
     ui: AppUI | None = None,
     on_submit: Callable[[str], None] | None = None,
+    on_interrupt: Callable[[], bool] | None = None,
 ) -> Application[None]:
     """Build the full-screen app shell.
 
@@ -324,6 +326,12 @@ def build_app(
 
     @kb.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
+        # Raw mode disables ISIG, so Ctrl-C is a normal key press, not a SIGINT
+        # (branch 6, §31.15). When a turn is in flight, on_interrupt cancels it and
+        # returns True (the worker aborts the stream and renders the marker), so we
+        # show nothing. Otherwise it is idle — fall back to the idle hint.
+        if on_interrupt is not None and on_interrupt():
+            return
         _ui.show_status(_IDLE_HINT)
 
     # NOTE: keyboard PageUp/PageDown drive the pane via the cursor-line model

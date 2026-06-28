@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -11,6 +12,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from shellpilot.llm.client import GenerationCancelled
 from shellpilot.llm.messages import Message, ToolCall, ToolDefinition
 
 DEFAULT_BASE_URL = "http://localhost:11434"
@@ -199,11 +201,18 @@ class OllamaClient:
         options: dict[str, Any] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> Message:
         """Stream one chat completion; num_ctx is set explicitly on every request.
 
         Configured `options` pass through verbatim, but num_ctx ALWAYS wins:
         the context budget owns it (design section 10.5).
+
+        ``cancel`` is a branch-6 turn-abort signal (§31.15): when the app SETS it
+        (from the Ctrl-C keybinding on the loop thread), the next stream-read
+        boundary raises ``GenerationCancelled``. It is threaded into the
+        think-retry path too, so a cancel requested during the first (think)
+        attempt still aborts the retried call.
         """
         payload: dict[str, Any] = {
             "model": model,
@@ -216,14 +225,14 @@ class OllamaClient:
         if self._reasoning and model not in self._no_think:
             payload["think"] = True
         try:
-            return self._stream_chat(payload, on_token, on_thinking)
+            return self._stream_chat(payload, on_token, on_thinking, cancel)
         except OllamaResponseError as exc:
             # Reasoning mode unavailable for this model: cache and retry once without
             # think (design section 24.6). Other models are not affected.
             if self._reasoning and model not in self._no_think and "think" in str(exc).lower():
                 self._no_think.add(model)
                 payload.pop("think", None)
-                return self._stream_chat(payload, on_token, on_thinking)
+                return self._stream_chat(payload, on_token, on_thinking, cancel)
             raise
 
     def _stream_chat(
@@ -231,6 +240,7 @@ class OllamaClient:
         payload: dict[str, Any],
         on_token: Callable[[str], None] | None,
         on_thinking: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> Message:
         content_parts: list[str] = []
         thinking_parts: list[str] = []
@@ -243,6 +253,15 @@ class OllamaClient:
                     body = response.read().decode("utf-8", errors="replace")
                     raise OllamaResponseError(f"Ollama API error {response.status_code}: {body}")
                 for line in response.iter_lines():
+                    # Branch-6 cancel check at the read boundary (§31.15). Raising
+                    # INSIDE the `with self._client.stream(...)` block closes the
+                    # response IN-THREAD via the context manager — the safe close.
+                    # The app only ever SETS the event (cross-thread, thread-safe);
+                    # response.close() is never called cross-thread. GenerationCancelled
+                    # is neither httpx.TransportError nor OllamaResponseError, so it
+                    # propagates cleanly out through chat() to the runtime.
+                    if cancel is not None and cancel.is_set():
+                        raise GenerationCancelled
                     if not line.strip():
                         continue
                     try:
