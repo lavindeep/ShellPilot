@@ -198,13 +198,18 @@ class TerminalUI:
         glyphs: Glyphs = UNICODE_GLYPHS,
         spinner: bool = True,
         workspace: Path | None = None,
+        workspace_fn: Callable[[], Path] | None = None,
     ) -> None:
         self._console = console
         self._glyphs = glyphs
         # Workspace for display-integrity (design section 14.5): when set, a
         # `path` argument in the tool-call line is shown as its resolved,
         # workspace-relative target — the SAME resolution the tool acts on.
+        # workspace_fn (preferred in production) is called at render time so a
+        # mid-session /cwd change is immediately reflected; workspace is the
+        # static fallback for test doubles that construct without a live runtime.
         self._workspace = workspace
+        self._workspace_fn = workspace_fn
         self._stream = ResponseStream(console)
         self._spinner = AviationSpinner(console, glyphs, enabled=spinner)
         # The diff-reveal animation rides the same motion toggle as the spinner.
@@ -262,10 +267,15 @@ class TerminalUI:
 
     def _tool_call_value(self, key: str, value: object) -> str:
         # A `path` argument is shown as its resolved, workspace-relative target
-        # (display-integrity, design section 14.5). Without a workspace (legacy
-        # callers) the value renders verbatim.
-        if key == "path" and isinstance(value, str) and self._workspace is not None:
-            return repr(workspace_display(self._workspace, value))
+        # (display-integrity, design section 14.5). Prefer the live workspace
+        # (workspace_fn, set in production) so a mid-session /cwd is honoured;
+        # fall back to the build-time workspace, then verbatim. NOTE: the verbatim
+        # fallback only happens with neither set — a test-double construction; in
+        # production workspace_fn is always wired, so the path display never drifts
+        # from the action.
+        workspace = self._workspace_fn() if self._workspace_fn is not None else self._workspace
+        if key == "path" and isinstance(value, str) and workspace is not None:
+            return repr(workspace_display(workspace, value))
         return repr(value)
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
@@ -632,6 +642,7 @@ def run_interactive(
         app_ui = AppUI(
             glyphs=glyphs,
             workspace=workspace,
+            workspace_fn=lambda: runtime.status().workspace,
             width_fn=lambda: get_app().output.get_size().columns,
             show_reasoning=settings.ui.show_reasoning_summary,
         )
@@ -641,7 +652,13 @@ def run_interactive(
         approval_gate = ApprovalGate(ui=app_ui, schedule=app_runner.schedule, glyphs=glyphs)
         ui = ThreadedUI(inner=app_ui, schedule=app_runner.schedule, approval_gate=approval_gate)
     else:
-        ui = TerminalUI(console, glyphs=glyphs, spinner=settings.ui.spinner, workspace=workspace)
+        ui = TerminalUI(
+            console,
+            glyphs=glyphs,
+            spinner=settings.ui.spinner,
+            workspace=workspace,
+            workspace_fn=lambda: runtime.status().workspace,
+        )
     runtime = ConversationRuntime(
         llm=client,
         settings=settings,

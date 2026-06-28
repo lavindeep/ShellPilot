@@ -23,4 +23,5 @@ htmlcov/
 .claude/
 
 # Local harness / session scratch (never commit)
-thinking-trail-preview.html
+# Feature mockups / design prototypes — local-only ideas, never tracked
+prototype/

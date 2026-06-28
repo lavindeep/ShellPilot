@@ -112,6 +112,7 @@ class AppUI:
         *,
         glyphs: Glyphs = UNICODE_GLYPHS,
         workspace: Path | None = None,
+        workspace_fn: Callable[[], Path] | None = None,
         width_fn: Callable[[], int],
         show_reasoning: bool = True,
         time_fn: Callable[[], float] = time.monotonic,
@@ -120,7 +121,11 @@ class AppUI:
         # Workspace for display-integrity (design section 14.5): when set, a
         # `path` argument in the tool-call line is shown as its resolved,
         # workspace-relative target — the SAME resolution the tool acts on.
+        # workspace_fn (preferred in production) is called at render time so a
+        # mid-session /cwd change is immediately reflected; workspace is the
+        # static fallback for test doubles that construct without a live runtime.
         self._workspace = workspace
+        self._workspace_fn = workspace_fn
         self._width_fn = width_fn
         # Gate for the reasoning-token readout (settings.ui.show_reasoning_summary,
         # design section 31.14): when False, the live/done lines show plane+phrase+
@@ -428,10 +433,15 @@ class AppUI:
 
     def _tool_call_value(self, key: str, value: object) -> str:
         # A `path` argument is shown as its resolved, workspace-relative target
-        # (display-integrity, design section 14.5). Without a workspace the value
-        # renders verbatim — matching TerminalUI._tool_call_value exactly.
-        if key == "path" and isinstance(value, str) and self._workspace is not None:
-            return repr(workspace_display(self._workspace, value))
+        # (display-integrity, design section 14.5). Prefer the live workspace
+        # (workspace_fn, set in production) so a mid-session /cwd is honoured;
+        # fall back to the build-time workspace, then verbatim. NOTE: the verbatim
+        # fallback only happens with neither set — a test-double construction; in
+        # production workspace_fn is always wired, so the path display never drifts
+        # from the action.
+        workspace = self._workspace_fn() if self._workspace_fn is not None else self._workspace
+        if key == "path" and isinstance(value, str) and workspace is not None:
+            return repr(workspace_display(workspace, value))
         return repr(value)
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
