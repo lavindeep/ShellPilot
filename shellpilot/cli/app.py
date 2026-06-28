@@ -139,12 +139,15 @@ def build_app(
     input: Input | None = None,
     output: Output | None = None,
     ui: AppUI | None = None,
+    on_submit: Callable[[str], None] | None = None,
 ) -> Application[None]:
-    """Build the inert full-screen app shell.
+    """Build the full-screen app shell.
 
     ``input``/``output`` default to the real terminal; tests inject a pipe input
-    and ``DummyOutput`` to drive the shell headlessly. The shell is standalone —
-    branch 4 wires it into the REPL; the non-TTY ``PlainInput`` path is untouched.
+    and ``DummyOutput`` to drive the shell headlessly. ``on_submit`` receives the
+    dock text on submit (branch 4 passes ``TurnRunner.start``); when it is None
+    the shell falls back to the inert branch-3 echo so the standalone shell and
+    its headless tests stay working. The non-TTY ``PlainInput`` path is untouched.
     """
     # One unicode/ascii decision drives the border, the branch glyph, and the
     # bar — recovered from the resolved glyph set the caller already probed
@@ -256,7 +259,10 @@ def build_app(
             event.app.exit()
             return
         if text.strip():
-            _ui.show_status(text)
+            if on_submit is not None:
+                on_submit(text)
+            else:
+                _ui.show_status(text)
         dock_buffer.reset()
 
     @kb.add("escape", "enter", filter=dock_focused)
