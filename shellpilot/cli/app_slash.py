@@ -75,6 +75,10 @@ class SlashRouter:
     def route(self, line: str) -> None:
         # Called on the LOOP thread from the dock submit keybinding.
         stripped = line.strip()
+        # NOTE: defense-in-depth. Since §31.18 the dock QUEUES a slash submitted
+        # while busy and fires it (via _fire_pending) only after the turn ends, so
+        # route() is reached from the dock only when idle. This guard stays as a
+        # fail-safe for any non-dock caller.
         if self._is_busy():
             self._ui.show_status("Busy — finish or cancel the current turn first.")
             return

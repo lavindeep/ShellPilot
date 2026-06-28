@@ -28,19 +28,28 @@ from typing import TYPE_CHECKING
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Point
-from prompt_toolkit.filters import has_focus
+from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-from prompt_toolkit.layout.containers import Float, FloatContainer, HSplit, VSplit, Window
+from prompt_toolkit.layout.containers import (
+    ConditionalContainer,
+    Float,
+    FloatContainer,
+    HSplit,
+    VSplit,
+    Window,
+)
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import Output
 
 from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.input import SlashCompleter
+from shellpilot.cli.render import _sanitize_line
 from shellpilot.cli.status_bar import status_bar
 from shellpilot.cli.theme import (
     COLOR_ACCENT,
@@ -140,6 +149,20 @@ def _scroll_down(scroll: int | None, last_line: int, page: int) -> int | None:
     return None if new >= last_line else new
 
 
+@dataclass(frozen=True)
+class StatusValues:
+    """Live status-bar inputs, read per render so a mid-session ``/model use``,
+    ``/profile use``, ``/cwd set``, or context growth reflects immediately
+    (§31.18). ``branch`` is deliberately NOT here — it stays build-time (re-reading
+    ``.git/HEAD`` every render would be wasteful)."""
+
+    workspace: Path
+    model: str
+    profile: str
+    is_cloud: bool
+    ctx_pct: int
+
+
 def build_app(
     *,
     workspace: Path,
@@ -157,6 +180,9 @@ def build_app(
     on_interrupt: Callable[[], bool] | None = None,
     on_slash: Callable[[str], None] | None = None,
     approval_gate: ApprovalGate | None = None,
+    is_busy: Callable[[], bool] | None = None,
+    register_idle: Callable[[Callable[[], None]], None] | None = None,
+    status_fn: Callable[[], StatusValues] | None = None,
 ) -> Application[None]:
     """Build the full-screen app shell.
 
@@ -172,6 +198,9 @@ def build_app(
     unicode_mode = glyphs == UNICODE_GLYPHS
     box = UNICODE_BOX if unicode_mode else ASCII_BOX
     branch_glyph = "⎇" if unicode_mode else "git:"
+    # The chip text already says "queued:", so the marker is a unicode-only
+    # accent — no ASCII glyph (avoids a redundant "[queued] queued:").
+    queued_marker = "⏳ " if unicode_mode else ""
     branch = _read_git_branch(workspace)
 
     # Chat pane: a FormattedTextControl rendering the AppUI transcript as Rich→ANSI.
@@ -198,6 +227,11 @@ def build_app(
     # a reader who paged up (a pinned line) is not yanked down when output appends.
     pane_scroll: dict[str, int | None] = {"line": None}
 
+    # One-message queue (§31.18): a single staged line, set when a submit lands
+    # while a turn is in flight, fired at turn end by _fire_pending. None = empty.
+    # Loop-thread-only state, like pane_scroll.
+    pending: dict[str, str | None] = {"text": None}
+
     def _pane_last_line() -> int:
         text = _ui._render_ansi()
         n = text.count("\n")
@@ -209,8 +243,22 @@ def build_app(
         line = pane_scroll["line"]
         return Point(x=0, y=last if line is None else max(0, min(line, last)))
 
+    class _PaneControl(FormattedTextControl):
+        # Mouse-wheel scroll through the SAME cursor-line model as PageUp/PageDown
+        # (§31.18): the Window's own vertical_scroll is overridden by the cursor
+        # each render, so the wheel must be intercepted at the control and folded
+        # into pane_scroll. Three lines per notch; returns None when handled.
+        def mouse_handler(self, mouse_event: MouseEvent) -> object:
+            if mouse_event.event_type == MouseEventType.SCROLL_UP:
+                pane_scroll["line"] = _scroll_up(pane_scroll["line"], _pane_last_line(), 3)
+                return None
+            if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+                pane_scroll["line"] = _scroll_down(pane_scroll["line"], _pane_last_line(), 3)
+                return None
+            return super().mouse_handler(mouse_event)
+
     pane_window = Window(
-        FormattedTextControl(
+        _PaneControl(
             lambda: ANSI(_ui._render_ansi()),
             focusable=False,
             show_cursor=False,
@@ -255,17 +303,39 @@ def build_app(
         return _render
 
     def _status() -> StyleAndTextTuples:
+        # Live values (§31.18) when status_fn is wired — workspace/model/profile/
+        # cloud/ctx re-read per render so /model use (the cloud indicator!),
+        # /profile use, /cwd set, and context growth reflect immediately. The
+        # cloud bit still comes from the real is_egressing signal (unspoofable).
+        # branch stays build-time. Falls back to the static params (standalone
+        # shell + existing tests) when status_fn is None.
+        v = status_fn() if status_fn is not None else None
         return list(
             status_bar(
-                workspace=workspace,
-                model=model,
-                profile=profile,
-                is_cloud=is_cloud,
-                ctx_pct=ctx_pct,
+                workspace=v.workspace if v is not None else workspace,
+                model=v.model if v is not None else model,
+                profile=v.profile if v is not None else profile,
+                is_cloud=v.is_cloud if v is not None else is_cloud,
+                ctx_pct=v.ctx_pct if v is not None else ctx_pct,
                 branch=branch,
                 branch_glyph=branch_glyph,
             )
         )
+
+    def _chip() -> StyleAndTextTuples:
+        # A faint one-line "queued" chip above the dock border while a message is
+        # staged (§31.18). The preview is user-controlled, so it is sanitized;
+        # newlines collapse to spaces to keep the chip a single line, and it is
+        # capped at ~60 cells. The glyph degrades to "[queued]" in ASCII mode.
+        preview = _sanitize_line(pending["text"] or "").replace("\n", " ")
+        if len(preview) > 60:
+            preview = preview[:60] + glyphs.ellipsis
+        return [(f"fg:{COLOR_FAINT}", f"{queued_marker}queued: {preview}")]
+
+    chip_window = ConditionalContainer(
+        content=Window(FormattedTextControl(_chip), height=1),
+        filter=Condition(lambda: pending["text"] is not None),
+    )
 
     def _bar() -> Window:
         return Window(width=1, char=box.vertical, style=f"fg:{COLOR_FAINT}")
@@ -283,6 +353,7 @@ def build_app(
     body = HSplit(
         [
             pane_window,
+            chip_window,
             Window(FormattedTextControl(_border(top=True)), height=1),
             dock_row,
             Window(FormattedTextControl(_border(top=False)), height=1),
@@ -293,6 +364,39 @@ def build_app(
         content=body,
         floats=[Float(content=CompletionsMenu(max_height=8, scroll_offset=1))],
     )
+
+    def _dispatch_line(text: str) -> None:
+        # The routing a non-staged submit takes (§31.18): slash/`!` → on_slash,
+        # a normal line → echo + on_submit (or the inert show_status fallback).
+        # A new turn jumps the pane back to the bottom to watch it stream.
+        pane_scroll["line"] = None
+        stripped = text.strip()
+        if on_slash is not None and stripped and stripped[0] in "/!":
+            # A typed slash or `!` line is a harness control, not a model turn:
+            # route it to the SlashRouter (capture / run_in_terminal / manual
+            # shell / exit), §31.17.
+            on_slash(text)
+            return
+        if on_submit is not None:
+            # Echo the typed line into the pane on the loop thread, then run the
+            # turn. The live indicator renders just below this echo (§31.14).
+            _ui.show_user_message(text)
+            on_submit(text)
+        else:
+            _ui.show_status(text)
+
+    def _fire_pending() -> None:
+        # Loop-thread idle callback (TurnRunner.on_idle): fire the staged line, if
+        # any, as a fresh turn. pending is cleared FIRST, so the new turn's own end
+        # fires _fire_pending again against an empty slot — no loop (§31.18).
+        if pending["text"] is None:
+            return
+        text = pending["text"]
+        pending["text"] = None
+        _dispatch_line(text)
+
+    if register_idle is not None:
+        register_idle(_fire_pending)
 
     kb = KeyBindings()
 
@@ -311,28 +415,33 @@ def build_app(
             approval_gate.submit(line)
             return
         text = dock_buffer.text
+        dock_buffer.reset()
         if text.strip() == "/exit":
             event.app.exit()
             return
-        stripped = text.strip()
-        if on_slash is not None and stripped and stripped[0] in "/!":
-            # A typed slash or `!` line is a harness control, not a model turn:
-            # route it to the SlashRouter (capture / run_in_terminal / manual
-            # shell / exit). /exit stays a direct quit (handled above), §31.17.
-            dock_buffer.reset()
-            on_slash(text)
+        if not text.strip():
             return
-        if text.strip():
-            if on_submit is not None:
-                # Echo the typed line into the pane on the loop thread, then run
-                # the turn. The live indicator (started by the turn's first
-                # begin_response) renders just below this echo and moves down as
-                # content appends above it (design section 31.14).
-                _ui.show_user_message(text)
-                on_submit(text)
-            else:
-                _ui.show_status(text)
-        dock_buffer.reset()
+        if is_busy is not None and is_busy():
+            # A submit while a turn is in flight is STAGED, not dropped (§31.18):
+            # one slot, so a second submit replaces the first. It fires at turn
+            # end via _fire_pending (TurnRunner.on_idle).
+            pending["text"] = text
+            return
+        _dispatch_line(text)
+
+    @kb.add(
+        "up",
+        filter=dock_focused
+        & Condition(lambda: not dock_buffer.text and pending["text"] is not None),
+    )
+    def _recall(event: KeyPressEvent) -> None:
+        # Up in an EMPTY dock with a staged message pulls it back into the box to
+        # edit/clear/re-send; the chip disappears (pending cleared), §31.18. When
+        # the box is non-empty or nothing is staged the filter is false and the
+        # default Up (cursor up / history) applies — this binding is not reached.
+        dock_buffer.text = pending["text"] or ""
+        dock_buffer.cursor_position = len(dock_buffer.text)
+        pending["text"] = None
 
     @kb.add("escape", "enter", filter=dock_focused)
     def _newline(event: KeyPressEvent) -> None:
@@ -361,6 +470,11 @@ def build_app(
         # returns True (the worker aborts the stream and renders the marker), so we
         # show nothing. Otherwise it is idle — fall back to the idle hint.
         if on_interrupt is not None and on_interrupt():
+            # "Stop everything": a Ctrl-C that aborts the turn also DRAINS any
+            # staged message, so a queued follow-up does not fire after the abort
+            # (§31.18). Cleared here on the loop thread BEFORE the worker's
+            # _mark_done schedules on_idle, so _fire_pending sees an empty slot.
+            pending["text"] = None
             return
         _ui.show_status(_IDLE_HINT)
 
@@ -371,11 +485,10 @@ def build_app(
         if approval_gate is not None and approval_gate.active:
             approval_gate.cancel()
 
-    # NOTE: keyboard PageUp/PageDown drive the pane via the cursor-line model
-    # above (auto-follow + scroll-back). Mouse-wheel scroll-back is deferred to
-    # branch 9: the wheel nudges the window's own vertical_scroll, which the
-    # cursor-follow re-derives on the next render, so unifying the wheel with this
-    # model belongs with the rest of the input-dock polish.
+    # NOTE: keyboard PageUp/PageDown and mouse-wheel scroll both drive the pane
+    # via the cursor-line model — PageUp/PageDown through the keybindings above,
+    # the wheel through _PaneControl.mouse_handler (§31.18), since the Window's
+    # own vertical_scroll is re-derived from the cursor each render.
     return Application[None](
         layout=Layout(root, focused_element=dock_window),
         key_bindings=kb,
