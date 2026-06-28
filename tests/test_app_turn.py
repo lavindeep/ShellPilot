@@ -361,8 +361,9 @@ def test_build_app_on_submit_receives_text(tmp_path: Path) -> None:
         inp.send_text("/exit\n")
         app.run()
     assert received == ["hello there"]
-    # on_submit handled it; the inert branch-3 echo did NOT fire into the pane.
-    assert "hello there" not in ui._render_ansi()
+    # The submit echoes the user message into the pane (branch 5, §31.14) BEFORE
+    # routing the text to on_submit, so the typed line is now visible.
+    assert "hello there" in ui._render_ansi()
 
 
 def test_build_app_on_submit_none_falls_back_to_echo(tmp_path: Path) -> None:
