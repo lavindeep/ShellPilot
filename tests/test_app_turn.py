@@ -30,6 +30,7 @@ from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.slash import command_words
 from shellpilot.cli.theme import UNICODE_GLYPHS
 from shellpilot.config.model import Settings
+from shellpilot.llm.client import GenerationCancelled
 from shellpilot.llm.messages import Message
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.runtime.conversation import ConversationRuntime
@@ -73,6 +74,9 @@ class _RecordingUI:
 
     def turn_finished(self, stats: TurnStats) -> None:
         self._record("turn_finished", stats)
+
+    def abort_turn(self) -> None:
+        self._record("abort_turn")
 
     def show_status(self, text: str) -> None:
         self._record("show_status", text)
@@ -326,6 +330,92 @@ def test_worker_exception_is_surfaced_and_clears_busy(tmp_path: Path) -> None:
     assert len(errors) == 1
     assert "Turn failed" in str(errors[0][0])
     assert runner._busy is False  # the finally ran
+
+
+# --- Branch-6 turn cancellation (§31.15) --------------------------------------
+
+
+class _CancellableLLM:
+    """chat() blocks until released, then raises GenerationCancelled iff cancel is set.
+
+    The same fake drives both paths: with the cancel event set it aborts (mirrors
+    OllamaClient hitting the read boundary), and with it unset it returns a plain
+    answer (a normal completion).  Non-chat protocol methods delegate to a FakeLLM.
+    """
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self._inner = FakeLLM(script=[])
+
+    def chat(self, *args: Any, cancel: Any = None, **kwargs: Any) -> Message:
+        self.entered.set()
+        assert self.release.wait(5.0)
+        if cancel is not None and cancel.is_set():
+            raise GenerationCancelled
+        return answer("done")
+
+    def health(self) -> bool:
+        return self._inner.health()
+
+    def list_models(self) -> Any:
+        return self._inner.list_models()
+
+    def model_context_length(self, model: str) -> int | None:
+        return self._inner.model_context_length(model)
+
+    def model_capabilities(self, model: str) -> tuple[str, ...]:
+        return self._inner.model_capabilities(model)
+
+    def preload(self, model: str, *, keep_alive: str = "5m") -> None:
+        self._inner.preload(model, keep_alive=keep_alive)
+
+
+def test_request_cancel_aborts_turn_cleanly_and_reruns(tmp_path: Path) -> None:
+    app_ui = AppUI(glyphs=UNICODE_GLYPHS, workspace=tmp_path, width_fn=lambda: 80)
+    inner = _RecordingUI(forward=app_ui)
+    q: queue.Queue[Scheduled] = queue.Queue()
+    runner = TurnRunner(inner_ui=inner, schedule=q.put)
+    threaded = ThreadedUI(inner=inner, schedule=q.put)
+    llm = _CancellableLLM()
+    runtime = _make_runtime(llm, threaded, tmp_path)
+    runner.conversation = runtime
+
+    # Idle: there is no turn, so request_cancel reports nothing to cancel.
+    assert runner.request_cancel() is False
+
+    runner.start("hi")
+    assert llm.entered.wait(5.0)  # the worker really entered the model call → in flight
+    assert runner._busy is True
+    # Busy: request_cancel sets the event and reports True.
+    assert runner.request_cancel() is True
+    llm.release.set()  # let chat wake; it sees the set event and raises
+
+    assert runner._thread is not None
+    runner._thread.join(5.0)
+    assert not runner._thread.is_alive()  # cancelled cleanly, not killed mid-stack
+    while not q.empty():
+        q.get()()
+
+    names = inner.names()
+    assert "abort_turn" in names  # the CLEAN abort path ran ...
+    assert "show_error" not in names  # ... NOT the "Turn failed" error path
+    assert "turn_finished" not in names  # the turn did not complete
+    assert runner._busy is False  # _mark_done cleared busy on the cancel path
+    assert runner.request_cancel() is False  # idle again
+    assert "aborted" in app_ui._render_ansi()  # the marker reached the real render
+
+    # busy reset → a fresh turn now runs to a normal completion after the cancel.
+    llm.entered.clear()
+    llm.release.clear()
+    runner.start("again")
+    assert llm.entered.wait(5.0)
+    llm.release.set()  # no cancel this time → chat returns a normal answer
+    runner._thread.join(5.0)
+    while not q.empty():
+        q.get()()
+    assert "turn_finished" in inner.names()
+    assert runner._busy is False
 
 
 # --- build_app on_submit wiring (headless, pipe input) ------------------------

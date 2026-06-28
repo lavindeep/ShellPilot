@@ -246,6 +246,22 @@ class AppUI:
             line.append(f" · {_fmt_count(stats.output_tokens)} total", style="sp.dim")
         self._add_renderable(line)
 
+    def abort_turn(self) -> None:
+        # Branch 6 (§31.15): a turn was cancelled mid-stream (Ctrl-C). App-side
+        # (NOT a RuntimeUI protocol method) — TurnRunner calls it on the raw AppUI.
+        # Clear the dangling live indicator (stop the timer/plane) FIRST, then
+        # append the aborted marker. _add_renderable closes the open response
+        # first, so any partial streamed text stays visible — finalized — with
+        # the marker line below it. The partial assistant reply is never recorded
+        # in history; that discard is the runtime's (run_turn lets
+        # GenerationCancelled propagate before the record site). This is purely
+        # display: mark what the user already saw as stopped.
+        self._indicator = None
+        # `⏹` is not in the Glyphs set; gate it on the same unicode/ascii signal
+        # build_app uses, falling back to the ASCII cross glyph.
+        marker = "⏹" if self._glyphs == UNICODE_GLYPHS else self._glyphs.cross
+        self._add_renderable(Text(f"{marker} aborted", style="sp.warn"))
+
     def stream_thinking(self, text: str) -> None:
         # The reasoning count climbs ONLY while the model is thinking, so it
         # freezes naturally when thinking stops and resumes if it thinks again. No

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -156,6 +157,11 @@ class ConversationRuntime:
         self._last_user_text = ""
         self._last_failure_signature: str | None = None
         self._turn_output_tokens: int = 0
+        # Branch-6 per-turn cancel handle (§31.15): None unless run_turn is given
+        # a cancel event for this turn. Read by _tool_loop and passed to each
+        # model call. Reassigned at every run_turn start so a stale event from a
+        # prior turn can never leak across turns.
+        self._cancel: threading.Event | None = None
         self.snapshots = SnapshotStore()
         self.recent_diffs: list[str] = []
         self.plan_manager = PlanManager(workspace, settings.runtime.security_profile)
@@ -477,8 +483,25 @@ class ConversationRuntime:
             changed += 1
         return changed
 
-    def run_turn(self, text: str, *, images: Sequence[ImageRef] = ()) -> str:
-        """One user turn: budget-check, compact, call the model, stream, record."""
+    def run_turn(
+        self,
+        text: str,
+        *,
+        images: Sequence[ImageRef] = (),
+        cancel: threading.Event | None = None,
+    ) -> str:
+        """One user turn: budget-check, compact, call the model, stream, record.
+
+        ``cancel`` (branch 6, §31.15) is the turn-abort signal: when set
+        mid-stream the model call raises ``GenerationCancelled``, which this
+        method lets PROPAGATE. The user message recorded below stays (the turn
+        happened); the partial assistant reply is never reached at the record
+        site, so a cancelled turn leaves NO partial reply in history. ``cancel``
+        defaults to None, so every existing caller is byte-identical.
+        """
+        # Assigned (not merely defaulted) at the top so a stale event from a
+        # prior turn can never leak into this one; the tool loop reads it.
+        self._cancel = cancel
         # Belt-and-braces: a stale stage left by an aborted prior turn must not
         # attach to this unrelated turn's first message.
         self._staged_tool_images.clear()
@@ -614,6 +637,7 @@ class ConversationRuntime:
                     options=self._settings.model.options,
                     on_token=self._ui.stream_token,
                     on_thinking=self._ui.stream_thinking,
+                    cancel=self._cancel,
                 )
             finally:
                 self._ui.end_response()

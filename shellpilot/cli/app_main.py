@@ -70,6 +70,7 @@ def run_app(
         ctx_pct=ctx_pct,
         ui=app_ui,
         on_submit=runner.start,
+        on_interrupt=runner.request_cancel,
     )
     runner.app = app
     runner.conversation = runtime
