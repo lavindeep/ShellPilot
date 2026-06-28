@@ -1,0 +1,77 @@
+"""Opt-in runnable entry for the full-screen app (design section 31.13).
+
+This is the LIVE glue that constructs the full-screen ``Application``, drives a
+:class:`~shellpilot.runtime.conversation.ConversationRuntime` through a
+worker-thread :class:`~shellpilot.cli.app_turn.TurnRunner`, and ``app.run()``s
+it. It is reached ONLY via an explicit opt-in (``SHELLPILOT_UI=app``) from
+``run_interactive`` so the default REPL stays byte-identical; nothing here runs
+on a default ``shellpilot`` session.
+
+The construction cycle is broken by deferred attribute assignment — see the
+ordering note in :func:`run_app`.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from shellpilot.cli.app import build_app
+from shellpilot.cli.app_turn import TurnRunner
+
+if TYPE_CHECKING:
+    from shellpilot.cli.app_ui import AppUI
+    from shellpilot.cli.theme import Glyphs
+    from shellpilot.runtime.conversation import ConversationRuntime
+
+
+def run_app(
+    runtime: ConversationRuntime,
+    runner: TurnRunner,
+    app_ui: AppUI,
+    *,
+    workspace: Path,
+    model: str,
+    profile: str,
+    glyphs: Glyphs,
+    commands: Sequence[str],
+    is_cloud: bool = False,
+    ctx_pct: int = 0,
+) -> int:
+    """Build the full-screen app around an already-wired conversation and run it.
+
+    The caller has already chosen the conversation's UI as the marshaling
+    :class:`ThreadedUI` whose inner is ``app_ui`` and whose schedule is
+    ``runner.schedule`` (so the runtime's plan tools captured the marshaling
+    bound methods at construction). This function only completes the wiring:
+
+    1. ``app_ui`` was built first (its ``width_fn`` reads ``get_app()`` lazily,
+       so it needs no running app yet); ``runner`` was built next (its
+       ``schedule`` reads ``runner.app`` lazily); the conversation was built
+       with the ``ThreadedUI`` over ``app_ui``.
+    2. Build the ``Application`` from ``runner.start`` (the dock-submit handler)
+       and ``app_ui`` (the pane source of truth).
+    3. Set ``runner.app`` and ``runner.conversation`` AFTER the app exists and
+       BEFORE ``app.run()`` — both are read only once a turn runs, by which time
+       ``app.run()`` has set ``app.loop``.
+
+    NOTE: this opt-in entry does not write the ``session_end`` audit event that
+    the default REPL writes after its loop; it is a dev/live-test entry, not the
+    shipping path. Returns 0 so ``run_interactive`` can ``return run_app(...)``.
+    """
+    app = build_app(
+        workspace=workspace,
+        model=model,
+        profile=profile,
+        glyphs=glyphs,
+        commands=commands,
+        is_cloud=is_cloud,
+        ctx_pct=ctx_pct,
+        ui=app_ui,
+        on_submit=runner.start,
+    )
+    runner.app = app
+    runner.conversation = runtime
+    app.run()
+    return 0
