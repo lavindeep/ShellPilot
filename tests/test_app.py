@@ -824,3 +824,151 @@ def test_ascii_chip_uses_ascii_marker(tmp_path: Path) -> None:
     assert "queued:" in chip
     assert "hello" in chip
     assert "⏳" not in chip
+
+
+# --- Branch-10 thinking-trail toggle (§31.19) ---------------------------------
+
+
+def _seed_trail_ui() -> AppUI:
+    ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+    ui.begin_response()
+    ui.stream_thinking("line a\nline b\nline c")
+    return ui
+
+
+def test_t_key_toggles_seeded_trail(tmp_path: Path) -> None:
+    # `t` on an empty dock with a trail present toggles the latest trail's collapse
+    # state: one press expands it.
+    ui = _seed_trail_ui()
+    assert ui._latest_trail is not None and ui._latest_trail.expanded is False
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+        )
+        inp.send_text("t")  # empty dock + trail present → toggle (not literal text)
+        inp.send_text("/exit\n")
+        app.run()
+    assert ui._latest_trail.expanded is True
+
+
+def test_t_key_pressed_twice_returns_to_collapsed(tmp_path: Path) -> None:
+    ui = _seed_trail_ui()
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+        )
+        inp.send_text("tt")  # toggle, then toggle back (dock stays empty)
+        inp.send_text("/exit\n")
+        app.run()
+    assert ui._latest_trail is not None and ui._latest_trail.expanded is False
+
+
+def test_t_key_inserts_literal_when_no_trail(tmp_path: Path) -> None:
+    # With no trail (fresh session / show_reasoning off) `t` is ordinary input: it
+    # inserts a literal 't', so a message starting with 't' still works.
+    submits: list[str] = []
+    ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+        )
+        inp.send_text("t")  # no trail → falls through → literal 't'
+        inp.send_text("\n")  # submit "t"
+        inp.send_text("/exit\n")
+        app.run()
+    assert submits == ["t"]
+
+
+def test_t_key_no_trail_respects_numeric_arg_repeat(tmp_path: Path) -> None:
+    # The no-trail fall-through mirrors prompt_toolkit self-insert (event.data *
+    # event.arg), so a numeric-argument prefix (Esc 5 t) repeats the key instead of
+    # inserting a single literal — typing fidelity matches the default binding.
+    submits: list[str] = []
+    ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_submit=submits.append,
+        )
+        inp.send_text("\x1b5t")  # Esc 5 t → numeric-arg repeat 5 → "ttttt"
+        inp.send_text("\n")  # submit
+        inp.send_text("/exit\n")
+        app.run()
+    assert submits == ["ttttt"]
+
+
+def test_t_key_with_dock_text_does_not_toggle(tmp_path: Path) -> None:
+    # A trail exists but the dock is non-empty: the filter is false, so `t` inserts
+    # rather than toggling.
+    ui = _seed_trail_ui()
+    assert ui._latest_trail is not None and ui._latest_trail.expanded is False
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+        )
+        inp.send_text("xt\n")  # 'x' then 't' (dock non-empty) both insert, submit clears
+        inp.send_text("/exit\n")
+        app.run()
+    assert ui._latest_trail.expanded is False  # never toggled
+
+
+def test_t_key_during_approval_does_not_toggle(tmp_path: Path) -> None:
+    # During an active approval the dock IS the approval input; `t` is routed to the
+    # gate as input, never the toggle.
+    ui = _seed_trail_ui()
+    assert ui._latest_trail is not None and ui._latest_trail.expanded is False
+    gate = _FakeGate(active=True)
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            approval_gate=gate,  # type: ignore[arg-type]
+        )
+        inp.send_text("t")  # approval active → literal input, not toggle
+        inp.send_text("\n")  # submit "t" to the gate (deactivates it)
+        inp.send_text("/exit\n")  # gate inactive → quits
+        app.run()
+    assert gate.submitted == ["t"]
+    assert ui._latest_trail.expanded is False  # never toggled
