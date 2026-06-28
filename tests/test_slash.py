@@ -1115,3 +1115,77 @@ def test_skills_renders_budget_skip_reason_from_decision(tmp_path: Path) -> None
     assert "no" in out
     assert "Reason" in out
     assert "skipped: skill budget" in out
+
+
+# --- In-app slash menu helpers (§31.20) -------------------------------------
+
+from shellpilot.cli.slash import (  # noqa: E402
+    SlashMenuItem,
+    slash_menu_items,
+    slash_menu_matches,
+    slash_menu_open,
+    slash_menu_window,
+)
+
+
+def test_slash_menu_items_cover_help_rows_with_args_flag() -> None:
+    items = slash_menu_items()
+    by_label = {it.label: it for it in items}
+    # argless command: fill == label, takes_args False
+    assert by_label["/status"].fill == "/status"
+    assert by_label["/status"].takes_args is False
+    # arg command: fill drops the <placeholder>, takes_args True, label keeps it
+    use = by_label["/model use <name>"]
+    assert use.fill == "/model use"
+    assert use.takes_args is True
+    assert "Switch the active local model" in use.description
+
+
+def test_slash_menu_matches_filters_by_typed_prefix() -> None:
+    items = slash_menu_items()
+    fills = {it.fill for it in slash_menu_matches("/co", items)}
+    assert "/compact" in fills and "/config edit" in fills and "/context" in fills
+    assert "/status" not in fills
+    # case-insensitive
+    assert slash_menu_matches("/CO", items) == slash_menu_matches("/co", items)
+
+
+def test_slash_menu_matches_bare_slash_returns_all() -> None:
+    items = slash_menu_items()
+    assert slash_menu_matches("/", items) == items
+
+
+def test_slash_menu_matches_non_slash_or_empty_is_empty() -> None:
+    items = slash_menu_items()
+    assert slash_menu_matches("", items) == []
+    assert slash_menu_matches("hello", items) == []
+    assert slash_menu_matches("/zzz", items) == []  # no command starts with /zzz
+
+
+def test_slash_menu_open_only_while_typing_the_token() -> None:
+    assert slash_menu_open("/") is True
+    assert slash_menu_open("/conf") is True
+    assert slash_menu_open("/model use") is False  # a space ended the token
+    assert slash_menu_open("/model\n") is False  # newline → multiline, closed
+    assert slash_menu_open("hello") is False
+    assert slash_menu_open("") is False
+
+
+def test_slash_menu_window_scrolls_to_keep_selection_visible() -> None:
+    # total 5, window 3: selection slides the window, clamped at both ends.
+    assert slash_menu_window(0, 5, 3) == 0
+    assert slash_menu_window(1, 5, 3) == 0
+    assert slash_menu_window(2, 5, 3) == 1
+    assert slash_menu_window(3, 5, 3) == 2
+    assert slash_menu_window(4, 5, 3) == 2  # clamped: never scrolls past the end
+    # fewer items than the window → always start at 0
+    assert slash_menu_window(1, 2, 3) == 0
+
+
+def test_slash_menu_item_is_frozen_dataclass() -> None:
+    it = SlashMenuItem(fill="/x", label="/x", description="d", takes_args=False)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        it.fill = "/y"  # type: ignore[misc]
+
+
+import dataclasses  # noqa: E402

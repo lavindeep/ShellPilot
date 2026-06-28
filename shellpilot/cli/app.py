@@ -34,8 +34,6 @@ from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
-    Float,
-    FloatContainer,
     HSplit,
     VSplit,
     Window,
@@ -43,13 +41,18 @@ from prompt_toolkit.layout.containers import (
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
-from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import Output
 
 from shellpilot.cli.app_ui import AppUI
-from shellpilot.cli.input import SlashCompleter
 from shellpilot.cli.render import _sanitize_line
+from shellpilot.cli.slash import (
+    SlashMenuItem,
+    slash_menu_items,
+    slash_menu_matches,
+    slash_menu_open,
+    slash_menu_window,
+)
 from shellpilot.cli.status_bar import status_bar
 from shellpilot.cli.theme import (
     COLOR_ACCENT,
@@ -66,6 +69,10 @@ if TYPE_CHECKING:
 # on a very short terminal, but a flat cap is enough until the live wiring
 # (branch 4) shows whether it bites.
 DOCK_MAX_ROWS = 10
+
+# The slash menu (§31.20) shows this many command rows at once; ↑/↓ scroll the
+# window through a longer filtered list.
+MENU_VISIBLE_ROWS = 3
 
 # Idle Ctrl-C hint, shown only when no turn is in flight. Branch 6 (§31.15) wired
 # real turn cancellation through on_interrupt; this hint is the idle fallback.
@@ -279,14 +286,41 @@ def build_app(
         info = pane_window.render_info
         return max(1, (info.window_height - 1) if info is not None else 10)
 
-    # Input dock: a focused, multi-line buffer with slash completion.
-    dock_buffer = Buffer(
-        name="dock",
-        multiline=True,
-        completer=SlashCompleter(commands),
-        complete_while_typing=True,
-    )
+    # Input dock: a focused, multi-line buffer. Slash completion is the custom
+    # in-app menu below (§31.20), NOT prompt_toolkit's completer/CompletionsMenu —
+    # so there is no `completer` here and Tab is free for the menu's fill binding.
+    dock_buffer = Buffer(name="dock", multiline=True)
     dock_focused = has_focus(dock_buffer)
+
+    # The slash menu (§31.20): rows derived once from HELP_ROWS; `index` is the
+    # current selection, reset to the top whenever the dock text changes (so each
+    # new keystroke re-filters from the first match).
+    menu_items = slash_menu_items()
+    menu_label_width = max((len(it.label) for it in menu_items), default=0)
+    slash_menu = {"index": 0}
+
+    def _reset_menu_index(_buffer: Buffer) -> None:
+        slash_menu["index"] = 0
+
+    dock_buffer.on_text_changed += _reset_menu_index
+
+    def _menu_matches() -> list[SlashMenuItem]:
+        return slash_menu_matches(dock_buffer.text, menu_items)
+
+    def _menu_open() -> bool:
+        # Closed during an approval (the dock is the approval input then) and when
+        # nothing matches; otherwise open while the command token is being typed.
+        if approval_gate is not None and approval_gate.active:
+            return False
+        return slash_menu_open(dock_buffer.text) and bool(_menu_matches())
+
+    def _menu_index() -> int:
+        matches = _menu_matches()
+        if not matches:
+            return 0
+        return max(0, min(slash_menu["index"], len(matches) - 1))
+
+    menu_open = Condition(_menu_open)
 
     def _dock_prefix(line_number: int, wrap_count: int) -> StyleAndTextTuples:
         if line_number == 0 and wrap_count == 0:
@@ -345,6 +379,38 @@ def build_app(
         filter=Condition(lambda: pending["text"] is not None),
     )
 
+    def _menu_content() -> StyleAndTextTuples:
+        # The slash menu rows (§31.20): a MENU_VISIBLE_ROWS window over the filtered
+        # matches, the selected row carried in accent, others dim — higher contrast
+        # than the default completion popup. Command labels (with their <arg>
+        # placeholders) are padded to one column so descriptions align.
+        matches = _menu_matches()
+        if not matches:
+            return []
+        index = _menu_index()
+        start = slash_menu_window(index, len(matches), MENU_VISIBLE_ROWS)
+        caret_on = "▸ " if glyphs is UNICODE_GLYPHS else "> "
+        frags: StyleAndTextTuples = []
+        for offset, item in enumerate(matches[start : start + MENU_VISIBLE_ROWS]):
+            selected = (start + offset) == index
+            caret = caret_on if selected else "  "
+            label_style = f"fg:{COLOR_ACCENT} bold" if selected else ""
+            desc_style = f"fg:{COLOR_ACCENT}" if selected else f"fg:{COLOR_FAINT}"
+            frags.append((label_style, f" {caret}{item.label}".ljust(menu_label_width + 4)))
+            frags.append((desc_style, f"  {item.description}"))
+            frags.append(("", "\n"))
+        frags.pop()  # drop the trailing newline so the window height is exact
+        return frags
+
+    menu_window = ConditionalContainer(
+        content=Window(
+            FormattedTextControl(_menu_content),
+            height=Dimension(max=MENU_VISIBLE_ROWS),
+            dont_extend_height=True,
+        ),
+        filter=menu_open,
+    )
+
     def _bar() -> Window:
         return Window(width=1, char=box.vertical, style=f"fg:{COLOR_FAINT}")
 
@@ -358,19 +424,16 @@ def build_app(
         ]
     )
 
-    body = HSplit(
+    root = HSplit(
         [
             pane_window,
             chip_window,
+            menu_window,
             Window(FormattedTextControl(_border(top=True)), height=1),
             dock_row,
             Window(FormattedTextControl(_border(top=False)), height=1),
             Window(FormattedTextControl(_status), height=1),
         ]
-    )
-    root = FloatContainer(
-        content=body,
-        floats=[Float(content=CompletionsMenu(max_height=8, scroll_offset=1))],
     )
 
     def _dispatch_line(text: str) -> None:
@@ -411,9 +474,9 @@ def build_app(
     # Enter submits. NOTE: a pipe sends LF (``\n`` → ``c-j``) and a real terminal
     # sends CR (``\r`` → ``enter``); both submit. A literal newline for multi-line
     # input is Alt+Enter (``escape, enter``), the prompt_toolkit convention.
-    @kb.add("enter", filter=dock_focused)
-    @kb.add("c-j", filter=dock_focused)
-    def _submit(event: KeyPressEvent) -> None:
+    def _submit_current() -> None:
+        # The submit effect, callable from the Enter binding AND the slash menu's
+        # smart-Enter on an argless command (which sets the dock text first).
         # During an approval the dock IS the approval input: route the line to the
         # gate (which resolves the worker's Future) BEFORE the /exit check, so a
         # mid-approval "/exit" is an approval answer, not a quit (§31.16).
@@ -425,7 +488,7 @@ def build_app(
         text = dock_buffer.text
         dock_buffer.reset()
         if text.strip() == "/exit":
-            event.app.exit()
+            get_app().exit()
             return
         if not text.strip():
             return
@@ -436,6 +499,11 @@ def build_app(
             pending["text"] = text
             return
         _dispatch_line(text)
+
+    @kb.add("enter", filter=dock_focused)
+    @kb.add("c-j", filter=dock_focused)
+    def _submit(event: KeyPressEvent) -> None:
+        _submit_current()
 
     @kb.add(
         "up",
@@ -450,6 +518,39 @@ def build_app(
         dock_buffer.text = pending["text"] or ""
         dock_buffer.cursor_position = len(dock_buffer.text)
         pending["text"] = None
+
+    # Slash-menu navigation (§31.20). Registered AFTER _submit/_recall so that when
+    # the menu is open these win the shared keys (last matching binding wins): ↑/↓
+    # move the selection (the _recall ↑ filter is false here — its dock is empty,
+    # this one's starts with '/'), Enter is smart, Tab fills. All gated on menu_open
+    # so a normal message types literally.
+    def _menu_fill(item: SlashMenuItem) -> None:
+        # Put the command (no <arg> placeholders) in the box + a trailing space; the
+        # space ends the token so the menu closes and the user types args (or runs).
+        dock_buffer.text = item.fill + " "
+        dock_buffer.cursor_position = len(dock_buffer.text)
+
+    @kb.add("up", filter=dock_focused & menu_open)
+    def _menu_up(event: KeyPressEvent) -> None:
+        slash_menu["index"] = max(0, _menu_index() - 1)
+
+    @kb.add("down", filter=dock_focused & menu_open)
+    def _menu_down(event: KeyPressEvent) -> None:
+        slash_menu["index"] = min(len(_menu_matches()) - 1, _menu_index() + 1)
+
+    @kb.add("enter", filter=dock_focused & menu_open)
+    def _menu_enter(event: KeyPressEvent) -> None:
+        # Smart Enter: an argless command runs now; an arg command fills and waits.
+        item = _menu_matches()[_menu_index()]
+        if item.takes_args:
+            _menu_fill(item)
+        else:
+            dock_buffer.text = item.fill
+            _submit_current()
+
+    @kb.add("tab", filter=dock_focused & menu_open)
+    def _menu_tab(event: KeyPressEvent) -> None:
+        _menu_fill(_menu_matches()[_menu_index()])
 
     @kb.add(
         "c-o",

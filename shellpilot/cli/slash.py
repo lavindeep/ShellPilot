@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -93,6 +93,65 @@ def command_words() -> list[str]:
         if phrase and phrase not in words:
             words.append(phrase)
     return words
+
+
+@dataclasses.dataclass(frozen=True)
+class SlashMenuItem:
+    """One row of the in-app slash menu (design section 31.20).
+
+    ``fill`` is the command text Tab/Enter inserts (the `<arg>` placeholders
+    dropped); ``label`` is the displayed form keeping the placeholders so the user
+    sees what a command takes; ``takes_args`` drives smart-Enter — an argless
+    command runs on Enter, an arg command fills ``fill + " "`` and waits.
+    """
+
+    fill: str
+    label: str
+    description: str
+    takes_args: bool
+
+
+def slash_menu_items() -> list[SlashMenuItem]:
+    """The full menu, one row per HELP_ROWS entry (no dedupe — arg variants like
+    ``/model use`` and ``/model list`` are distinct rows)."""
+    items: list[SlashMenuItem] = []
+    for entry, purpose in HELP_ROWS:
+        parts = entry.split()
+        fill = " ".join(part for part in parts if not part.startswith("<"))
+        takes_args = any(part.startswith("<") for part in parts)
+        items.append(
+            SlashMenuItem(fill=fill, label=entry, description=purpose, takes_args=takes_args)
+        )
+    return items
+
+
+def slash_menu_matches(text: str, items: Sequence[SlashMenuItem]) -> list[SlashMenuItem]:
+    """Items whose ``fill`` starts with the typed text (case-insensitive).
+
+    Text that does not begin with ``/`` (or is empty) matches nothing — the menu
+    is closed. A bare ``/`` matches everything.
+    """
+    needle = text.strip().lower()
+    if not needle.startswith("/"):
+        return []
+    return [it for it in items if it.fill.lower().startswith(needle)]
+
+
+def slash_menu_open(text: str) -> bool:
+    """True while the user is still typing a command token: the text begins with
+    ``/`` and contains no whitespace yet. The first space (or newline) ends the
+    token — the user has filled a command or moved into its args — so the menu
+    closes. Approval/busy gating is the caller's (it owns that state)."""
+    return text.startswith("/") and not any(char.isspace() for char in text)
+
+
+def slash_menu_window(index: int, total: int, visible: int = 3) -> int:
+    """First visible row so the selected ``index`` stays on screen as a fixed
+    ``visible``-row window scrolls through a longer list (selected kept off the
+    very top until the list nears its end; clamped at both ends)."""
+    if total <= visible:
+        return 0
+    return max(0, min(index - 1, total - visible))
 
 
 def needs_terminal(line: str) -> bool:

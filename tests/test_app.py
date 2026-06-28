@@ -1003,3 +1003,115 @@ def test_click_outside_any_diff_delegates_to_super(tmp_path: Path) -> None:
         pane = _pane_control(app)
         assert pane.mouse_handler(_click_event(end + 5)) is NotImplemented
     assert ui._latest_diff is not None and ui._latest_diff.expanded is False  # untouched
+
+
+# --- In-app slash menu (§31.20) ----------------------------------------------
+
+
+def _set_dock_text(app: Application[None], text: str) -> None:
+    buffer = app.layout.get_buffer_by_name("dock")
+    assert buffer is not None
+    buffer.text = text
+
+
+def _menu_app(
+    tmp_path: Path,
+    inp: object,
+    slashes: list[str],
+    submits: list[str],
+) -> Application[None]:
+    return build_app(
+        workspace=tmp_path,
+        model="gemma4:e4b",
+        profile="balanced",
+        glyphs=UNICODE_GLYPHS,
+        commands=command_words(),
+        input=inp,  # type: ignore[arg-type]
+        output=DummyOutput(),
+        ui=AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80),
+        on_slash=slashes.append,
+        on_submit=submits.append,
+    )
+
+
+def test_slash_menu_renders_filtered_rows(tmp_path: Path) -> None:
+    # Typing "/co" shows only commands whose phrase starts with it; the menu
+    # control renders those rows (§31.20).
+    with create_pipe_input() as inp:
+        app, _ = _build_headless(tmp_path, inp)
+        _set_dock_text(app, "/co")
+        rows = _find_control_text(app, "/config show")  # first /co match in the window
+        assert "/config show" in rows
+        assert "/status" not in rows  # filtered out by the /co prefix
+
+
+def test_slash_menu_shows_at_most_three_rows(tmp_path: Path) -> None:
+    # A bare "/" matches every command but the window shows exactly 3 rows.
+    with create_pipe_input() as inp:
+        app, _ = _build_headless(tmp_path, inp)
+        _set_dock_text(app, "/")
+        rows = _find_control_text(app, "/help")
+        assert rows.count("\n") == 2  # 3 rows → 2 separators
+
+
+def test_slash_menu_hidden_without_leading_slash(tmp_path: Path) -> None:
+    # No leading slash → no menu rows render at all.
+    with create_pipe_input() as inp:
+        app, _ = _build_headless(tmp_path, inp)
+        _set_dock_text(app, "hello")
+        assert _find_control_text(app, "/help") == ""
+
+
+def test_slash_menu_enter_runs_argless_command(tmp_path: Path) -> None:
+    # Smart Enter (\r) on an argless command runs it immediately.
+    slashes: list[str] = []
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        app = _menu_app(tmp_path, inp, slashes, submits)
+        inp.send_text("/status\r")  # menu open, argless → runs
+        inp.send_text("/exit\r")
+        app.run()
+    assert slashes == ["/status"]
+
+
+def test_slash_menu_down_arrow_and_enter_fills_arg_command(tmp_path: Path) -> None:
+    # Down-arrow navigates to /model use (3rd match); smart Enter FILLS it (does
+    # not run an argless command), so the typed arg completes a real line.
+    slashes: list[str] = []
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        app = _menu_app(tmp_path, inp, slashes, submits)
+        inp.send_text("/model")  # matches /model, /model list, /model use
+        inp.send_text("\x1b[B\x1b[B")  # down, down → /model use (takes args)
+        inp.send_text("\r")  # smart Enter: fills "/model use ", no run
+        inp.send_text("llama\r")  # continue the arg, then submit
+        inp.send_text("/exit\r")
+        app.run()
+    assert slashes == ["/model use llama"]
+
+
+def test_slash_menu_tab_fills_without_running(tmp_path: Path) -> None:
+    # Tab fills the highlighted command + a space and never runs it; a later Enter
+    # (menu now closed by the space) submits the filled line.
+    slashes: list[str] = []
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        app = _menu_app(tmp_path, inp, slashes, submits)
+        inp.send_text("/stat\t")  # Tab fills "/status "
+        inp.send_text("\r")  # menu closed → submit
+        inp.send_text("/exit\r")
+        app.run()
+    assert slashes == ["/status "]
+
+
+def test_bare_message_bypasses_menu_and_submits(tmp_path: Path) -> None:
+    # A message with no leading slash never engages the menu — it submits normally.
+    slashes: list[str] = []
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        app = _menu_app(tmp_path, inp, slashes, submits)
+        inp.send_text("hello\r")
+        inp.send_text("/exit\r")
+        app.run()
+    assert submits == ["hello"]
+    assert slashes == []

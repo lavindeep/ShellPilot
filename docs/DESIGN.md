@@ -2925,6 +2925,14 @@ The live indicator (§31.14) only ever surfaced a *count* of reasoning; the mode
 
 **Display-only.** The trail text never changes model history and is never fed back to the model (the same discard as the §31.15 aborted partial). `AppUI` has no history — it is a pure state+render object — so the trail lives only in the pane.
 
+### 31.20 In-app slash menu
+
+The dock replaces prompt_toolkit's default `CompletionsMenu` float (a low-contrast popup) with a custom menu docked **directly above the input frame** — so the dock `Buffer` carries **no `completer`** and Tab is free for the menu. The menu is a `ConditionalContainer` over a `FormattedTextControl`, visible only while `slash_menu_open(text)` holds: the text begins with `/` and has **no whitespace yet** (the first space ends the command token — the user has filled a command or moved into its args — so the menu closes), there is no active approval (the dock is the approval input then), and at least one command matches.
+
+**Rows come from `HELP_ROWS`.** `slash_menu_items()` builds one `SlashMenuItem` per help row: `fill` is the command with its `<arg>` placeholders dropped (what Tab/Enter inserts), `label` keeps the placeholders (what the user sees), and `takes_args` is set when the entry has a `<…>`. `slash_menu_matches(text, items)` keeps the items whose `fill` starts with the typed text (case-insensitive; a bare `/` matches all). The menu shows a `MENU_VISIBLE_ROWS` (3) window over the matches — `slash_menu_window(index, total)` slides it to keep the selection on screen — with the selected row in accent and the rest dim. The selection `index` resets to the top on every dock-text change (`on_text_changed`), so each keystroke re-filters from the first match.
+
+**Keys (all gated on the menu being open, registered after `_submit`/`_recall` so they win the shared keys when open).** `↑`/`↓` move the selection (the `_recall` `↑` filter is false here — its dock is empty, the menu's starts with `/`). **Tab** always *fills*: it sets the dock to `fill + " "`, whose trailing space closes the menu so the user types args or runs. **Enter is smart** — an **argless** command (`takes_args` false) runs immediately (the handler sets the dock text to `fill` and calls the shared `_submit_current`, the same effect as the Enter binding); an **arg** command *fills* like Tab and waits. A line with no leading `/` never engages the menu and submits normally. There is no keyboard menu toggle beyond these; the menu is purely a typing aid and the actual routing stays the §31.17 `SlashRouter`.
+
 ## 32. Model Selection And Preload
 
 ### 32.1 Boot Model Picker
