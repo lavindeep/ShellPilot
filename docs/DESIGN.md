@@ -1261,6 +1261,8 @@ The boundary must be clear in the UI. Relative paths are resolved against the wo
 
 **Display-integrity invariant (v0.10.0).** Every user-facing path display — the tool-call line, the approval-panel head, and the write/patch diff-panel title — is derived from the *same* `resolve_in_workspace` result the tool acts on, never from the raw model argument. A spoofing path (`..` segments, `./x/../y`, symlink, trailing junk) is shown as its resolved, workspace-relative target, so the file the user approves is always the file actually touched; a path that escapes the boundary renders an honest `<outside workspace>` marker rather than a fabricated-looking in-workspace path. The single helper `workspace_display(workspace, raw_path)` (`tools/base.py`) is the one display formatter, layered over the canonical resolver — there is no second, divergent resolution. This is a display-only change: the boundary checks and the resolution the action uses are unchanged.
 
+**Live workspace (v0.10.1).** `AppUI` and `TerminalUI` resolve the tool-call path against the *live* workspace via a `workspace_fn: Callable[[], Path]` injected at construction (`lambda: runtime.status().workspace`), so a mid-session `/cwd set` is immediately honoured in the tool-call summary line. The approval-panel path display (`executor._display_value`) was already live; this closes the one remaining surface that used a stale build-time capture.
+
 ### 14.6 Approval Outcomes And Reject-And-Steer
 
 An approval prompt has three outcomes, not two — `[y]es / [e]dit / [n]o` (`ApprovalReply`, `policy/approvals.py`):
