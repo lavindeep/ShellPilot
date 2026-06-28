@@ -24,4 +24,5 @@ htmlcov/
 
 # Local harness / session scratch (never commit)
 .superpowers/
-thinking-trail-preview.html
+# Feature mockups / design prototypes — local-only ideas, never tracked
+prototype/
