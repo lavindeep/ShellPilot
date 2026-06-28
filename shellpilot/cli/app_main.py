@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from shellpilot.cli.app import build_app
+from shellpilot.cli.app import StatusValues, build_app
 from shellpilot.cli.app_turn import TurnRunner
 
 if TYPE_CHECKING:
@@ -41,6 +41,9 @@ def run_app(
     ctx_pct: int = 0,
     approval_gate: ApprovalGate | None = None,
     on_slash: Callable[[str], None] | None = None,
+    is_busy: Callable[[], bool] | None = None,
+    register_idle: Callable[[Callable[[], None]], None] | None = None,
+    status_fn: Callable[[], StatusValues] | None = None,
 ) -> int:
     """Build the full-screen app around an already-wired conversation and run it.
 
@@ -76,6 +79,9 @@ def run_app(
         on_interrupt=runner.request_cancel,
         on_slash=on_slash,
         approval_gate=approval_gate,
+        is_busy=is_busy,
+        register_idle=register_idle,
+        status_fn=status_fn,
     )
     runner.app = app
     runner.conversation = runtime
