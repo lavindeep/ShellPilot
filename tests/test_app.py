@@ -32,6 +32,8 @@ from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.slash import command_words
 from shellpilot.cli.status_bar import status_bar
 from shellpilot.cli.theme import ASCII_GLYPHS, UNICODE_GLYPHS
+from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.policy.risk import RiskLevel
 
 
 class StatusBarKwargs(TypedDict):
@@ -826,25 +828,41 @@ def test_ascii_chip_uses_ascii_marker(tmp_path: Path) -> None:
     assert "⏳" not in chip
 
 
-# --- Branch-10 thinking-trail toggle (§31.19) ---------------------------------
+# --- Diff/trail collapse toggle: click + Ctrl-O fallback (§31.16) -------------
 
 
-def _seed_trail_ui() -> AppUI:
+def _long_diff(n: int = 30) -> str:
+    # A unified diff adding n lines → n diff rows; > WINDOW_ROWS (24) so it
+    # overflows the collapse cap and is therefore toggleable.
+    body = "".join(f"+line{i}\n" for i in range(n))
+    return f"--- a/x.py\n+++ b/x.py\n@@ -0,0 +1,{n} @@\n{body}"
+
+
+def _seed_diff_ui() -> AppUI:
     ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
-    ui.begin_response()
-    ui.stream_thinking("line a\nline b\nline c")
+    ui.show_approval(
+        ApprovalRequest(
+            kind="command",
+            display="patch x.py",
+            risk=RiskLevel.HIGH,
+            reasons=("edits a file",),
+            cwd=Path("/tmp/ws"),  # display-only, never touched
+            diff=_long_diff(),
+        )
+    )
     return ui
 
 
-# Ctrl-T = ASCII 0x14 (DC4); the pipe-input parser maps it to Keys.ControlT.
-_CTRL_T = "\x14"
+# Ctrl-O = ASCII 0x0F (SI); the pipe-input parser maps it to Keys.ControlO.
+_CTRL_O = "\x0f"
 
 
-def test_ctrl_t_toggles_seeded_trail(tmp_path: Path) -> None:
-    # Ctrl-T with a trail present toggles the latest trail's collapse state: one
-    # press expands it. A modifier key, so it never collides with typing.
-    ui = _seed_trail_ui()
-    assert ui._latest_trail is not None and ui._latest_trail.expanded is False
+def test_ctrl_o_toggles_latest_diff(tmp_path: Path) -> None:
+    # Ctrl-O with a diff present toggles the latest diff's collapse state — the
+    # keyboard fallback for terminals without mouse reporting (§31.16). A modifier
+    # key, so it never collides with typing.
+    ui = _seed_diff_ui()
+    assert ui._latest_diff is not None and ui._latest_diff.expanded is False
     with create_pipe_input() as inp:
         app = build_app(
             workspace=tmp_path,
@@ -856,14 +874,14 @@ def test_ctrl_t_toggles_seeded_trail(tmp_path: Path) -> None:
             output=DummyOutput(),
             ui=ui,
         )
-        inp.send_text(_CTRL_T)  # trail present → toggle
+        inp.send_text(_CTRL_O)  # diff present → toggle
         inp.send_text("/exit\n")
         app.run()
-    assert ui._latest_trail.expanded is True
+    assert ui._latest_diff.expanded is True
 
 
-def test_ctrl_t_pressed_twice_returns_to_collapsed(tmp_path: Path) -> None:
-    ui = _seed_trail_ui()
+def test_ctrl_o_pressed_twice_returns_to_collapsed(tmp_path: Path) -> None:
+    ui = _seed_diff_ui()
     with create_pipe_input() as inp:
         app = build_app(
             workspace=tmp_path,
@@ -875,19 +893,19 @@ def test_ctrl_t_pressed_twice_returns_to_collapsed(tmp_path: Path) -> None:
             output=DummyOutput(),
             ui=ui,
         )
-        inp.send_text(_CTRL_T + _CTRL_T)  # toggle, then toggle back
+        inp.send_text(_CTRL_O + _CTRL_O)  # toggle, then toggle back
         inp.send_text("/exit\n")
         app.run()
-    assert ui._latest_trail is not None and ui._latest_trail.expanded is False
+    assert ui._latest_diff is not None and ui._latest_diff.expanded is False
 
 
-def test_letter_t_types_literally_even_with_trail(tmp_path: Path) -> None:
-    # Regression: the toggle is on Ctrl-T, NOT the bare letter, so a message that
-    # starts with 't' types literally even when a trail is on screen — pressing 't'
-    # never swallows the character or toggles the trail.
+def test_letter_o_types_literally_with_diff(tmp_path: Path) -> None:
+    # Regression: the fallback is on Ctrl-O, NOT the bare letter, so a message that
+    # starts with 'o' types literally even with a diff on screen — pressing 'o'
+    # never swallows the character or toggles the diff.
     submits: list[str] = []
-    ui = _seed_trail_ui()
-    assert ui._latest_trail is not None and ui._latest_trail.expanded is False
+    ui = _seed_diff_ui()
+    assert ui._latest_diff is not None and ui._latest_diff.expanded is False
     with create_pipe_input() as inp:
         app = build_app(
             workspace=tmp_path,
@@ -900,18 +918,18 @@ def test_letter_t_types_literally_even_with_trail(tmp_path: Path) -> None:
             ui=ui,
             on_submit=submits.append,
         )
-        inp.send_text("tell me\n")  # starts with 't' — must type literally, not toggle
+        inp.send_text("open it\n")  # starts with 'o' — must type literally, not toggle
         inp.send_text("/exit\n")
         app.run()
-    assert submits == ["tell me"]
-    assert ui._latest_trail.expanded is False  # never toggled
+    assert submits == ["open it"]
+    assert ui._latest_diff.expanded is False  # never toggled
 
 
-def test_ctrl_t_during_approval_does_not_toggle(tmp_path: Path) -> None:
+def test_ctrl_o_during_approval_does_not_toggle(tmp_path: Path) -> None:
     # During an active approval the dock IS the approval input; the toggle filter is
-    # false, so Ctrl-T does not toggle the trail and the approval is unaffected.
-    ui = _seed_trail_ui()
-    assert ui._latest_trail is not None and ui._latest_trail.expanded is False
+    # false, so Ctrl-O does not toggle the diff and the approval is unaffected.
+    ui = _seed_diff_ui()
+    assert ui._latest_diff is not None and ui._latest_diff.expanded is False
     gate = _FakeGate(active=True)
     with create_pipe_input() as inp:
         app = build_app(
@@ -925,9 +943,63 @@ def test_ctrl_t_during_approval_does_not_toggle(tmp_path: Path) -> None:
             ui=ui,
             approval_gate=gate,  # type: ignore[arg-type]
         )
-        inp.send_text(_CTRL_T)  # approval active → filter false → no toggle
+        inp.send_text(_CTRL_O)  # approval active → filter false → no toggle
         inp.send_text("y\n")  # resolve the approval to deactivate the gate
         inp.send_text("/exit\n")  # gate inactive → quits
         app.run()
-    assert ui._latest_trail.expanded is False  # never toggled
+    assert ui._latest_diff.expanded is False  # never toggled
     assert gate.submitted == ["y"]
+
+
+def _click_event(line: int) -> MouseEvent:
+    return MouseEvent(
+        position=Point(0, line),
+        event_type=MouseEventType.MOUSE_UP,
+        button=MouseButton.LEFT,
+        modifiers=frozenset(),
+    )
+
+
+def test_click_on_diff_line_toggles_it(tmp_path: Path) -> None:
+    # A pane click (MOUSE_UP) on a line inside a diff's transcript range toggles its
+    # collapse state and is reported handled (returns None) — the primary, per-element
+    # toggle that reaches any diff regardless of age (§31.16).
+    ui = _seed_diff_ui()
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+        )
+        ui._render_ansi()  # populate the line index
+        start = next(s for s, _e, el in ui._toggle_ranges if el is ui._latest_diff)
+        pane = _pane_control(app)
+        assert pane.mouse_handler(_click_event(start)) is None  # handled
+    assert ui._latest_diff is not None and ui._latest_diff.expanded is True
+
+
+def test_click_outside_any_diff_delegates_to_super(tmp_path: Path) -> None:
+    # A click on a line that is not part of any diff/trail is NOT swallowed: the
+    # handler returns NotImplemented so default mouse handling still applies.
+    ui = _seed_diff_ui()
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+        )
+        ui._render_ansi()
+        end = max(e for _s, e, _el in ui._toggle_ranges)
+        pane = _pane_control(app)
+        assert pane.mouse_handler(_click_event(end + 5)) is NotImplemented
+    assert ui._latest_diff is not None and ui._latest_diff.expanded is False  # untouched

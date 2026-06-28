@@ -208,6 +208,49 @@ def test_render_diff_footer_style_is_faint() -> None:
     assert footer.plain.startswith(f"{GLYPHS.ellipsis} (+")
 
 
+def test_render_diff_width_param_exists() -> None:
+    """CI guard: render_diff keeps its keyword-only width parameter (§31.16)."""
+    import inspect
+
+    sig = inspect.signature(render_diff)
+    assert "width" in sig.parameters
+
+
+def test_render_diff_width_standardizes_panel_width() -> None:
+    """With width set, every diff renders to the SAME panel width regardless of
+    its content width — a standardized diff window, not one hugging its longest
+    line (§31.16)."""
+    narrow = make_diff("a\n", "ab\n")
+    wide = make_diff("a\n", "a" + "x" * 70 + "\n")
+    for diff in (narrow, wide):
+        out = rendered(render_diff(diff, GLYPHS, width=60), width=120)
+        border = next(ln for ln in out.splitlines() if ln.startswith("╭"))
+        assert len(border) == 60
+
+
+def test_render_diff_width_wraps_long_line_onto_continuation() -> None:
+    """A line wider than the panel folds onto continuation lines instead of
+    running off the side; no rendered line exceeds the panel width and every
+    character survives the wrap (§31.16)."""
+    long = "x" * 90  # no spaces → must hard-fold, not word-wrap
+    diff = make_diff("", long + "\n")
+    lines = rendered(render_diff(diff, GLYPHS, width=50), width=120).splitlines()
+    assert max(len(ln) for ln in lines) <= 50
+    assert sum(ln.count("x") for ln in lines) == 90
+
+
+def test_render_diff_width_fills_changed_bar_to_inner_width() -> None:
+    """A short changed line's colored bar fills to the panel's inner width when a
+    width is given, so bars stay full-width at the standardized size (§31.4)."""
+    from shellpilot.cli.render import _diff_rows
+
+    diff = make_diff("a\n", "b\n")
+    rows, _ = _diff_rows(diff, GLYPHS, width=60)
+    add_row = next(r for r in rows if "+ " in r.plain)
+    end = next(span.end for span in add_row.spans if span.style == "sp.diff.add")
+    assert end == 60 - 4  # styled bar reaches the inner width (panel - borders - padding)
+
+
 def test_badge_chips_and_plain_degradation() -> None:
     assert badge("medium").plain == " MEDIUM "
     assert badge("high").plain == " HIGH "

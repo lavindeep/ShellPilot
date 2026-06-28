@@ -255,6 +255,14 @@ def build_app(
             if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
                 pane_scroll["line"] = _scroll_down(pane_scroll["line"], _pane_last_line(), 3)
                 return None
+            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                # Click on a diff/trail toggles its collapse state (§31.16/§31.19).
+                # prompt_toolkit hands us the position in CONTENT coordinates (the
+                # document row, scroll already accounted for), which is exactly the
+                # transcript line toggle_at maps. Returning None when handled lets the
+                # standard post-event redraw repaint (toggle_at cleared the cache).
+                if _ui.toggle_at(mouse_event.position.y):
+                    return None
             return super().mouse_handler(mouse_event)
 
     pane_window = Window(
@@ -444,17 +452,18 @@ def build_app(
         pending["text"] = None
 
     @kb.add(
-        "c-t",
+        "c-o",
         filter=dock_focused & Condition(lambda: approval_gate is None or not approval_gate.active),
     )
-    def _toggle_trail(event: KeyPressEvent) -> None:
-        # Ctrl-T toggles the latest thinking trail's collapse state (§31.19) —
-        # works while the model runs or after. A modifier key (not a bare letter)
-        # so it never collides with typing a message that starts with 't'; this
-        # overrides prompt_toolkit's default c-t (transpose) the same way the app's
-        # c-c/c-d bindings override their defaults. No-op when there is no trail
-        # (fresh session / show_reasoning off), so a stray press is harmless.
-        _ui.toggle_thinking_trail()
+    def _toggle_diff(event: KeyPressEvent) -> None:
+        # Ctrl-O toggles the LATEST diff's collapse state (§31.16) — the keyboard
+        # fallback for terminals without mouse reporting, where the per-element
+        # click toggle is unavailable. A modifier key (not a bare letter) so it
+        # never collides with typing a message; overrides prompt_toolkit's default
+        # c-o the same way the app's c-c/c-d bindings override theirs. No-op when
+        # there is no diff yet, so a stray press is harmless. Diffs and trails are
+        # both reachable by CLICK; this fallback intentionally covers diffs only.
+        _ui.toggle_latest_diff()
 
     @kb.add("escape", "enter", filter=dock_focused)
     def _newline(event: KeyPressEvent) -> None:

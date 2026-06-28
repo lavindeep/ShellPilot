@@ -155,25 +155,39 @@ def _diff_row(
     return row
 
 
-def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
+def _diff_rows(
+    diff_text: str, glyphs: Glyphs, *, width: int | None = None
+) -> tuple[list[Text], str]:
     """Parse a unified diff into rendered rows plus the panel title name.
 
     Shared by :func:`render_diff` and the streaming ``DiffReveal`` so the reveal
     animation and the settled panel never drift in how a diff is rendered.
+
+    *width* is the target panel width (§31.16). When given, changed-line bars
+    fill to the panel's INNER width so every bar is full at the standardized
+    size; a line longer than that target keeps its length and folds at render
+    time (the pad clamp leaves it untouched). ``None`` (the default for
+    ``DiffReveal`` and unsized callers) pads to the widest changed line as before.
     """
     lines = [_sanitize_line(line) for line in diff_text.splitlines()]
-    width = _gutter_width(lines)
-    # Widest changed-line content, so every removal/addition fills its colored
-    # background to a uniform width (full-line red/green bars, DESIGN 31.4).
-    pad_width = max(
-        (
-            cell_len(line[1:])
-            for line in lines
-            if (line.startswith("-") and not line.startswith("---"))
-            or (line.startswith("+") and not line.startswith("+++"))
-        ),
-        default=0,
-    )
+    gutter = _gutter_width(lines)
+    if width is not None:
+        # Inner content region = width - 2 (borders) - 2 (padding); a row is the
+        # gutter ("{n} ", gutter+1 chars) + "{marker} {content}" (2 + content), so
+        # content fills the region when its length is width - gutter - 7.
+        pad_width = max(0, width - gutter - 7)
+    else:
+        # Widest changed-line content, so every removal/addition fills its colored
+        # background to a uniform width (full-line red/green bars, DESIGN 31.4).
+        pad_width = max(
+            (
+                cell_len(line[1:])
+                for line in lines
+                if (line.startswith("-") and not line.startswith("---"))
+                or (line.startswith("+") and not line.startswith("+++"))
+            ),
+            default=0,
+        )
     title_name = "diff"
     rows: list[Text] = []
     old_no = new_no = 0
@@ -213,7 +227,7 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
                 rows.append(
                     _diff_row(
                         old_no,
-                        width,
+                        gutter,
                         "-",
                         content,
                         "sp.diff.remove",
@@ -227,7 +241,7 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
                 rows.append(
                     _diff_row(
                         new_no,
-                        width,
+                        gutter,
                         "+",
                         content,
                         "sp.diff.add",
@@ -240,7 +254,7 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
         elif line.startswith("+"):
             rows.append(
                 _diff_row(
-                    new_no, width, "+", line[1:], "sp.diff.add", None, None, pad_width=pad_width
+                    new_no, gutter, "+", line[1:], "sp.diff.add", None, None, pad_width=pad_width
                 )
             )
             new_no += 1
@@ -250,22 +264,28 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
             i += 1
         else:
             content = line[1:] if line.startswith(" ") else line
-            rows.append(_diff_row(new_no, width, " ", content, None, None, None))
+            rows.append(_diff_row(new_no, gutter, " ", content, None, None, None))
             old_no += 1
             new_no += 1
             i += 1
     return rows, title_name
 
 
-def render_diff(diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None) -> Panel:
+def render_diff(
+    diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None, width: int | None = None
+) -> Panel:
     """An editor-style diff panel: gutter, line backgrounds, word highlights.
 
     When *max_rows* is set and the rendered diff exceeds it, the panel keeps the
     first ``max_rows`` rows and appends one ``… (+N more)`` footer (``sp.faint``,
     mirroring :func:`output_truncation`). ``max_rows=None`` (the default at every
     existing call site) renders the full diff unchanged.
+
+    *width* standardizes the panel to that fixed width (§31.16): bars fill to the
+    inner width and over-long lines fold onto continuation rows instead of running
+    off the side. ``None`` keeps the legacy hug-the-widest-line sizing.
     """
-    rows, title_name = _diff_rows(diff_text, glyphs)
+    rows, title_name = _diff_rows(diff_text, glyphs, width=width)
     if max_rows is not None and len(rows) > max_rows:
         hidden = len(rows) - max_rows
         rows = rows[:max_rows]
@@ -278,8 +298,18 @@ def render_diff(diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None) 
         box=box.ROUNDED,
         border_style="sp.faint",
         expand=False,
+        width=width,
         padding=(0, 1),
     )
+
+
+def diff_row_count(diff_text: str, glyphs: Glyphs) -> int:
+    """Rendered row count of a diff — what a collapse cap is compared against.
+
+    Lets a caller decide whether a diff overflows a row cap (and thus needs a
+    collapse/expand affordance) without rendering the panel.
+    """
+    return len(_diff_rows(diff_text, glyphs)[0])
 
 
 def badge(level: str, *, plain: bool = False) -> Text:
