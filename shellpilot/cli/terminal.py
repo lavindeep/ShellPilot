@@ -46,9 +46,7 @@ from shellpilot.cli.render import (
     plan_panel,
     plan_step_line,
     render_diff,
-)
-from shellpilot.cli.render import (
-    tool_call as render_tool_call,
+    tool_call_block,
 )
 from shellpilot.cli.render import (
     tool_result as render_tool_result,
@@ -254,35 +252,29 @@ class TerminalUI:
         self._console.print(f"[sp.error]{escape(_sanitize_line(text))}[/sp.error]")
 
     def show_tool_call(self, name: str, arguments: dict[str, object]) -> None:
-        # Redact secrets in the summary line so auto-approved tool calls never
-        # expose credentials in the visible terminal channel. A `path` argument
-        # is shown as its resolved, workspace-relative target (the SAME
-        # resolution the tool acts on) so the displayed path cannot be spoofed
-        # and matches the file actually touched (design section 14.5); the
-        # approval panel applies the identical rule via executor._display_for.
+        # Redact secrets so an auto-approved tool call never exposes credentials
+        # in the visible terminal channel. tool_call_block frames the actual
+        # command/url (run_command, web_fetch) or shows a clean inline subject
+        # (paths/queries) instead of the name(args) repr (§31.3); a `path` subject
+        # is the resolved, workspace-relative target so it can't be spoofed and
+        # matches the file actually touched (§14.5).
         redacted = redact_structure(arguments)
         assert isinstance(redacted, dict)
-        summary = ", ".join(
-            f"{key}={self._tool_call_value(key, value)}" for key, value in redacted.items()
-        )
-        if len(summary) > 80:
-            summary = summary[:79] + self._glyphs.ellipsis
-        self._console.print(render_tool_call(name, summary, self._glyphs))
+        for renderable in tool_call_block(
+            name, redacted, self._glyphs, path_display=self._path_display
+        ):
+            self._console.print(renderable)
         label = Text.assemble(("running ", "sp.dim"), (_sanitize_line(name), "sp.emph"))
         self._spinner.start(label=label)
 
-    def _tool_call_value(self, key: str, value: object) -> str:
-        # A `path` argument is shown as its resolved, workspace-relative target
-        # (display-integrity, design section 14.5). Prefer the live workspace
-        # (workspace_fn, set in production) so a mid-session /cwd is honoured;
-        # fall back to the build-time workspace, then verbatim. NOTE: the verbatim
-        # fallback only happens with neither set — a test-double construction; in
-        # production workspace_fn is always wired, so the path display never drifts
-        # from the action.
+    def _path_display(self, path: str) -> str:
+        # Resolve a `path` argument to its workspace-relative target (§14.5).
+        # Prefer the live workspace (workspace_fn, set in production) so a
+        # mid-session /cwd is honoured; fall back to the build-time workspace,
+        # then verbatim (a test-double with neither set — production always wires
+        # workspace_fn, so the path display never drifts from the action).
         workspace = self._workspace_fn() if self._workspace_fn is not None else self._workspace
-        if key == "path" and isinstance(value, str) and workspace is not None:
-            return repr(workspace_display(workspace, value))
-        return repr(value)
+        return workspace_display(workspace, path) if workspace is not None else path
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
         self._spinner.stop()

@@ -2747,7 +2747,13 @@ Input is provided by `prompt_toolkit`: persistent up-arrow history (state dir `h
 
 ### 31.3 Activity lines
 
-Tool calls render as `⏺` + bold tool name + dim `(args) · summary` — except `run_command`, whose command argument renders bright (`sp.cmd`, bold bright white) so the action under approval is impossible to miss; every other tool's args stay dim so routine reads don't shout. Results and continuations indent under a dim `⎿`, with a green `✓` or red `✗`. Command output streams dim-indented under `⎿`; when display truncation applies, a faint `… +N lines` marker is shown (capture and audit limits are unchanged from section 13).
+A tool call renders by its **primary subject**, not a `name(args)` repr, so the thing that actually happens is the thing you read (`tool_call_block`, cli/render.py). Three shapes:
+
+- **Framed** — the consequential, approval-gated actions: `run_command` (the joined `argv` command) and `web_fetch` (the URL that egresses). The line is `⏺` + bold action label (`run command`, `web_fetch`) followed by a rounded `Panel` holding the actual subject in bright `sp.cmd` — impossible to miss. A low-risk command that auto-runs is framed the same way (the line never knows in advance whether it will be gated), which is acceptable: `run_command` is the one tool whose exact command always deserves prominence.
+- **Inline** — tools with one clean subject: `⏺` + bold name + two spaces + the readable (`sp.value`) subject. `read_file`/`list_dir`/`view_image`/`write_file`/`patch_file` show the `path`, `web_search` the `query`, `search_text` the `pattern`, `skill_read` the `resource`.
+- **Generic** — everything else (`env_info`, the memory tools): the legacy `⏺` + bold name + dim `(key=value, …)` summary, capped so a chatty argument set can't run off the side.
+
+A `path` subject is the **resolved, workspace-relative target** the handler acts on — never the raw, possibly spoofing argument (display-integrity, section 14.5) — via the injected `path_display`; secrets are redacted (`redact_structure`) and control chars sanitized before any of the three shapes render. Results and continuations indent under a dim `⎿`, with a green `✓` or red `✗`. Command output streams dim-indented under `⎿`; when display truncation applies, a faint `… +N lines` marker is shown (capture and audit limits are unchanged from section 13).
 
 ### 31.4 Diffs
 
@@ -2757,7 +2763,7 @@ When a file write/edit is proposed, the approval diff appears with a brief scrol
 
 ### 31.5 Approvals
 
-Approvals are the focal control (v2 style pass). The shell command renders bright in the tool-call line directly above (§31.3); an inverse risk-badge chip then anchors the block, followed by a **stat block** — muted fixed-width labels (`WHY` the action is gated, its `EFFECT` from the deterministic purpose, the `CWD`) with readable values (`sp.value`) so the reason and consequence can't be buried in gray — then the colored choice line. The stat block replaces the old single dim `kind · reasons · purpose` line; the shared builders `approval_info` / `approval_cwd` produce it for both the app pane and the legacy REPL.
+Approvals are the focal control (v2 style pass). The action itself renders framed and bright in the tool-call line directly above (§31.3) — the command for `run_command`, the URL for `web_fetch` — so the approval block does not repeat it; an inverse risk-badge chip anchors the block, followed by a **stat block** — muted fixed-width labels (`WHY` the action is gated, its `EFFECT` from the deterministic purpose, the `CWD`) with readable values (`sp.value`) so the reason and consequence can't be buried in gray — then the colored choice line. The labels are deliberately limited to what the harness knows truthfully: there is no `WRITES`/read-only row because the classifier's coarse side-effect signal cannot honestly assert "read-only" for an arbitrary side-effecting command, and a fabricated safety claim is worse than none. The stat block replaces the old single dim `kind · reasons · purpose` line; the shared builders `approval_info` / `approval_cwd` produce it for both the app pane and the legacy REPL.
 
 - ` MEDIUM ` — white on gray `#3a3a3a`.
 - ` HIGH ` — white on red `#c14949`; keeps the typed-`run` flow, with `"run"` in red.

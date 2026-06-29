@@ -7,6 +7,8 @@ import io
 from pathlib import Path
 
 from rich.console import Console, RenderableType
+from rich.panel import Panel
+from rich.text import Text
 
 from shellpilot.cli.render import (
     approval_choices,
@@ -20,6 +22,7 @@ from shellpilot.cli.render import (
     plan_step_line,
     render_diff,
     tool_call,
+    tool_call_block,
     tool_result,
     word_highlight_ranges,
 )
@@ -375,14 +378,107 @@ def _req(
     )
 
 
-def test_tool_call_command_is_bright_other_args_dim() -> None:
-    """The shell command under approval is bright; other tools' args stay dim."""
-    cmd = tool_call("run_command", "command='pytest -q'", GLYPHS)
-    assert "sp.cmd" in _styles(cmd)
-    assert "sp.dim" not in _styles(cmd)
-    other = tool_call("read_file", "path='x.py'", GLYPHS)
+def test_tool_call_generic_args_stay_dim() -> None:
+    """The generic fallback line dims its args (subject tools route via block)."""
+    other = tool_call("env_info", "verbose=True", GLYPHS)
     assert "sp.cmd" not in _styles(other)
     assert "sp.dim" in _styles(other)
+
+
+def _identity(path: str) -> str:
+    return path
+
+
+def _block_text(block: list[RenderableType]) -> str:
+    return "\n".join(rendered(r) for r in block)
+
+
+def _line(block: list[RenderableType]) -> Text:
+    assert isinstance(block[0], Text)
+    return block[0]
+
+
+def test_tool_call_block_frames_run_command() -> None:
+    """run_command shows the action label + the actual command framed and bright,
+    never the run_command(argv=[...]) repr."""
+    block = tool_call_block(
+        "run_command", {"argv": ["pytest", "-q"]}, GLYPHS, path_display=_identity
+    )
+    assert len(block) == 2
+    header, frame = block
+    assert isinstance(header, Text) and isinstance(frame, Panel)
+    assert "run command" in header.plain
+    assert "argv" not in header.plain and "(" not in header.plain
+    assert "sp.emph" in _styles(header)
+    inner = frame.renderable
+    assert isinstance(inner, Text)
+    assert inner.plain == "pytest -q"
+    assert inner.style == "sp.cmd"  # bright, impossible to miss
+
+
+def test_tool_call_block_frames_web_fetch_url() -> None:
+    block = tool_call_block(
+        "web_fetch", {"url": "https://python.org/downloads"}, GLYPHS, path_display=_identity
+    )
+    assert len(block) == 2
+    assert "web_fetch" in _line(block).plain
+    assert isinstance(block[1], Panel)
+    assert "https://python.org/downloads" in _block_text(block)
+
+
+def test_tool_call_block_inline_subject_for_reads() -> None:
+    """A read tool shows `⏺ name  subject` with a clean, readable subject."""
+    block = tool_call_block("read_file", {"path": "client.py"}, GLYPHS, path_display=_identity)
+    assert len(block) == 1
+    line = _line(block)
+    assert f"{GLYPHS.bullet} read_file" in line.plain
+    assert "client.py" in line.plain
+    assert "path=" not in line.plain and "(" not in line.plain
+    assert "sp.value" in _styles(line)
+    assert "sp.emph" in _styles(line)  # the name
+
+
+def test_tool_call_block_inline_subject_query_and_pattern() -> None:
+    web = tool_call_block(
+        "web_search", {"query": "py 3.13 release"}, GLYPHS, path_display=_identity
+    )
+    assert "py 3.13 release" in _line(web).plain and "query=" not in _line(web).plain
+    grep = tool_call_block(
+        "search_text", {"pattern": "TODO", "path": "src"}, GLYPHS, path_display=_identity
+    )
+    assert "TODO" in _line(grep).plain and "pattern=" not in _line(grep).plain
+    skill = tool_call_block(
+        "skill_read", {"skill": "git", "resource": "rebase"}, GLYPHS, path_display=_identity
+    )
+    assert "rebase" in _line(skill).plain
+
+
+def test_tool_call_block_resolves_path_via_path_display() -> None:
+    """A path subject is the resolved, workspace-relative target — never the raw
+    (possibly spoofing) arg (§14.5)."""
+    block = tool_call_block(
+        "read_file", {"path": "notes/../secret.txt"}, GLYPHS, path_display=lambda _p: "secret.txt"
+    )
+    assert "secret.txt" in _line(block).plain
+    assert "notes/../secret.txt" not in _line(block).plain
+
+
+def test_tool_call_block_generic_fallback_for_unknown_tool() -> None:
+    block = tool_call_block("env_info", {"verbose": True}, GLYPHS, path_display=_identity)
+    assert len(block) == 1
+    assert "env_info(" in _line(block).plain
+    assert "verbose=True" in _line(block).plain
+
+
+def test_tool_call_block_empty_argv_falls_back_to_generic() -> None:
+    block = tool_call_block("run_command", {"argv": []}, GLYPHS, path_display=_identity)
+    assert len(block) == 1  # no subject → generic, no frame
+
+
+def test_tool_call_block_redacts_and_sanitizes_subject() -> None:
+    block = tool_call_block("read_file", {"path": "a\x00b\x1b[2Jc"}, GLYPHS, path_display=_identity)
+    text = _block_text(block)
+    assert not any(c in text for c in "\x00\x1b")
 
 
 def test_approval_info_stat_block_labels_and_bright_values() -> None:

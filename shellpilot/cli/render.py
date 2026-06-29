@@ -8,12 +8,13 @@ guaranteed at any terminal width. Styles are theme names from cli/theme.py.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from rich import box
 from rich.cells import cell_len
-from rich.console import Group
+from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
@@ -63,14 +64,114 @@ def context_line(
 
 
 def tool_call(name: str, args_summary: str, glyphs: Glyphs) -> Text:
-    # The shell command under approval must be impossible to miss (§31.5); every
-    # other tool's argument summary stays calm/dim so routine reads don't shout.
-    arg_style = "sp.cmd" if name == "run_command" else "sp.dim"
+    # Generic fallback line for tools with no clean primary subject (§31.3): name
+    # bright, the key=value summary dim so routine plumbing doesn't shout. Tools
+    # with a subject route through tool_call_block (framed or inline) instead.
     return Text.assemble(
         (f"{glyphs.bullet} ", ""),
         (_sanitize_line(name), "sp.emph"),
-        (f"({_sanitize_line(args_summary)})", arg_style),
+        (f"({_sanitize_line(args_summary)})", "sp.dim"),
     )
+
+
+# Built-in tools whose primary action deserves a framed, high-contrast subject
+# (§31.3): the command that runs, the URL that egresses. Their tool-call line is
+# `⏺ <label>` followed by a bordered box holding the actual subject.
+_FRAMED_LABELS = {"run_command": "run command", "web_fetch": "web_fetch"}
+
+# The single argument that IS the subject for each built-in tool that has one
+# (`⏺ name  subject`, readable, not the name(key=repr) form). run_command is the
+# exception — its subject is the joined argv, handled directly below. A `path`
+# subject is resolved (display-integrity, §14.5) by the caller.
+_SUBJECT_KEY = {
+    "read_file": "path",
+    "list_dir": "path",
+    "view_image": "path",
+    "write_file": "path",
+    "patch_file": "path",
+    "web_search": "query",
+    "search_text": "pattern",
+    "skill_read": "resource",
+    "web_fetch": "url",
+}
+
+
+def _tool_subject(
+    name: str, redacted: dict[str, object], path_display: Callable[[str], str]
+) -> str | None:
+    """The clean primary subject for a built-in tool, or None to fall back.
+
+    `redacted` is the secret-redacted argument dict; a `path` subject is run
+    through `path_display` so the shown target is the resolved, workspace-relative
+    one the handler acts on (never the raw, possibly spoofing arg, §14.5).
+    """
+    if name == "run_command":
+        argv = redacted.get("argv")
+        if isinstance(argv, list) and argv:
+            return " ".join(str(token) for token in argv)
+        return None
+    key = _SUBJECT_KEY.get(name)
+    if key is None:
+        return None
+    value = redacted.get(key)
+    if not isinstance(value, str) or not value:
+        return None
+    return path_display(value) if key == "path" else value
+
+
+def _arg_summary(
+    redacted: dict[str, object], glyphs: Glyphs, path_display: Callable[[str], str]
+) -> str:
+    # The generic key=value summary. A `path` value is resolved (§14.5); the line
+    # is capped so a chatty argument set can't run off the side.
+    parts = []
+    for key, value in redacted.items():
+        if key == "path" and isinstance(value, str):
+            parts.append(f"{key}={path_display(value)!r}")
+        else:
+            parts.append(f"{key}={value!r}")
+    summary = ", ".join(parts)
+    if len(summary) > 80:
+        summary = summary[:79] + glyphs.ellipsis
+    return summary
+
+
+def tool_call_block(
+    name: str,
+    redacted: dict[str, object],
+    glyphs: Glyphs,
+    *,
+    path_display: Callable[[str], str],
+) -> list[RenderableType]:
+    """Renderable(s) for one tool-call line (§31.3).
+
+    Pure: `redacted` is the already secret-redacted argument dict and `path_display`
+    resolves a path arg to its workspace-relative display — no I/O here. Returns a
+    framed [header, box] for the consequential tools (run_command, web_fetch), a
+    single inline `⏺ name  subject` line for tools with a clean primary subject,
+    or the generic `⏺ name(args)` line for everything else.
+    """
+    subject = _tool_subject(name, redacted, path_display)
+    label = _FRAMED_LABELS.get(name)
+    if subject and label is not None:
+        header = Text.assemble((f"{glyphs.bullet} ", ""), (_sanitize_line(label), "sp.emph"))
+        frame = Panel(
+            Text(_sanitize_line(subject), style="sp.cmd"),
+            box=box.ROUNDED,
+            border_style="sp.faint",
+            expand=False,
+            padding=(0, 1),
+        )
+        return [header, frame]
+    if subject:
+        return [
+            Text.assemble(
+                (f"{glyphs.bullet} ", ""),
+                (_sanitize_line(name), "sp.emph"),
+                (f"  {_sanitize_line(subject)}", "sp.value"),
+            )
+        ]
+    return [tool_call(name, _arg_summary(redacted, glyphs, path_display), glyphs)]
 
 
 def tool_result(success: bool, summary: str, glyphs: Glyphs) -> Text:
