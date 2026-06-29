@@ -832,6 +832,74 @@ def test_show_user_message_finalizes_active_trail() -> None:
     assert trail.expanded is True
 
 
+def test_interleaved_thinking_after_answer_keeps_one_trail_and_response() -> None:
+    # Regression (§31.19): a model that emits a trailing reasoning fragment AFTER
+    # the answer has started must NOT fragment the turn into two trails and two
+    # response blocks. Within one model call the thinking is one trail and the
+    # answer is one response, regardless of interleaving order.
+    from rich.markdown import Markdown
+
+    from shellpilot.cli.app_ui import _Trail
+
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("the user said hi; keep it short, concise")
+    ui.stream_token("Hello!")
+    ui.stream_thinking(" answers.")  # the reasoning's tail, after the answer began
+    ui.stream_token(" How can I help you today?")
+    ui.end_response()
+
+    trails = [r for r in ui._renderables if isinstance(r, _Trail)]
+    responses = [r for r in ui._renderables if isinstance(r, Markdown)]
+    assert len(trails) == 1  # one trail, not two
+    assert len(responses) == 1  # one response, not split
+    assert "keep it short, concise" in trails[0].text
+    assert "answers." in trails[0].text  # the trailing fragment joined the SAME trail
+    assert "Hello! How can I help you today?" in responses[0].markup
+
+
+def test_answer_first_then_thinking_keeps_one_response() -> None:
+    # The mirror case: the answer streams BEFORE any reasoning arrives, then a
+    # thought lands mid-answer. The thought must NOT close the open response —
+    # the answer stays one block (guards stream_thinking not calling
+    # _close_open_response when it opens a trail).
+    from rich.markdown import Markdown
+
+    from shellpilot.cli.app_ui import _Trail
+
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_token("Hello!")
+    ui.stream_thinking("a passing thought")  # thinking after the answer began
+    ui.stream_token(" How can I help you today?")
+    ui.end_response()
+
+    trails = [r for r in ui._renderables if isinstance(r, _Trail)]
+    responses = [r for r in ui._renderables if isinstance(r, Markdown)]
+    assert len(responses) == 1  # one response, not split by the mid-answer thought
+    assert len(trails) == 1
+    assert "Hello! How can I help you today?" in responses[0].markup
+
+
+def test_separate_model_calls_still_make_separate_trails() -> None:
+    # The flip side of the interleave fix: a genuine second reasoning phase in a
+    # LATER model call (the tool-loop boundary, end_response → begin_response)
+    # still opens its OWN trail — end_response finalizes the call's trail.
+    from shellpilot.cli.app_ui import _Trail
+
+    ui = _trail_ui()
+    ui.begin_response()
+    ui.stream_thinking("call one thinking")
+    ui.stream_token("answer one")
+    ui.end_response()
+    ui.begin_response()
+    ui.stream_thinking("call two thinking")
+    trails = [r for r in ui._renderables if isinstance(r, _Trail)]
+    assert len(trails) == 2
+    assert "call one thinking" in trails[0].text
+    assert "call two thinking" in trails[1].text
+
+
 def test_trail_sanitizes_control_chars() -> None:
     # Thinking text is model-controlled → every displayed line is sanitized; no raw
     # BEL or escape-injection bytes reach the pane.

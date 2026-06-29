@@ -380,9 +380,10 @@ class AppUI:
 
     def stream_token(self, token: str) -> None:
         """Accumulate a streaming token into the open response."""
-        # Answer text ends any active reasoning phase (§31.19): the next thinking
-        # chunk starts a fresh trail block below the streamed answer.
-        self._finalize_active_trail()
+        # A response token does NOT end the reasoning phase (§31.19). A model may
+        # emit a trailing thought AFTER the answer starts; that fragment must join
+        # the SAME trail, not cut the answer into two blocks. The trail is finalized
+        # at the model-call boundary (end_response) instead of on the first token.
         if self._open_response is None:
             self._open_response = token
         else:
@@ -390,8 +391,16 @@ class AppUI:
         self._cache = None
 
     def end_response(self) -> None:
-        """Close the open response so the next stream_token starts a fresh one."""
+        """Close the open response and finalize the call's reasoning trail (§31.19).
+
+        end_response bounds one model call (conversation.py wraps each chat() in
+        begin_response/end_response). Finalizing the active trail HERE — not on the
+        first response token — is what keeps interleaved thinking/answer within a
+        call as one trail + one response, while a genuine second reasoning phase in
+        the NEXT call still opens its own fresh trail.
+        """
         self._close_open_response()
+        self._finalize_active_trail()
 
     def begin_response(self) -> None:
         # Turn-scoped: the FIRST model call of a turn starts the live indicator;
@@ -477,7 +486,10 @@ class AppUI:
         if not self._show_reasoning:
             return
         if self._active_trail is None:
-            self._close_open_response()
+            # First reasoning fragment of this model call → open a fresh trail at the
+            # current transcript position. Do NOT close the open response: a trailing
+            # thought after the answer started joins the call's reasoning, it does not
+            # cut the answer (§31.19). The trail resets at end_response.
             trail = _Trail()
             self._renderables.append(trail)
             self._active_trail = trail
