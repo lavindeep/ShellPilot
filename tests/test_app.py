@@ -22,6 +22,7 @@ from shellpilot.cli.app import (
     UNICODE_BOX,
     BoxChars,
     StatusValues,
+    _branch_resolver,
     _read_git_branch,
     _scroll_down,
     _scroll_up,
@@ -210,6 +211,52 @@ def test_read_git_branch_worktree_file_is_none(tmp_path: Path) -> None:
     # A linked worktree has `.git` as a plain file → OSError, fails closed.
     (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt\n", encoding="utf-8")
     assert _read_git_branch(tmp_path) is None
+
+
+# --- _branch_resolver (status-bar branch tracks /cwd) -------------------------
+
+
+def _repo(path: Path, branch: str) -> Path:
+    git = path / ".git"
+    git.mkdir(parents=True)
+    (git / "HEAD").write_text(f"ref: refs/heads/{branch}\n", encoding="utf-8")
+    return path
+
+
+def test_branch_resolver_rereads_on_workspace_change(tmp_path: Path) -> None:
+    # The status bar's branch segment must follow /cwd: into a repo with a
+    # different branch, and out of a repo entirely (→ None).
+    repo_a = _repo(tmp_path / "a", "main")
+    repo_b = _repo(tmp_path / "b", "feature")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    resolve = _branch_resolver(repo_a, "main")
+    assert resolve(repo_a) == "main"  # seeded build-time value
+    assert resolve(repo_b) == "feature"  # /cwd into another repo → re-read
+    assert resolve(plain) is None  # /cwd out of any repo → no branch
+    assert resolve(repo_a) == "main"  # /cwd back → re-read
+
+
+def test_branch_resolver_does_not_reread_unchanged_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The .git/HEAD read happens ONLY on a workspace change, never per render —
+    # the perf reason the branch was build-time in the first place.
+    calls: list[Path] = []
+
+    def _spy(ws: Path) -> str | None:
+        calls.append(ws)
+        return "spied"
+
+    monkeypatch.setattr("shellpilot.cli.app._read_git_branch", _spy)
+    resolve = _branch_resolver(tmp_path, "seed")
+    assert resolve(tmp_path) == "seed"  # same workspace → seeded value, no read
+    assert resolve(tmp_path) == "seed"
+    assert calls == []  # never re-read while the workspace is unchanged
+    other = tmp_path / "other"
+    assert resolve(other) == "spied"  # changed → exactly one read
+    assert calls == [other]
 
 
 # --- Headless app smoke (the anti-garbage proof) ------------------------------

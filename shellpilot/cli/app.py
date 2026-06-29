@@ -133,6 +133,31 @@ def _read_git_branch(workspace: Path) -> str | None:
     return None
 
 
+def _branch_resolver(
+    initial_workspace: Path, initial_branch: str | None
+) -> Callable[[Path], str | None]:
+    """Map the live workspace to its git branch, re-reading ``.git/HEAD`` ONLY when
+    the workspace changes — a ``/cwd`` — never per render (§31.18).
+
+    Seeded with the build-time ``(workspace, branch)`` so the first frames cost no
+    I/O. When the status bar's live workspace differs from the last one resolved,
+    the branch is re-read (``None`` when the new directory is not a repo) and
+    cached, so the status-bar segment follows cwd into and out of a repo without an
+    ``.git`` read on every repaint.
+    """
+    last_workspace = initial_workspace
+    branch = initial_branch
+
+    def resolve(workspace: Path) -> str | None:
+        nonlocal last_workspace, branch
+        if workspace != last_workspace:
+            last_workspace = workspace
+            branch = _read_git_branch(workspace)
+        return branch
+
+    return resolve
+
+
 def _scroll_up(scroll: int | None, last_line: int, page: int) -> int:
     """PageUp: move the pane's pinned cursor line up ``page`` lines.
 
@@ -160,8 +185,10 @@ def _scroll_down(scroll: int | None, last_line: int, page: int) -> int | None:
 class StatusValues:
     """Live status-bar inputs, read per render so a mid-session ``/model use``,
     ``/profile use``, ``/cwd set``, or context growth reflects immediately
-    (§31.18). ``branch`` is deliberately NOT here — it stays build-time (re-reading
-    ``.git/HEAD`` every render would be wasteful)."""
+    (§31.18). ``branch`` is deliberately NOT a field — it is derived from
+    ``workspace`` by ``_branch_resolver``, which re-reads ``.git/HEAD`` only when
+    the workspace changes, so the segment follows ``/cwd`` without an ``.git`` read
+    on every repaint."""
 
     workspace: Path
     model: str
@@ -208,7 +235,9 @@ def build_app(
     # The chip text already says "queued:", so the marker is a unicode-only
     # accent — no ASCII glyph (avoids a redundant "[queued] queued:").
     queued_marker = "⏳ " if unicode_mode else ""
-    branch = _read_git_branch(workspace)
+    # The branch segment follows the live workspace (a /cwd) but re-reads .git/HEAD
+    # only when the workspace changes, not per render (§31.18).
+    resolve_branch = _branch_resolver(workspace, _read_git_branch(workspace))
 
     # Chat pane: a FormattedTextControl rendering the AppUI transcript as Rich→ANSI.
     # Rich handles all wrapping at width W (wrap_lines=False on the Window), so the
@@ -365,18 +394,21 @@ def build_app(
         # Live values (§31.18) when status_fn is wired — workspace/model/profile/
         # cloud/ctx re-read per render so /model use (the cloud indicator!),
         # /profile use, /cwd set, and context growth reflect immediately. The
-        # cloud bit still comes from the real is_egressing signal (unspoofable).
-        # branch stays build-time. Falls back to the static params (standalone
-        # shell + existing tests) when status_fn is None.
+        # branch segment follows the live workspace via resolve_branch, which
+        # re-reads .git/HEAD only when the workspace changes (a /cwd) — not per
+        # render. The cloud bit still comes from the real is_egressing signal
+        # (unspoofable). Falls back to the static params (standalone shell +
+        # existing tests) when status_fn is None.
         v = status_fn() if status_fn is not None else None
+        ws = v.workspace if v is not None else workspace
         return list(
             status_bar(
-                workspace=v.workspace if v is not None else workspace,
+                workspace=ws,
                 model=v.model if v is not None else model,
                 profile=v.profile if v is not None else profile,
                 is_cloud=v.is_cloud if v is not None else is_cloud,
                 ctx_pct=v.ctx_pct if v is not None else ctx_pct,
-                branch=branch,
+                branch=resolve_branch(ws),
                 branch_glyph=branch_glyph,
             )
         )
