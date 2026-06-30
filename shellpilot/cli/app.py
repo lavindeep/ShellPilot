@@ -648,7 +648,8 @@ def build_app(
             # _mark_done schedules on_idle, so _fire_pending sees an empty slot.
             pending["text"] = None
             return
-        _ui.show_status(_IDLE_HINT)
+        # Deduped so repeated Ctrl-C while idle shows the hint once, not a stack.
+        _ui.show_idle_hint(_IDLE_HINT)
 
     @kb.add("c-d", filter=dock_focused)
     def _eof(event: KeyPressEvent) -> None:

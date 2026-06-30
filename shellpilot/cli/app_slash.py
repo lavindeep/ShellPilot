@@ -182,6 +182,8 @@ class SlashRouter:
     def _after_action(self, action: SlashAction) -> None:
         if action is SlashAction.EXIT:
             self._on_exit()
+        elif action is SlashAction.CLEAR:
+            self._ui.clear_conversation("Conversation cleared.")
         elif action is SlashAction.MANUAL_SHELL:
             # /shell → drop into the manual shell. Already inside run_in_terminal
             # (needs_terminal('/shell') is True), so call it directly.

@@ -38,6 +38,7 @@ from shellpilot.skills.model import SkillTrigger
 
 class SlashAction(Enum):
     CONTINUE = "continue"
+    CLEAR = "clear"
     EXIT = "exit"
     MANUAL_SHELL = "manual_shell"
 
@@ -344,7 +345,8 @@ class SlashDispatcher:
         if command == "/help":
             self._help()
         elif command == "/clear":
-            self._clear()
+            if self._clear():
+                return SlashAction.CLEAR
         elif command == "/status":
             self._status()
         elif command == "/model":
@@ -389,7 +391,7 @@ class SlashDispatcher:
             table.add_row(command, purpose)
         self._console.print(table)
 
-    def _clear(self) -> None:
+    def _clear(self) -> bool:
         if self._confirm("Clear the conversation (also cancels the active plan)?"):
             had_plan = self._runtime.plan_manager.active is not None
             self._runtime.clear_history()
@@ -397,6 +399,8 @@ class SlashDispatcher:
                 self._console.print("[dim]Conversation cleared and active plan cancelled.[/dim]")
             else:
                 self._console.print("[dim]Conversation cleared.[/dim]")
+            return True
+        return False
 
     def _status(self) -> None:
         status = self._runtime.status()

@@ -553,6 +553,48 @@ def test_abort_turn_clears_indicator_and_marks_partial() -> None:
     assert "taxiing" not in plain(ui)
 
 
+def test_fail_turn_clears_indicator_and_shows_error_without_marker() -> None:
+    # A turn that RAISED (e.g. a network/API error) must tear down the dangling
+    # live indicator and surface the error — but NOT the "aborted" marker, which
+    # is reserved for a clean user Ctrl-C (abort_turn). This is the gap that left
+    # the thinking indicator on screen after a cloud 502.
+    ui = AppUI(glyphs=GLYPHS, width_fn=lambda: 80, time_fn=lambda: 0.0)
+    ui.begin_response()  # turn starts → indicator active
+    ui.stream_token("partial answer so far")
+    assert ui._indicator is not None
+
+    ui.fail_turn("The cloud model is unavailable or timed out (HTTP 502). Retry.")
+
+    assert ui._indicator is None  # no dangling timer/plane after a failure
+    out = plain(ui)
+    assert "partial answer so far" in out  # partial finalized, still visible
+    assert "HTTP 502" in out  # the friendly error line is shown
+    assert "aborted" not in out  # NOT the user-cancel marker
+    assert "taxiing" not in plain(ui)  # a later render does not resurrect it
+
+
+def test_show_idle_hint_dedups_until_next_turn() -> None:
+    # Repeated Ctrl-C while idle must not stack the hint (the screenshot showed it
+    # 4×). One hint per idle period; a new turn (show_user_message) re-arms it.
+    ui = make_ui()
+    for _ in range(3):
+        ui.show_idle_hint("(idle — type /exit to quit)")
+    assert plain(ui).count("(idle") == 1
+
+    ui.show_user_message("next turn")
+    ui.show_idle_hint("(idle — type /exit to quit)")
+    assert plain(ui).count("(idle") == 2
+
+
+def test_clear_conversation_rearms_idle_hint() -> None:
+    # After /clear wipes the pane, a fresh idle Ctrl-C should show the hint again.
+    ui = make_ui()
+    ui.show_idle_hint("(idle — type /exit to quit)")
+    ui.clear_conversation("Conversation cleared.")
+    ui.show_idle_hint("(idle — type /exit to quit)")
+    assert plain(ui).count("(idle") == 1  # the pre-clear hint was wiped; one fresh hint
+
+
 def test_abort_turn_ascii_fallback_marker() -> None:
     # ⏹ is not in the Glyphs set; in ASCII mode it degrades to the cross glyph.
     ui = AppUI(glyphs=ASCII_GLYPHS, width_fn=lambda: 80)
@@ -653,6 +695,26 @@ def test_show_user_message_sanitizes_control_chars() -> None:
     assert "\x07" not in raw
     assert "clean" in plain(ui)
     assert "injected" in plain(ui)
+
+
+def test_clear_conversation_resets_visible_transcript_state() -> None:
+    ui = make_ui()
+    ui.show_user_message("before clear")
+    ui.begin_response()
+    ui.stream_thinking("hidden chain")
+    ui.stream_token("partial answer")
+
+    ui.clear_conversation("Conversation cleared.")
+
+    out = plain(ui)
+    assert "before clear" not in out
+    assert "hidden chain" not in out
+    assert "partial answer" not in out
+    assert "Conversation cleared." in out
+    assert ui.is_animating is False
+    assert ui._open_response is None
+    assert ui._active_trail is None
+    assert ui._toggle_ranges == []
 
 
 def test_frontier_ordering_user_then_content_then_done() -> None:

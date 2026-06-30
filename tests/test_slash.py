@@ -77,12 +77,12 @@ def test_unknown_command_reports(tmp_path: Path) -> None:
 def test_clear_requires_confirmation(tmp_path: Path) -> None:
     harness = Harness(tmp_path, confirm_answer=False)
     harness.runtime.run_turn("hi")
-    harness.dispatcher.handle("/clear")
+    assert harness.dispatcher.handle("/clear") is SlashAction.CONTINUE
     assert harness.runtime.status().history_messages == 2  # declined
 
     harness2 = Harness(tmp_path, confirm_answer=True)
     harness2.runtime.run_turn("hi")
-    harness2.dispatcher.handle("/clear")
+    assert harness2.dispatcher.handle("/clear") is SlashAction.CLEAR
     assert harness2.runtime.status().history_messages == 0
 
 

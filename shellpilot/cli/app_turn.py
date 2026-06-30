@@ -29,6 +29,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from shellpilot.llm.client import GenerationCancelled
+from shellpilot.llm.ollama import describe_turn_error
 
 if TYPE_CHECKING:
     from prompt_toolkit.application import Application
@@ -317,7 +318,12 @@ class TurnRunner:
             # record site), so this is a display-only finalization.
             self._schedule(self._inner_ui.abort_turn)
         except Exception as exc:  # noqa: BLE001 - surface ANY worker failure to the pane
-            self._schedule(functools.partial(self._inner_ui.show_error, f"Turn failed: {exc}"))
+            # A turn failure (e.g. an Ollama 502 / read timeout) is NOT a clean
+            # abort: route through fail_turn so the dangling thinking indicator is
+            # torn down, and describe_turn_error maps the exception to a friendly,
+            # leak-free line — the raw upstream body (internal IPs / infra JSON) is
+            # never shown.
+            self._schedule(functools.partial(self._inner_ui.fail_turn, describe_turn_error(exc)))
         finally:
             self._schedule(self._mark_done)
 

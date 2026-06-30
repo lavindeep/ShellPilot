@@ -204,6 +204,19 @@ def test_interactive_command_routes_to_terminal_real_console() -> None:
     assert "TERM-OUT" not in ui._render_ansi()
 
 
+def test_clear_action_clears_app_pane_after_terminal_confirmation() -> None:
+    dispatch = FakeDispatch(action=SlashAction.CLEAR, output="Conversation cleared.")
+    router, ui, _, terminal, _, _, _ = make_router(dispatch=dispatch)
+    ui.show_user_message("old visible transcript")
+
+    router.route("/clear")
+
+    assert len(terminal.fns) == 1
+    pane = ui._render_ansi()
+    assert "old visible transcript" not in pane
+    assert "Conversation cleared." in pane
+
+
 def test_bang_command_runs_captured_in_pane() -> None:
     # `!<cmd>` runs captured on the worker and its output lands in the pane — NOT a
     # suspend-to-terminal flash (§31.17). The command is echoed first.

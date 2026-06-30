@@ -283,23 +283,30 @@ def test_stream_chat_cancel_not_set_completes_normally() -> None:
 
 
 def test_chat_threads_cancel_through_think_retry() -> None:
-    """A cancel set during the think attempt still aborts the retried (no-think) call."""
+    """A cancel during the retried (no-think) call still aborts it.
+
+    The think attempt's 400 (a reader terminal error) is surfaced FIRST so the
+    retry happens; the cancel is then raised on the retry's own stream — never
+    masking the think-unsupported recovery.
+    """
     cancel = threading.Event()
-    cancel.set()  # cancel already requested before the call
     attempts: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         attempts.append(payload)
         if payload.get("think"):
-            # The think attempt fails the status check BEFORE the stream loop, so
-            # it raises OllamaResponseError (not the cancel) → triggers the retry.
+            # Pre-flight rejection → OllamaResponseError → triggers the retry.
             return httpx.Response(400, json={"error": "model does not support thinking"})
-        # The retry streams; its read boundary sees the set cancel and raises.
-        return httpx.Response(
-            200,
-            content=stream_body({"message": {"role": "assistant", "content": "ok"}, "done": True}),
-        )
+
+        # The retry streams; cancel is set as its first chunk is produced, so the
+        # drain aborts THIS (no-think) call.
+        def gen() -> Iterator[bytes]:
+            cancel.set()
+            chunk = {"message": {"role": "assistant", "content": "ok"}, "done": True}
+            yield (json.dumps(chunk) + "\n").encode()
+
+        return httpx.Response(200, content=gen())
 
     client = OllamaClient(reasoning=True, transport=httpx.MockTransport(handler))
     with pytest.raises(GenerationCancelled):

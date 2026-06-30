@@ -78,6 +78,9 @@ class _RecordingUI:
     def abort_turn(self) -> None:
         self._record("abort_turn")
 
+    def fail_turn(self, message: str) -> None:
+        self._record("fail_turn", message)
+
     def show_status(self, text: str) -> None:
         self._record("show_status", text)
 
@@ -399,9 +402,12 @@ def test_worker_exception_is_surfaced_and_clears_busy(tmp_path: Path) -> None:
     while not q.empty():
         q.get()()
 
-    errors = [args for name, args in inner.events if name == "show_error"]
-    assert len(errors) == 1
-    assert "Turn failed" in str(errors[0][0])
+    # A turn failure routes through fail_turn (clears the dangling indicator),
+    # NOT raw show_error, and the message is the friendly, leak-free description.
+    fails = [args for name, args in inner.events if name == "fail_turn"]
+    assert len(fails) == 1
+    assert "show_error" not in inner.names()  # the raw "Turn failed: {exc}" path is gone
+    assert "unexpectedly" in str(fails[0][0])  # FakeLLM raises a plain Exception
     assert runner._busy is False  # the finally ran
 
 

@@ -1,18 +1,24 @@
 """Tests for the Ollama HTTP client (no live Ollama; httpx.MockTransport only)."""
 
 import json
+import queue
+import threading
+from collections.abc import Callable
 from typing import Any
 
 import httpx
 import pytest
 
+from shellpilot.llm.client import GenerationCancelled
 from shellpilot.llm.messages import Message
 from shellpilot.llm.ollama import (
     DEFAULT_BASE_URL,
     LocalModel,
     OllamaClient,
     OllamaResponseError,
+    OllamaTimeoutError,
     OllamaUnreachableError,
+    describe_turn_error,
     resolve_base_url,
 )
 
@@ -275,3 +281,147 @@ def test_stream_non_dict_tool_call_element_is_skipped() -> None:
     msg = client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
     assert msg.content == "hi"
     assert [c.name for c in msg.tool_calls] == ["x"]
+
+
+# ---------------------------------------------------------------------------
+# Friendly, leak-free turn-error reporting (a cloud 502's raw body carries
+# internal IPs / infra JSON — it must never reach the user channel).
+# ---------------------------------------------------------------------------
+
+# The exact shape seen live: a cloud gateway 502 whose body embeds tcp endpoints.
+LEAKY_502_BODY = (
+    '{"error":"Post \\"https://ollama.com:443/api/chat?ts=1782762226\\": '
+    'read tcp 10.160.82.198:62219->34.36.133.15:443: read: operation timed out"}'
+)
+
+
+def _status_transport(status: int, body: str = "") -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/chat":
+            return httpx.Response(status, content=body.encode())
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def test_gateway_error_carries_status_and_drops_raw_body() -> None:
+    """A 4xx/5xx response raises with the status code attached, but the raw
+    upstream body (internal IPs / infra JSON) is NOT in the exception message."""
+    client = make_client(_status_transport(502, LEAKY_502_BODY))
+    with pytest.raises(OllamaResponseError) as exc_info:
+        client.chat("gemma4:31b-cloud", [Message(role="user", content="hi")], num_ctx=2048)
+    err = exc_info.value
+    assert err.status_code == 502
+    text = str(err)
+    for leak in ("10.160.82.198", "34.36.133.15", "operation timed out", "tcp"):
+        assert leak not in text
+
+
+def test_stream_error_chunk_does_not_leak_raw_body() -> None:
+    """A gateway failure delivered as a STREAM CHUNK (not a 400 status) is
+    sanitized like the status path: the raw body (IPs/JSON) never reaches str(exc)
+    or describe_turn_error, but is kept in `detail` for the think-unsupported check."""
+    leak = "read tcp 10.160.82.198:62219->34.36.133.15:443: operation timed out"
+    body = json.dumps({"error": leak}) + "\n"
+    client = make_client(_raw_stream_transport(body))
+    with pytest.raises(OllamaResponseError) as exc_info:
+        client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)
+    err = exc_info.value
+    for shown in (str(err), describe_turn_error(err)):
+        assert "10.160.82.198" not in shown
+        assert "34.36.133.15" not in shown
+        assert "operation timed out" not in shown
+    assert leak in err.detail  # retained internally only
+
+
+def test_describe_turn_error_gateway_is_friendly_and_leak_free() -> None:
+    msg = describe_turn_error(OllamaResponseError("Ollama API error 502", status_code=502))
+    assert "HTTP 502" in msg
+    assert "timed out" in msg.lower() or "unavailable" in msg.lower()
+    for leak in ("10.160.82.198", "34.36.133.15", "{", "tcp"):
+        assert leak not in msg
+
+
+def test_describe_turn_error_unreachable_suggests_serve() -> None:
+    msg = describe_turn_error(OllamaUnreachableError("Ollama API unreachable: boom"))
+    assert "ollama serve" in msg
+    assert "boom" not in msg
+
+
+def test_describe_turn_error_other_status_shows_code() -> None:
+    msg = describe_turn_error(OllamaResponseError("Ollama API error 404", status_code=404))
+    assert "HTTP 404" in msg
+
+
+def test_describe_turn_error_malformed_stream_is_generic() -> None:
+    msg = describe_turn_error(OllamaResponseError("stream ended before completion"))
+    assert "malformed" in msg.lower() or "incomplete" in msg.lower()
+
+
+def test_describe_turn_error_generic_exception_is_safe() -> None:
+    msg = describe_turn_error(RuntimeError("secret-internal-detail 10.0.0.1"))
+    assert "10.0.0.1" not in msg
+    assert "RuntimeError" in msg
+
+
+def test_describe_turn_error_timeout_is_friendly() -> None:
+    msg = describe_turn_error(OllamaTimeoutError("the model stopped responding"))
+    assert "stopped responding" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# Responsive cancellation + inactivity cap (the stream-drain logic, tested
+# directly with a controlled queue + injected clock — no real waits, no network).
+# ---------------------------------------------------------------------------
+
+
+def _fake_clock(values: list[float]) -> Callable[[], float]:
+    """A clock returning successive values, holding the last once exhausted."""
+    it = iter(values)
+    held = [values[0]]
+
+    def clock() -> float:
+        try:
+            held[0] = next(it)
+        except StopIteration:
+            pass
+        return held[0]
+
+    return clock
+
+
+def test_drain_stream_cancel_aborts_a_hung_read_without_waiting() -> None:
+    """A set cancel aborts IMMEDIATELY even when no data is arriving (a hung cloud
+    read): the worker polls the queue and observes cancel, never blocked on the
+    read. This is the core fix — Ctrl-C during a stall used to do nothing."""
+    client = make_client(httpx.MockTransport(lambda r: httpx.Response(200)))
+    lines: queue.Queue[object] = queue.Queue()  # empty: nothing ever arrives (a stall)
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(GenerationCancelled):
+        client._drain_stream(lines, {}, cancel, None, None)
+
+
+def test_drain_stream_inactivity_cap_raises_timeout() -> None:
+    """A silent stall past the inactivity cap fails with a clean OllamaTimeoutError
+    rather than hanging — driven by an injected clock, so no real waiting."""
+    client = OllamaClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200)),
+        generate_timeout_seconds=300.0,
+        monotonic=_fake_clock([0.0, 0.0, 9999.0]),  # jumps past the cap on the 2nd poll
+    )
+    lines: queue.Queue[object] = queue.Queue()  # empty: a true stall
+    with pytest.raises(OllamaTimeoutError):
+        client._drain_stream(lines, {}, None, None, None)
+
+
+def test_read_timeout_surfaces_as_friendly_timeout() -> None:
+    """A real httpx read timeout (hung connection) surfaces as OllamaTimeoutError
+    → a friendly 'stopped responding' line, not a raw transport dump."""
+
+    def raise_timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("read operation timed out", request=request)
+
+    client = make_client(httpx.MockTransport(raise_timeout))
+    with pytest.raises(OllamaTimeoutError):
+        client.chat("gemma4:e4b", [Message(role="user", content="hi")], num_ctx=2048)

@@ -209,6 +209,9 @@ class AppUI:
         self._toggle_ranges: list[tuple[int, int, _Trail | _Diff]] = []
         # Width-keyed ANSI cache: (width, ansi_string), or None when stale.
         self._cache: tuple[int, str] | None = None
+        # Whether the idle hint is already the last thing shown — so repeated
+        # Ctrl-C while idle doesn't stack it (§31.17). Re-armed at each new turn.
+        self._idle_hint_shown = False
 
     @property
     def is_animating(self) -> bool:
@@ -446,6 +449,16 @@ class AppUI:
         marker = "⏹" if self._glyphs == UNICODE_GLYPHS else self._glyphs.cross
         self._add_renderable(Text(f"{marker} aborted", style="sp.warn"))
 
+    def fail_turn(self, message: str) -> None:
+        # A turn RAISED (e.g. a network/API error), NOT a clean user Ctrl-C: tear
+        # down the dangling live indicator (stop the timer/plane) and surface the
+        # error. No "aborted" marker — that's reserved for a user cancel
+        # (abort_turn); this is a failure. show_error → _add_renderable closes the
+        # open response first, so any partial streamed text stays visible above
+        # the error line. Without this the indicator dangled after a turn error.
+        self._indicator = None
+        self.show_error(message)
+
     def toggle_at(self, line: int) -> bool:
         # Map a pane click (its document row) to the trail/diff whose transcript
         # line range contains it and flip that element's collapse state (§31.16/
@@ -509,8 +522,18 @@ class AppUI:
         # from the old turn's start. Full turn-failure/cancel UX is branch 6's; this
         # is the minimal guard so an error never poisons the following turn.
         self._indicator = None
+        self._idle_hint_shown = False  # a new turn re-arms the idle hint
         echo = f"{self._glyphs.chevron} {_sanitize_line(text)}"
         self._add_renderable(Text(echo, style="sp.accent"))
+
+    def show_idle_hint(self, text: str) -> None:
+        # An idle Ctrl-C hint (§31.17). Deduped: repeated Ctrl-C while idle shows
+        # it once, not a growing stack — the flag re-arms only at the next turn
+        # (show_user_message) or a /clear. The text is sanitized like any status.
+        if self._idle_hint_shown:
+            return
+        self._idle_hint_shown = True
+        self.show_status(text)
 
     def show_slash_output(self, text: str) -> None:
         # Slash output rendered by the dispatcher's capturing console (ANSI)
@@ -522,6 +545,19 @@ class AppUI:
         stripped = text.rstrip("\n")
         if stripped:
             self._add_renderable(Text.from_ansi(stripped))
+
+    def clear_conversation(self, message: str | None = None) -> None:
+        """Reset the visible pane after the runtime history has been cleared."""
+        self._renderables.clear()
+        self._open_response = None
+        self._indicator = None
+        self._active_trail = None
+        self._latest_diff = None
+        self._toggle_ranges = []
+        self._cache = None
+        self._idle_hint_shown = False  # a cleared pane re-arms the idle hint
+        if message:
+            self.show_status(message)
 
     def show_status(self, text: str) -> None:
         self._add_renderable(Text(_sanitize_line(text), style="sp.dim"))
