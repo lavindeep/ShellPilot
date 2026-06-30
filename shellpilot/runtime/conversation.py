@@ -580,6 +580,19 @@ class ConversationRuntime:
             return pending, plan.steps[pending - 1].title
         return None
 
+    def _active_plan_step(self) -> tuple[int, str] | None:
+        """Currently active plan step, without falling back to pending steps."""
+        plan = self.plan_manager.active
+        if plan is None or plan.status != "active":
+            return None
+        active = next(
+            (i for i, step in enumerate(plan.steps, start=1) if step.status == "active"),
+            None,
+        )
+        if active is None:
+            return None
+        return active, plan.steps[active - 1].title
+
     def _tool_loop(self) -> Message:
         """Model call loop with tool dispatch, budgets, and recovery (section 10.4)."""
         executor = ToolExecutor(
@@ -707,7 +720,7 @@ class ConversationRuntime:
                 and self.plan_manager.active.status == "completed"
             )
 
-            for call in reply.tool_calls:
+            for call_index, call in enumerate(reply.tool_calls):
                 self._ui.show_tool_call(call.name, call.arguments)
                 outcome = executor.execute(call)
                 if self._cancel is not None and self._cancel.is_set():
@@ -760,7 +773,21 @@ class ConversationRuntime:
                     diff = outcome.result.metadata.get("diff", "")
                     if outcome.result.success and diff:
                         self.recent_diffs.append(diff)
+                if outcome.stop_turn:
+                    if call_index + 1 < len(reply.tool_calls):
+                        reply = dataclasses.replace(
+                            reply, tool_calls=reply.tool_calls[: call_index + 1]
+                        )
+                        self._history[history_before_reply] = reply
+                        if self._session is not None:
+                            self._session.replace_last_message(reply)
                 self._record(tool_result(outcome.model_text))
+                if outcome.stop_turn:
+                    active_step = self._active_plan_step()
+                    if active_step is not None:
+                        index, _title = active_step
+                        self._ui.show_status(f"Action declined; plan paused on step {index}.")
+                    return reply
                 self._track_repeated_failure(call.name, outcome)
 
             # Drain images staged by view_image during THIS batch. Placed after

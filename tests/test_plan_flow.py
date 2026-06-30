@@ -264,7 +264,8 @@ def test_declined_command_does_not_run(tmp_path: Path) -> None:
     runtime.run_turn("create new.txt")
 
     assert not (tmp_path / "new.txt").exists()
-    tool_messages = [m for m in fake.calls[-1].messages if m.role == "tool"]
+    assert len(fake.calls) == 1
+    tool_messages = [m for m in runtime._history if m.role == "tool"]
     assert any("declined" in m.content for m in tool_messages)
 
 

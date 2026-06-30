@@ -46,6 +46,7 @@ class ExecutionOutcome:
     model_text: str
     malformed: bool
     result: ToolResult | None
+    stop_turn: bool = False
 
 
 class ToolExecutor:
@@ -204,6 +205,7 @@ class ToolExecutor:
                     model_text=model_text,
                     malformed=False,
                     result=ToolResult(success=False, summary=summary, content=""),
+                    stop_turn=not bool(steer),
                 )
 
         # Egress visibility (F12): a NETWORK-side-effect tool sends a query/url

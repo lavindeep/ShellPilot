@@ -122,9 +122,15 @@ class SessionStore:
         )
 
     def record_message(self, message: Message) -> None:
+        self._append(self._message_record("message", message))
+
+    def replace_last_message(self, message: Message) -> None:
+        self._append(self._message_record("replace_last_message", message))
+
+    def _message_record(self, kind: str, message: Message) -> dict[str, Any]:
         content = redact_secrets(message.content) if self._redact else message.content
         record: dict[str, Any] = {
-            "type": "message",
+            "type": kind,
             "role": message.role,
             "content": content,
             "tool_calls": [
@@ -139,7 +145,7 @@ class SessionStore:
         }
         if message.images:
             record["images"] = [{"path": ref.path, "sha256": ref.sha256} for ref in message.images]
-        self._append(record)
+        return record
 
     def record_clear(self) -> None:
         self._append({"type": "clear"})
@@ -184,7 +190,7 @@ class SessionStore:
             elif kind == "active_plan":
                 raw = record.get("task_id")
                 active_plan_task_id = str(raw) if isinstance(raw, str) else None
-            elif kind == "message":
+            elif kind in ("message", "replace_last_message"):
                 role = record.get("role")
                 if not role:
                     continue
@@ -197,13 +203,16 @@ class SessionStore:
                     if isinstance(call, dict)
                 )
                 # images field is ignored on load — visual context is not restored.
-                messages.append(
-                    Message(
-                        role=role,
-                        content=record.get("content", ""),
-                        tool_calls=calls,
-                    )
+                message = Message(
+                    role=role,
+                    content=record.get("content", ""),
+                    tool_calls=calls,
                 )
+                if kind == "replace_last_message":
+                    if messages:
+                        messages[-1] = message
+                    continue
+                messages.append(message)
         return LoadedSession(
             session_id=path.stem,
             model=model,
