@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from shellpilot.cli.app_approval import ApprovalGate
     from shellpilot.cli.app_ui import AppUI
     from shellpilot.cli.theme import Glyphs
+    from shellpilot.llm.ollama import LocalModel
     from shellpilot.runtime.conversation import ConversationRuntime
 
 
@@ -50,6 +51,7 @@ def run_app(
     is_busy: Callable[[], bool] | None = None,
     register_idle: Callable[[Callable[[], None]], None] | None = None,
     status_fn: Callable[[], StatusValues] | None = None,
+    model_completion_models: Callable[[], list[LocalModel]] | None = None,
 ) -> int:
     """Build the full-screen app around an already-wired conversation and run it.
 
@@ -89,6 +91,7 @@ def run_app(
         is_busy=is_busy,
         register_idle=register_idle,
         status_fn=status_fn,
+        model_completion_models=model_completion_models,
     )
     runner.app = app
     runner.conversation = runtime

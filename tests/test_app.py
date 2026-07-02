@@ -33,6 +33,7 @@ from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.slash import command_words
 from shellpilot.cli.status_bar import status_bar
 from shellpilot.cli.theme import ASCII_GLYPHS, UNICODE_GLYPHS
+from shellpilot.llm.ollama import LocalModel
 from shellpilot.policy.approvals import ApprovalRequest
 from shellpilot.policy.risk import RiskLevel
 
@@ -870,6 +871,63 @@ def test_tab_completion_escapes_spaces_for_dispatcher(tmp_path: Path) -> None:
         inp.send_text("/exit\n")
         app.run()
     assert slashes == ["/cwd set My\\ Project/"]
+
+
+def test_tab_completes_model_use_argument(tmp_path: Path) -> None:
+    models = [
+        LocalModel(name="gemma4:e4b", size_bytes=4_500_000_000),
+        LocalModel(name="llama3:8b", size_bytes=4_000_000_000),
+    ]
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+            model_completion_models=lambda: models,
+        )
+        inp.send_text("/model use ge")
+        inp.send_text("\t")
+        inp.send_text("\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/model use gemma4:e4b"]
+
+
+def test_down_arrow_selects_next_model_completion(tmp_path: Path) -> None:
+    models = [
+        LocalModel(name="gemma4:e4b", size_bytes=4_500_000_000),
+        LocalModel(name="gemma4:31b-cloud", size_bytes=31_000_000_000),
+    ]
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+            model_completion_models=lambda: models,
+        )
+        inp.send_text("/model use gem")
+        inp.send_text("\x1b[B")
+        inp.send_text("\t")
+        inp.send_text("\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/model use gemma4:31b-cloud"]
 
 
 def test_mouse_wheel_scroll_pins_then_resumes_follow(tmp_path: Path) -> None:

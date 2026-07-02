@@ -2042,6 +2042,8 @@ Commands:
 | `/attach` | List currently staged images, or report "No attachments staged." *(v0.5.0)* |
 | `/skills` | List all discovered skills with root, trigger declarations, enabled/builtin/disabled/invalid status, decision-derived active state, resource/script summaries, skip reasons, and advisory warnings. *(v0.7.0)* |
 
+In the full-screen input dock, `/model use <name>` has local model-name completion analogous to `/cwd set <path>` path completion. The menu is backed by a thread-safe in-memory cache seeded from the startup Ollama `/api/tags` result and refreshed once in a daemon background thread; typing never calls Ollama or blocks the prompt loop. The dispatcher still re-validates the selected model against Ollama when `/model use` runs, so stale completions cannot switch to a missing local model, and cloud/remote consent behavior remains in the command handler.
+
 All commands scheduled for v0.3.0 (memory, prefs, compact auto, export) shipped. `/prefs` was retired in v0.10.0 — it had converged with `/memory show`, which now lists preferences with their (scope, source) and prints the store paths.
 
 `/context show` (a redacted dump of the assembled prompt) is deliberately deferred. The `/context` status table does not fully solve prompt inspection — it shows per-block sizes, not the prompt's actual text — but a verbatim dump must not leak secrets. When `show` lands it must reuse the v0.5.2 redaction helpers before printing any block content.

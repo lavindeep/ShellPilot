@@ -45,6 +45,7 @@ from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import Output
 
 from shellpilot.cli.app_ui import AppUI
+from shellpilot.cli.model_completion import ModelCompletionMatch, model_completion_matches
 from shellpilot.cli.path_completion import PathCompletionMatch, path_completion_matches
 from shellpilot.cli.render import _sanitize_line
 from shellpilot.cli.slash import (
@@ -67,6 +68,7 @@ from shellpilot.policy.risk import RiskLevel
 
 if TYPE_CHECKING:
     from shellpilot.cli.app_approval import ApprovalGate
+    from shellpilot.llm.ollama import LocalModel
 
 # The dock grows to fit multi-line input up to this many rows, then scrolls
 # internally. NOTE: a fixed cap — a per-terminal-height fraction would be nicer
@@ -242,6 +244,7 @@ def build_app(
     is_busy: Callable[[], bool] | None = None,
     register_idle: Callable[[Callable[[], None]], None] | None = None,
     status_fn: Callable[[], StatusValues] | None = None,
+    model_completion_models: Callable[[], list[LocalModel]] | None = None,
 ) -> Application[None]:
     """Build the full-screen app shell.
 
@@ -421,10 +424,22 @@ def build_app(
 
     menu_open = Condition(_menu_open)
 
-    def _path_matches() -> list[PathCompletionMatch]:
-        return path_completion_matches(
-            dock_buffer.document.text_before_cursor,
-            _current_workspace(),
+    def _path_matches() -> list[PathCompletionMatch | ModelCompletionMatch]:
+        path_matches: list[PathCompletionMatch | ModelCompletionMatch] = list(
+            path_completion_matches(
+                dock_buffer.document.text_before_cursor,
+                _current_workspace(),
+            )
+        )
+        if path_matches:
+            return path_matches
+        if model_completion_models is None:
+            return []
+        return list(
+            model_completion_matches(
+                dock_buffer.document.text_before_cursor,
+                model_completion_models(),
+            )
         )
 
     def _path_menu_open() -> bool:
@@ -570,7 +585,11 @@ def build_app(
             caret = caret_on if selected else "  "
             label_style = f"fg:{COLOR_ACCENT} bold" if selected else ""
             hint_style = f"fg:{COLOR_ACCENT}" if selected else f"fg:{COLOR_FAINT}"
-            kind = "dir" if item.label.endswith("/") else "file"
+            kind = (
+                item.hint
+                if isinstance(item, ModelCompletionMatch)
+                else ("dir" if item.label.endswith("/") else "file")
+            )
             frags.append((label_style, f" {caret}{item.label}"))
             frags.append((hint_style, f"  {kind}"))
             frags.append(("", "\n"))

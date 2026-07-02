@@ -31,6 +31,10 @@ from shellpilot.cli.manual_shell import (
     run_manual_command,
     run_manual_command_captured,
 )
+from shellpilot.cli.model_completion_cache import (
+    ModelCompletionCache,
+    refresh_model_completion_cache_in_background,
+)
 from shellpilot.cli.model_picker import (
     choose_model,
     confirm_last_model,
@@ -467,6 +471,7 @@ def run_interactive(
         return 1
     installed_models = client.list_models()
     installed = {m.name for m in installed_models}
+    model_completion_cache = ModelCompletionCache(installed_models)
 
     tty = console.is_terminal and sys.stdin.isatty()
     if not should_show_picker(
@@ -773,6 +778,7 @@ def run_interactive(
             )
 
         try:
+            refresh_model_completion_cache_in_background(model_completion_cache, client)
             rc = run_app(
                 runtime,
                 app_runner,
@@ -792,6 +798,7 @@ def run_interactive(
                 is_busy=lambda: runner.busy,
                 register_idle=lambda cb: setattr(app_runner, "on_idle", cb),
                 status_fn=_status_values,
+                model_completion_models=model_completion_cache.snapshot,
             )
         finally:
             # Mirror the legacy REPL: the session is audited as ended once the app

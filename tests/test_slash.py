@@ -75,9 +75,7 @@ def test_help_lists_commands(tmp_path: Path) -> None:
     assert "/model" in out
 
 
-def test_doctor_slash_exit_code_on_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_doctor_slash_exit_code_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tests.test_doctor import down_client
 
     monkeypatch.setattr(
