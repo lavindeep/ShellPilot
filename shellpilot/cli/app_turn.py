@@ -333,7 +333,14 @@ class TurnRunner:
         try:
             fn()
         except Exception as exc:  # noqa: BLE001 - surface ANY worker failure to the pane
-            self._schedule(functools.partial(self._inner_ui.show_error, f"Command failed: {exc}"))
+            # Same rationale as _run: describe_turn_error maps the exception to a
+            # friendly, leak-free line — never the raw str(exc), which can carry an
+            # upstream stream body.
+            self._schedule(
+                functools.partial(
+                    self._inner_ui.show_error, f"Command failed: {describe_turn_error(exc)}"
+                )
+            )
         finally:
             self._schedule(self._mark_done)
 

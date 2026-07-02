@@ -32,6 +32,7 @@ from shellpilot.cli.theme import UNICODE_GLYPHS
 from shellpilot.config.model import Settings
 from shellpilot.llm.client import GenerationCancelled
 from shellpilot.llm.messages import Message
+from shellpilot.llm.ollama import OllamaResponseError
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import TurnStats
@@ -290,6 +291,34 @@ def test_start_action_rejects_when_busy(tmp_path: Path) -> None:
     runner._thread.join(5.0)
     while not q.empty():
         q.get()()
+    assert runner._busy is False
+
+
+def test_start_action_failure_is_leak_free(tmp_path: Path) -> None:
+    # A /plan revise (or other worker-routed slash command) failure must route
+    # through describe_turn_error like _run does — never raw str(exc), which can
+    # embed up to 200 chars of an upstream stream line (internal IPs / infra JSON).
+    app_ui = AppUI(glyphs=UNICODE_GLYPHS, workspace=tmp_path, width_fn=lambda: 80)
+    inner = _RecordingUI(forward=app_ui)
+    q: queue.Queue[Scheduled] = queue.Queue()
+    runner = TurnRunner(inner_ui=inner, schedule=q.put)
+
+    def action() -> None:
+        raise OllamaResponseError("unexpected stream chunk shape: SECRET-UPSTREAM-BODY")
+
+    assert runner.start_action(action) is True
+    assert runner._thread is not None
+    runner._thread.join(5.0)
+    assert not runner._thread.is_alive()
+
+    while not q.empty():
+        q.get()()
+
+    errors = [args for name, args in inner.events if name == "show_error"]
+    assert len(errors) == 1
+    message = str(errors[0][0])
+    assert "SECRET-UPSTREAM-BODY" not in message
+    assert message == "Command failed: The model response was incomplete or malformed."
     assert runner._busy is False
 
 
