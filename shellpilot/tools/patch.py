@@ -128,13 +128,20 @@ def _write_preserving(path: Path, text: str) -> None:
         os.chmod(path, mode)
 
 
-def unified_diff(display_path: str, before: str, after: str) -> str:
+def unified_diff(
+    display_path: str, before: str, after: str, *, max_lines: int | None = MAX_PREVIEW_LINES
+) -> str:
     """Render a unified diff whose headers name *display_path*.
 
     NOTE (display-integrity invariant, design section 14.5): callers pass
     the workspace-relative form of the SAME ``resolve_in_workspace`` result the
     edit acts on, so the diff header — and the approval panel title derived from
     it — always names the file actually written, never the raw model argument.
+
+    *max_lines* caps the rendered diff with a ``... (N more lines)`` marker; the
+    diff the MODEL sees in a tool result keeps the default cap (context budget),
+    but the human-facing approval PREVIEW passes ``None`` so the reviewer can
+    expand the entire diff — every changed hunk — at the approval gate (§31.4).
     """
     lines = list(
         difflib.unified_diff(
@@ -144,8 +151,8 @@ def unified_diff(display_path: str, before: str, after: str) -> str:
             tofile=f"b/{display_path}",
         )
     )
-    if len(lines) > MAX_PREVIEW_LINES:
-        lines = lines[:MAX_PREVIEW_LINES] + [f"... ({len(lines) - MAX_PREVIEW_LINES} more lines)\n"]
+    if max_lines is not None and len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"... ({len(lines) - max_lines} more lines)\n"]
     return "".join(lines)
 
 
@@ -195,7 +202,8 @@ def _patch_preview(context: ToolContext, arguments: dict[str, Any]) -> str:
     if _hides_sensitive_contents(context, path):
         return SENSITIVE_DIFF_PLACEHOLDER
     display = workspace_display(context.workspace, str(arguments["path"]))
-    return unified_diff(display, text, new_text)
+    # Approval preview: uncapped so the reviewer can expand the entire diff (§31.4).
+    return unified_diff(display, text, new_text, max_lines=None)
 
 
 def _write_file(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
@@ -273,7 +281,9 @@ def _write_preview(context: ToolContext, arguments: dict[str, Any]) -> str:
         after = before + content if mode == "append" else content
         if _hides_sensitive_contents(context, path):
             return SENSITIVE_DIFF_PLACEHOLDER
-    return unified_diff(workspace_display(context.workspace, raw_path), before, after)
+    # Approval preview: uncapped so the reviewer can expand the entire diff (§31.4).
+    display = workspace_display(context.workspace, raw_path)
+    return unified_diff(display, before, after, max_lines=None)
 
 
 PATCH_FILE = ToolSpec(

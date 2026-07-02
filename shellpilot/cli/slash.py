@@ -5,12 +5,14 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-from collections.abc import Callable
+import shlex
+from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -38,6 +40,7 @@ from shellpilot.skills.model import SkillTrigger
 
 class SlashAction(Enum):
     CONTINUE = "continue"
+    CLEAR = "clear"
     EXIT = "exit"
     MANUAL_SHELL = "manual_shell"
 
@@ -95,6 +98,149 @@ def command_words() -> list[str]:
     return words
 
 
+@dataclasses.dataclass(frozen=True)
+class SlashMenuItem:
+    """One row of the in-app slash menu (design section 31.20).
+
+    ``fill`` is the command text Tab/Enter inserts (the `<arg>` placeholders
+    dropped); ``label`` is the displayed form keeping the placeholders so the user
+    sees what a command takes; ``takes_args`` drives smart-Enter — an argless
+    command runs on Enter, an arg command fills ``fill + " "`` and waits.
+    """
+
+    fill: str
+    label: str
+    description: str
+    takes_args: bool
+
+
+def slash_menu_items() -> list[SlashMenuItem]:
+    """The full menu, one row per HELP_ROWS entry (no dedupe — arg variants like
+    ``/model use`` and ``/model list`` are distinct rows)."""
+    items: list[SlashMenuItem] = []
+    for entry, purpose in HELP_ROWS:
+        parts = entry.split()
+        fill = " ".join(part for part in parts if not part.startswith("<"))
+        takes_args = any(part.startswith("<") for part in parts)
+        items.append(
+            SlashMenuItem(fill=fill, label=entry, description=purpose, takes_args=takes_args)
+        )
+    return items
+
+
+def slash_menu_matches(text: str, items: Sequence[SlashMenuItem]) -> list[SlashMenuItem]:
+    """Items whose ``fill`` starts with the typed text (case-insensitive).
+
+    Text that does not begin with ``/`` (or is empty) matches nothing — the menu
+    is closed. A bare ``/`` matches everything.
+    """
+    needle = text.strip().lower()
+    if not needle.startswith("/"):
+        return []
+    return [it for it in items if it.fill.lower().startswith(needle)]
+
+
+def slash_menu_open(text: str) -> bool:
+    """True while the user is still typing a command token: the text begins with
+    ``/`` and contains no whitespace yet. The first space (or newline) ends the
+    token — the user has filled a command or moved into its args — so the menu
+    closes. Approval/busy gating is the caller's (it owns that state)."""
+    return text.startswith("/") and not any(char.isspace() for char in text)
+
+
+def slash_menu_window(index: int, total: int, visible: int = 3) -> int:
+    """First visible row so the selected ``index`` stays on screen as a fixed
+    ``visible``-row window scrolls through a longer list (selected kept off the
+    very top until the list nears its end; clamped at both ends)."""
+    if total <= visible:
+        return 0
+    return max(0, min(index - 1, total - visible))
+
+
+def needs_terminal(line: str) -> bool:
+    """True when a slash line must run with the real terminal (run_in_terminal):
+    it confirms, prompts for cloud consent, prints to its own stdout, or preloads.
+
+    The full-screen app (§31.17) runs fast, display-only commands on the loop
+    thread with a pane-capturing console; the forms below instead call
+    ``self._confirm``, the cloud-consent prompt, or do slow preload work
+    (``/model use``), none of which can run on the event-loop thread.
+
+    NOTE: this enumerates every confirm()/consent/own-stdout/preload command. If
+    a new one is added (a new ``self._confirm`` call site, a cloud-consent path,
+    a handler that builds its own console, or a slow preload), add it here too.
+    """
+    parts = line.strip().split()
+    if not parts:
+        return False
+    cmd = parts[0].lower()
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    if cmd == "/shell":  # manual shell
+        return True
+    if cmd == "/clear":  # confirm
+        return True
+    if cmd == "/plan" and sub == "cancel":  # confirm
+        return True
+    if cmd == "/cwd" and sub == "set":  # confirm
+        return True
+    if cmd == "/config" and sub in ("set", "reset"):  # confirm
+        return True
+    if cmd == "/memory" and sub in ("add", "forget", "compact"):  # confirm
+        return True
+    if cmd == "/model" and sub == "use":  # cloud-consent prompt + slow preload
+        # App mode overrides this conservatively: local targets run on the worker
+        # with captured pane output; egressing targets keep the real terminal for
+        # consent. Legacy prompt mode still treats all switches as terminal work.
+        return True
+    return False
+
+
+def needs_worker(line: str) -> bool:
+    """True for a slash command that runs a model turn, so it must execute on the
+    worker thread — NOT the loop thread (would freeze the UI and the approval-gate
+    Future could only be resolved by the now-blocked loop) and NOT under
+    ``run_in_terminal`` (which suspends the app while the turn marshals to it).
+
+    Currently only ``/plan revise <text>`` (it calls ``runtime.run_turn``). A bare
+    ``/plan revise`` with no text only prints usage, so it stays on the loop path.
+
+    NOTE: if another slash command starts driving ``run_turn``, add it here.
+    """
+    parts = line.strip().split()
+    return len(parts) >= 3 and parts[0].lower() == "/plan" and parts[1].lower() == "revise"
+
+
+def needs_background(line: str) -> bool:
+    """True for a NON-interactive slash command that makes a blocking network or
+    filesystem I/O call. It must run off the loop thread (the event loop must
+    never block — a hung Ollama would otherwise freeze the TUI for the client
+    timeout with no Ctrl-C), but it needs no real terminal (no confirm/consent/
+    own-stdout), so the router runs it on the worker and marshals the captured
+    output into the pane.
+
+    ``/doctor`` (Ollama health + model list + writable-path probes),
+    ``/model list`` (``GET /api/tags``), and ``/attach <path>`` (``POST /api/show``
+    for the vision-capability check + image load). A bare ``/attach`` only lists
+    already-staged images in memory, so it stays on the loop path.
+
+    NOTE: add any other non-interactive command that makes a blocking network or
+    filesystem I/O call here — the criterion is "blocks the loop", not just
+    confirm/consent.
+    """
+    parts = line.strip().split()
+    if not parts:
+        return False
+    cmd = parts[0].lower()
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    if cmd == "/doctor":
+        return True
+    if cmd == "/model" and sub == "list":
+        return True
+    if cmd == "/attach" and len(parts) > 1:  # /attach <path> probes /api/show
+        return True
+    return False
+
+
 def render_config(loaded: LoadedConfig, console: Console) -> None:
     table = Table(title="Resolved configuration")
     table.add_column("Key")
@@ -109,6 +255,13 @@ def render_config(loaded: LoadedConfig, console: Console) -> None:
 
 def _default_confirm(prompt: str) -> bool:
     return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
+
+
+def _resolve_user_path(raw: str, workspace: Path) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = workspace / raw
+    return path.resolve()
 
 
 # Per-key risk phrasing for the HIGH_STAKES_KEYS confirm-gate in /config set.
@@ -196,7 +349,13 @@ class SlashDispatcher:
         self._tty = tty
 
     def handle(self, line: str) -> SlashAction:
-        parts = line.strip().split()
+        try:
+            parts = shlex.split(line.strip())
+        except ValueError as exc:
+            self._console.print(f"[red]Could not parse command:[/red] {exc}")
+            return SlashAction.CONTINUE
+        if not parts:
+            return SlashAction.CONTINUE
         command, args = parts[0].lower(), parts[1:]
 
         if command == "/exit":
@@ -206,7 +365,8 @@ class SlashDispatcher:
         if command == "/help":
             self._help()
         elif command == "/clear":
-            self._clear()
+            if self._clear():
+                return SlashAction.CLEAR
         elif command == "/status":
             self._status()
         elif command == "/model":
@@ -251,7 +411,7 @@ class SlashDispatcher:
             table.add_row(command, purpose)
         self._console.print(table)
 
-    def _clear(self) -> None:
+    def _clear(self) -> bool:
         if self._confirm("Clear the conversation (also cancels the active plan)?"):
             had_plan = self._runtime.plan_manager.active is not None
             self._runtime.clear_history()
@@ -259,6 +419,8 @@ class SlashDispatcher:
                 self._console.print("[dim]Conversation cleared and active plan cancelled.[/dim]")
             else:
                 self._console.print("[dim]Conversation cleared.[/dim]")
+            return True
+        return False
 
     def _status(self) -> None:
         status = self._runtime.status()
@@ -331,7 +493,7 @@ class SlashDispatcher:
             # Cloud models are absent from /api/tags — skip the availability gate
             # for them (the typo-catch survives for local names).
             if name not in installed and not is_cloud_model(name):
-                self._console.print(f"[red]{name} is not installed.[/red] See /model list.")
+                self._console.print(f"[red]{escape(name)} is not installed.[/red] See /model list.")
                 return
             # Cloud-egress consent boundary (design section 15.2): switching to a
             # cloud/remote model mid-session requires allow_cloud + per-session
@@ -577,9 +739,9 @@ class SlashDispatcher:
             self._console.print(f"Workspace boundary: {status.workspace}")
             return
         if args[0] == "set" and len(args) > 1:
-            new_workspace = Path(args[1]).expanduser().resolve()
+            new_workspace = _resolve_user_path(args[1], self._runtime.status().workspace)
             if not new_workspace.is_dir():
-                self._console.print(f"[red]{new_workspace} is not a directory.[/red]")
+                self._console.print(f"[red]{escape(str(new_workspace))} is not a directory.[/red]")
                 return
             if self._confirm(f"Change the workspace boundary to {new_workspace}?"):
                 self._runtime.set_workspace(new_workspace)
@@ -590,7 +752,9 @@ class SlashDispatcher:
     def _doctor(self) -> None:
         from shellpilot.cli.doctor import run_doctor
 
-        run_doctor(self._runtime.status().workspace)
+        code = run_doctor(self._runtime.status().workspace, console=self._console)
+        if code != 0:
+            self._console.print(f"[dim]exit code {code}[/dim]")
 
     def _diff(self) -> None:
         diffs = self._runtime.recent_diffs
@@ -655,7 +819,7 @@ class SlashDispatcher:
             return
         workspace = self._runtime.status().workspace
         target = (
-            Path(args[0]).expanduser()
+            _resolve_user_path(args[0], workspace)
             if args
             else project_state_dir(workspace) / "exports" / f"{store.session_id}.md"
         )

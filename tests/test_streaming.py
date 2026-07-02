@@ -71,14 +71,18 @@ def test_response_stream_renders_markdown_on_terminals() -> None:
 def test_response_stream_sanitizes_every_markdown_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Every markdown construction routes through the shared response_markdown
+    # builder (§31.7), which sanitizes internally — record the markup each
+    # returned renderable actually carries.
     sources: list[str] = []
-    real_markdown = streaming_mod.Markdown
+    real_builder = streaming_mod.response_markdown
 
-    def recording_markdown(markup: str) -> Markdown:
-        sources.append(markup)
-        return real_markdown(markup)
+    def recording_builder(text: str) -> Markdown:
+        md = real_builder(text)
+        sources.append(str(md.markup))
+        return md
 
-    monkeypatch.setattr(streaming_mod, "Markdown", recording_markdown)
+    monkeypatch.setattr(streaming_mod, "response_markdown", recording_builder)
     console = terminal_console()
     stream = ResponseStream(console)
     stream.feed("alpha\x1b[2J\x00\n\n**bold**\x07")
@@ -107,18 +111,20 @@ def test_response_stream_preserves_multiline_fenced_markdown(
 ) -> None:
     """B1 sanitization must not corrupt legitimate multi-line fenced markdown.
 
-    Asserts on the markup handed to Markdown — not the Live-streamed export_text,
-    which records intermediate frames and so cannot equal a single static print
-    (every other terminal test here uses substring checks for the same reason).
+    Asserts on the markup carried by the built renderable — not the
+    Live-streamed export_text, which records intermediate frames and so cannot
+    equal a single static print (every other terminal test here uses substring
+    checks for the same reason).
     """
     sources: list[str] = []
-    real_markdown = streaming_mod.Markdown
+    real_builder = streaming_mod.response_markdown
 
-    def recording_markdown(markup: str) -> Markdown:
-        sources.append(markup)
-        return real_markdown(markup)
+    def recording_builder(text: str) -> Markdown:
+        md = real_builder(text)
+        sources.append(str(md.markup))
+        return md
 
-    monkeypatch.setattr(streaming_mod, "Markdown", recording_markdown)
+    monkeypatch.setattr(streaming_mod, "response_markdown", recording_builder)
     content = 'Intro paragraph.\n\n```python\nprint("hello")\n```\n\nFinal **bold** line.\n'
     console = terminal_console()
     stream = ResponseStream(console)

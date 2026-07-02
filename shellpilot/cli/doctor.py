@@ -112,6 +112,8 @@ def run_doctor(
     workspace: Path,
     paths: AppPaths | None = None,
     client: OllamaClient | None = None,
+    *,
+    console: Console | None = None,
 ) -> int:
     owns_client = client is None
     resolved_client = client or OllamaClient(timeout_seconds=3.0)
@@ -120,5 +122,5 @@ def run_doctor(
     finally:
         if owns_client:
             resolved_client.close()
-    render(results, Console())
+    render(results, console or Console())
     return 0 if all(result.ok for result in results) else 1

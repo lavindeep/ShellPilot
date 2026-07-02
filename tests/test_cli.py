@@ -30,7 +30,11 @@ def test_default_invocation_routes_to_interactive(
     seen: list[Path] = []
 
     def fake_interactive(
-        workspace: Path, resume: str | None = None, model_override: str | None = None
+        workspace: Path,
+        resume: str | None = None,
+        model_override: str | None = None,
+        *,
+        legacy_ui: bool = False,
     ) -> int:
         seen.append(workspace)
         return 0
@@ -50,7 +54,11 @@ def test_resume_flag_parses_and_routes(monkeypatch: pytest.MonkeyPatch, tmp_path
     seen: list[str | None] = []
 
     def fake_interactive(
-        workspace: Path, resume: str | None = None, model_override: str | None = None
+        workspace: Path,
+        resume: str | None = None,
+        model_override: str | None = None,
+        *,
+        legacy_ui: bool = False,
     ) -> int:
         seen.append(resume)
         return 0
@@ -59,6 +67,25 @@ def test_resume_flag_parses_and_routes(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert run_cli(["--cwd", str(tmp_path), "--resume"]) == 0
     assert run_cli(["--cwd", str(tmp_path), "--resume", "20260611-101010-abcd"]) == 0
     assert seen == ["latest", "20260611-101010-abcd"]
+
+
+def test_legacy_ui_flag_parses_and_routes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: list[bool] = []
+
+    def fake_interactive(
+        workspace: Path,
+        resume: str | None = None,
+        model_override: str | None = None,
+        *,
+        legacy_ui: bool = False,
+    ) -> int:
+        seen.append(legacy_ui)
+        return 0
+
+    monkeypatch.setattr("shellpilot.cli.terminal.run_interactive", fake_interactive)
+    assert run_cli(["--cwd", str(tmp_path), "--legacy-ui"]) == 0
+    assert run_cli(["--cwd", str(tmp_path)]) == 0
+    assert seen == [True, False]
 
 
 def test_model_flag_parsed() -> None:
@@ -77,7 +104,11 @@ def test_model_flag_passed_to_run_interactive(
     seen: list[str | None] = []
 
     def fake_interactive(
-        workspace: Path, resume: str | None = None, model_override: str | None = None
+        workspace: Path,
+        resume: str | None = None,
+        model_override: str | None = None,
+        *,
+        legacy_ui: bool = False,
     ) -> int:
         seen.append(model_override)
         return 0

@@ -37,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Model to use for this session (skips the boot picker).",
     )
+    parser.add_argument(
+        "--legacy-ui",
+        action="store_true",
+        help="Use the classic line-based REPL instead of the full-screen UI.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser(
         "doctor", help="Check local prerequisites (Python, Ollama, models, paths)."
@@ -63,7 +68,12 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
 
     from shellpilot.cli.terminal import run_interactive
 
-    return run_interactive(workspace, resume=args.resume, model_override=args.model)
+    return run_interactive(
+        workspace,
+        resume=args.resume,
+        model_override=args.model,
+        legacy_ui=args.legacy_ui,
+    )
 
 
 def _run_config(workspace: Path, action: str) -> int:

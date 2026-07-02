@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 @dataclass
 class FakeUI:
     tokens: list[str] = field(default_factory=list)
+    thinking_fragments: list[str] = field(default_factory=list)
     began: int = 0
     ended: int = 0
     turn_stats: list[TurnStats] = field(default_factory=list)
@@ -35,6 +36,9 @@ class FakeUI:
 
     def stream_token(self, token: str) -> None:
         self.tokens.append(token)
+
+    def stream_thinking(self, text: str) -> None:
+        self.thinking_fragments.append(text)
 
     def begin_response(self) -> None:
         self.began += 1

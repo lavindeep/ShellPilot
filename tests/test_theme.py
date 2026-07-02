@@ -48,6 +48,18 @@ class _EncodedFile(io.StringIO):
         return self._encoding
 
 
+def test_color_env_is_hermetic() -> None:
+    """No ambient color override reaches a test, regardless of the invoking
+    shell — the autouse fixture in conftest.py strips them (FORCE_COLOR=3 in a
+    dev shell otherwise makes StringIO consoles claim to be terminals)."""
+    import os
+
+    from tests.conftest import COLOR_ENV_VARS
+
+    for var in COLOR_ENV_VARS:
+        assert var not in os.environ, f"{var} leaked into the test environment"
+
+
 def test_theme_defines_all_required_styles() -> None:
     for name in REQUIRED_STYLES:
         assert name in SHELLPILOT_THEME.styles, f"missing theme style: {name}"
@@ -83,3 +95,28 @@ def test_glyph_sets_cover_the_same_fields() -> None:
     assert UNICODE_GLYPHS.bullet != ASCII_GLYPHS.bullet
     assert UNICODE_GLYPHS.spinner_frames and ASCII_GLYPHS.spinner_frames
     assert UNICODE_GLYPHS.beacon_frames and ASCII_GLYPHS.beacon_frames
+
+
+MARKDOWN_STYLES = (
+    "markdown.code",
+    "markdown.h1",
+    "markdown.h2",
+    "markdown.h3",
+    "markdown.hr",
+    "markdown.link",
+    "markdown.link_url",
+)
+
+
+def test_theme_overrides_markdown_styles() -> None:
+    # Rich's defaults paint inline code "bold cyan on black" and headings
+    # magenta — both off-palette, and the black chip violates the theme's own
+    # never-set-a-background rule (§31.1). The theme must own these names.
+    for name in MARKDOWN_STYLES:
+        assert name in SHELLPILOT_THEME.styles, f"missing markdown override: {name}"
+
+
+def test_markdown_styles_paint_no_background() -> None:
+    for name in MARKDOWN_STYLES:
+        style = SHELLPILOT_THEME.styles[name]
+        assert style.bgcolor is None, f"{name} sets a background fill"

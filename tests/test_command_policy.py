@@ -39,6 +39,9 @@ CASES: list[tuple[list[str], RiskLevel]] = [
     (["wget", "https://example.com/f"], RiskLevel.MEDIUM),
     (["kill", "1234"], RiskLevel.MEDIUM),
     (["chmod", "644", "f.txt"], RiskLevel.MEDIUM),
+    (["open", "report.pdf"], RiskLevel.MEDIUM),
+    (["open", "https://example.com"], RiskLevel.MEDIUM),
+    (["xdg-open", "."], RiskLevel.MEDIUM),
     (["unknown-binary", "--do-thing"], RiskLevel.MEDIUM),
     # High: deletes, privilege, destructive git, raw shell, secrets
     (["rm", "-rf", "build"], RiskLevel.HIGH),
@@ -82,6 +85,16 @@ GIT_PRE_VERB_CASES: list[tuple[list[str], RiskLevel]] = [
 def test_classification_table(argv: list[str], expected: RiskLevel) -> None:
     result = classify_command(argv, workspace=WS)
     assert result.risk == expected, f"{argv}: {result.reasons}"
+
+
+def test_open_is_recognized_not_unknown() -> None:
+    # `open`/`xdg-open` are recognized launchers (MEDIUM, approval-gated), not the
+    # generic "unknown executable" fallback — the reason names what they do.
+    for argv in (["open", "report.pdf"], ["xdg-open", "https://example.com"]):
+        result = classify_command(argv, workspace=WS)
+        assert result.risk == RiskLevel.MEDIUM
+        assert "launches an application or URL" in result.reasons[0]
+        assert "unknown executable" not in result.reasons[0]
 
 
 @pytest.mark.parametrize("argv", [["pytest", "-q"], ["python", "-m", "pytest"]])

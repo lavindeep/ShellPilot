@@ -60,6 +60,33 @@ def test_clear_marker_resets_loaded_messages(tmp_path: Path) -> None:
     assert [m.content for m in loaded.messages] == ["after clear"]
 
 
+def test_replace_last_message_updates_loaded_transcript(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.record_message(Message(role="user", content="before"))
+    store.record_message(
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=(
+                ToolCall(name="one", arguments={}),
+                ToolCall(name="two", arguments={}),
+            ),
+        )
+    )
+    store.replace_last_message(
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=(ToolCall(name="one", arguments={}),),
+        )
+    )
+
+    loaded = SessionStore.load(store.path)
+
+    assert [m.role for m in loaded.messages] == ["user", "assistant"]
+    assert [call.name for call in loaded.messages[-1].tool_calls] == ["one"]
+
+
 def test_latest_picks_newest_session(tmp_path: Path) -> None:
     directory = tmp_path / "sessions"
     make_store(tmp_path, "20260611-090000-aaaa").record_message(Message(role="user", content="old"))

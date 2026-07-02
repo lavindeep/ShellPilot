@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from shellpilot.config.model import Settings, is_egressing
-from shellpilot.llm.client import LLMClient
+from shellpilot.llm.client import GenerationCancelled, LLMClient
 from shellpilot.llm.messages import ImageRef, Message, tool_result, user
 from shellpilot.llm.ollama import encode_tool
 from shellpilot.memory.agents_md import BehaviorInstructions
@@ -155,6 +156,12 @@ class ConversationRuntime:
         self._staged_tool_images: list[ImageRef] = []
         self._last_user_text = ""
         self._last_failure_signature: str | None = None
+        self._turn_output_tokens: int = 0
+        # Branch-6 per-turn cancel handle (§31.15): None unless run_turn is given
+        # a cancel event for this turn. Read by _tool_loop and passed to each
+        # model call. Reassigned at every run_turn start so a stale event from a
+        # prior turn can never leak across turns.
+        self._cancel: threading.Event | None = None
         self.snapshots = SnapshotStore()
         self.recent_diffs: list[str] = []
         self.plan_manager = PlanManager(workspace, settings.runtime.security_profile)
@@ -476,11 +483,29 @@ class ConversationRuntime:
             changed += 1
         return changed
 
-    def run_turn(self, text: str, *, images: Sequence[ImageRef] = ()) -> str:
-        """One user turn: budget-check, compact, call the model, stream, record."""
+    def run_turn(
+        self,
+        text: str,
+        *,
+        images: Sequence[ImageRef] = (),
+        cancel: threading.Event | None = None,
+    ) -> str:
+        """One user turn: budget-check, compact, call the model, stream, record.
+
+        ``cancel`` (branch 6, §31.15) is the turn-abort signal: when set
+        mid-stream the model call raises ``GenerationCancelled``, which this
+        method lets PROPAGATE. The user message recorded below stays (the turn
+        happened); the partial assistant reply is never reached at the record
+        site, so a cancelled turn leaves NO partial reply in history. ``cancel``
+        defaults to None, so every existing caller is byte-identical.
+        """
+        # Assigned (not merely defaulted) at the top so a stale event from a
+        # prior turn can never leak into this one; the tool loop reads it.
+        self._cancel = cancel
         # Belt-and-braces: a stale stage left by an aborted prior turn must not
         # attach to this unrelated turn's first message.
         self._staged_tool_images.clear()
+        self._turn_output_tokens = 0
         if estimate_tokens(text) > self.budget.max_user_message_tokens:
             self._ui.show_status(
                 "Message too large for the model context "
@@ -526,6 +551,7 @@ class ConversationRuntime:
             context_tokens=used,
             context_pct=pct,
             warn=used > self.budget.compact_at_tokens,
+            output_tokens=self._turn_output_tokens,
         )
 
     def _pending_plan_step(self) -> tuple[int, str] | None:
@@ -554,6 +580,19 @@ class ConversationRuntime:
             return pending, plan.steps[pending - 1].title
         return None
 
+    def _active_plan_step(self) -> tuple[int, str] | None:
+        """Currently active plan step, without falling back to pending steps."""
+        plan = self.plan_manager.active
+        if plan is None or plan.status != "active":
+            return None
+        active = next(
+            (i for i, step in enumerate(plan.steps, start=1) if step.status == "active"),
+            None,
+        )
+        if active is None:
+            return None
+        return active, plan.steps[active - 1].title
+
     def _tool_loop(self) -> Message:
         """Model call loop with tool dispatch, budgets, and recovery (section 10.4)."""
         executor = ToolExecutor(
@@ -569,6 +608,7 @@ class ConversationRuntime:
             snapshots=self.snapshots,
             audit=self._audit,
             allow_sensitive_reads=self._settings.privacy.allow_sensitive_reads,
+            cancel=self._cancel,
         )
         tools = executor.available_definitions()
         tool_turns = 0
@@ -610,9 +650,16 @@ class ConversationRuntime:
                     num_ctx=self.budget.model_context_tokens,
                     options=self._settings.model.options,
                     on_token=self._ui.stream_token,
+                    on_thinking=self._ui.stream_thinking,
+                    cancel=self._cancel,
                 )
             finally:
                 self._ui.end_response()
+            self._turn_output_tokens += reply.output_tokens
+            # History length BEFORE this model step is recorded, so a mid-tool
+            # cancel (below) can roll the step back out and leave no orphaned
+            # tool_call behind (§31.15).
+            history_before_reply = len(self._history)
             self._record(reply)
             if not reply.tool_calls:
                 pending = self._pending_plan_step()
@@ -673,9 +720,23 @@ class ConversationRuntime:
                 and self.plan_manager.active.status == "completed"
             )
 
-            for call in reply.tool_calls:
+            for call_index, call in enumerate(reply.tool_calls):
                 self._ui.show_tool_call(call.name, call.arguments)
                 outcome = executor.execute(call)
+                if self._cancel is not None and self._cancel.is_set():
+                    # A Ctrl-C during tool execution (e.g. a long run_command just
+                    # killed by the cancel signal) aborts the turn. Roll THIS model
+                    # step's reply + any partial tool results back out of history so
+                    # no orphaned tool_call (an assistant tool_call with no matching
+                    # result) is re-sent on the next turn — the same clean discard as
+                    # the model-stream cancel, which never records its partial reply.
+                    # Prior completed steps stay; the worker then routes through
+                    # abort_turn (⏹ aborted), and partial command output already
+                    # streamed to the pane stays visible (§31.15).
+                    del self._history[history_before_reply:]
+                    if self._session is not None:
+                        self._session.truncate_last_turn()
+                    raise GenerationCancelled
                 # Feed side-effecting tool outcomes to the plan completion guard.
                 # Key off the SPEC's side_effect (not the result's): a failed or
                 # denied result carries SideEffect.NONE, which would hide exactly
@@ -714,7 +775,21 @@ class ConversationRuntime:
                     diff = outcome.result.metadata.get("diff", "")
                     if outcome.result.success and diff:
                         self.recent_diffs.append(diff)
+                if outcome.stop_turn:
+                    if call_index + 1 < len(reply.tool_calls):
+                        reply = dataclasses.replace(
+                            reply, tool_calls=reply.tool_calls[: call_index + 1]
+                        )
+                        self._history[history_before_reply] = reply
+                        if self._session is not None:
+                            self._session.replace_last_message(reply)
                 self._record(tool_result(outcome.model_text))
+                if outcome.stop_turn:
+                    active_step = self._active_plan_step()
+                    if active_step is not None:
+                        index, _title = active_step
+                        self._ui.show_status(f"Action declined; plan paused on step {index}.")
+                    return reply
                 self._track_repeated_failure(call.name, outcome)
 
             # Drain images staged by view_image during THIS batch. Placed after

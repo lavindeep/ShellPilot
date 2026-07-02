@@ -14,6 +14,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,9 @@ DEFAULT_TIMEOUT_SECONDS = 600
 # Maximum chars read in a single readline() call so a newline-less stream cannot
 # materialise an unbounded string before the total-capture cap is consulted.
 MAX_READ_CHARS = 65_536
+# NOTE: wait-loop poll interval (§31.15). Caps the Ctrl-C kill latency for a
+# running child at ~0.1 s; tighten only if that ceiling ever matters.
+_POLL_SECONDS = 0.1
 # Exit codes that mean "ran fine, found nothing" rather than failure (section 24.3).
 EXPECTED_NONZERO: dict[str, frozenset[int]] = {
     "grep": frozenset({1}),
@@ -101,6 +105,7 @@ def run_command_process(
     *,
     max_capture_chars: int,
     emit_line: Callable[[str], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> CommandOutcome:
     """Run argv with shell=False, streaming output, bounding capture, killing on timeout."""
     # NOTE (Investigation C, v0.5.1): the MallocStackLogging fork-window line cannot
@@ -154,16 +159,33 @@ def run_command_process(
     thread = threading.Thread(target=reader, daemon=True)
     thread.start()
 
-    timed_out = False
-    try:
-        process.wait(timeout=request.timeout_seconds)
-    except subprocess.TimeoutExpired:
-        timed_out = True
+    def _kill_group() -> None:
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             process.kill()
-        process.wait(timeout=5)
+
+    timed_out = False
+    deadline = time.monotonic() + request.timeout_seconds
+    while True:
+        try:
+            process.wait(timeout=_POLL_SECONDS)
+            break  # exited on its own
+        except subprocess.TimeoutExpired:
+            # Ctrl-C mid-command: kill the child's whole process group now rather
+            # than waiting out the timeout (§31.15). The worker owns this Popen, so
+            # it kills its own child — no cross-thread signal, no registry. The turn
+            # abort is driven by the cancel Event in the tool loop, not by the
+            # outcome, so no "cancelled" flag is recorded here.
+            if cancel is not None and cancel.is_set():
+                _kill_group()
+                process.wait(timeout=5)
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                _kill_group()
+                process.wait(timeout=5)
+                break
     thread.join(timeout=5)
 
     return CommandOutcome(
@@ -299,6 +321,7 @@ def _run_command(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
             ),
             max_capture_chars=context.max_capture_chars,
             emit_line=context.emit_output,
+            cancel=context.cancel,
         )
     except OSError as exc:
         return ToolResult(success=False, summary=f"could not start command: {exc}", content="")

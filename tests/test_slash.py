@@ -8,13 +8,19 @@ from rich.console import Console
 from shellpilot.cli.slash import SlashAction, SlashDispatcher
 from shellpilot.config.loader import LoadedConfig, load_config
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.persistence.sessions import SessionStore
 from shellpilot.runtime.conversation import ConversationRuntime
 from tests.fakes.fake_llm import FakeLLM, answer
 from tests.fakes.fake_ui import FakeUI
 
 
 class Harness:
-    def __init__(self, tmp_path: Path, confirm_answer: bool = True) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        confirm_answer: bool = True,
+        session: SessionStore | None = None,
+    ) -> None:
         self.console = Console(record=True, width=100)
         self.fake = FakeLLM(script=[answer("hello")])
         self.loaded = self._load(tmp_path)
@@ -24,6 +30,7 @@ class Harness:
             workspace=tmp_path,
             behavior=BehaviorInstructions(global_text=None, project_text=None),
             ui=FakeUI(),
+            session=session,
         )
         self.reloads = 0
 
@@ -68,6 +75,20 @@ def test_help_lists_commands(tmp_path: Path) -> None:
     assert "/model" in out
 
 
+def test_doctor_slash_exit_code_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_doctor import down_client
+
+    monkeypatch.setattr(
+        "shellpilot.cli.doctor.OllamaClient",
+        lambda timeout_seconds=3.0: down_client(),
+    )
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/doctor")
+    out = harness.output()
+    assert "fail" in out
+    assert "exit code 1" in out
+
+
 def test_unknown_command_reports(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/bogus")
@@ -77,12 +98,12 @@ def test_unknown_command_reports(tmp_path: Path) -> None:
 def test_clear_requires_confirmation(tmp_path: Path) -> None:
     harness = Harness(tmp_path, confirm_answer=False)
     harness.runtime.run_turn("hi")
-    harness.dispatcher.handle("/clear")
+    assert harness.dispatcher.handle("/clear") is SlashAction.CONTINUE
     assert harness.runtime.status().history_messages == 2  # declined
 
     harness2 = Harness(tmp_path, confirm_answer=True)
     harness2.runtime.run_turn("hi")
-    harness2.dispatcher.handle("/clear")
+    assert harness2.dispatcher.handle("/clear") is SlashAction.CLEAR
     assert harness2.runtime.status().history_messages == 0
 
 
@@ -300,6 +321,49 @@ def test_cwd_set_rejects_missing_dir(tmp_path: Path) -> None:
     assert "not a directory" in harness.output()
 
 
+def test_cwd_set_rejects_relative_missing_dir_from_workspace(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+
+    harness.dispatcher.handle("/cwd set nope")
+
+    assert harness.runtime.status().workspace == tmp_path
+    out = harness.output()
+    assert "nope is not a directory" in out
+    assert "Projects/ShellPilot/nope" not in out
+
+
+def test_cwd_set_relative_path_resolves_from_workspace(tmp_path: Path) -> None:
+    new_workspace = tmp_path / "other"
+    new_workspace.mkdir()
+    harness = Harness(tmp_path, confirm_answer=True)
+
+    harness.dispatcher.handle("/cwd set other")
+
+    assert harness.runtime.status().workspace == new_workspace.resolve()
+    out = harness.output()
+    assert "Workspace boundary:" in out
+    assert "other" in out
+
+
+def test_cwd_set_rejects_missing_dir_with_markup_in_name(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+
+    harness.dispatcher.handle("/cwd set 'nope[/bold]'")
+
+    assert harness.runtime.status().workspace == tmp_path
+    assert "not a directory" in harness.output()
+
+
+def test_cwd_set_accepts_escaped_space_in_relative_path(tmp_path: Path) -> None:
+    new_workspace = tmp_path / "My Project"
+    new_workspace.mkdir()
+    harness = Harness(tmp_path, confirm_answer=True)
+
+    harness.dispatcher.handle("/cwd set My\\ Project")
+
+    assert harness.runtime.status().workspace == new_workspace.resolve()
+
+
 def test_profile_use_switches_and_audits(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/profile use supervised")
@@ -324,6 +388,32 @@ def test_export_without_session_store_reports(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/export")
     assert "No session transcript" in harness.output()
+
+
+def test_export_relative_path_resolves_from_workspace(tmp_path: Path) -> None:
+    session = SessionStore(tmp_path / "sessions", "s1")
+    session.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    harness = Harness(tmp_path, session=session)
+
+    harness.dispatcher.handle("/export exports/out.md")
+
+    target = tmp_path / "exports" / "out.md"
+    assert target.is_file()
+    assert "ShellPilot session s1" in target.read_text(encoding="utf-8")
+    out = harness.output()
+    assert "Exported transcript to" in out
+    assert "out.md" in out
+
+
+def test_export_accepts_escaped_space_in_relative_path(tmp_path: Path) -> None:
+    session = SessionStore(tmp_path / "sessions", "s1")
+    session.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    harness = Harness(tmp_path, session=session)
+
+    harness.dispatcher.handle("/export My\\ Export.md")
+
+    target = tmp_path / "My Export.md"
+    assert target.is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -1115,3 +1205,77 @@ def test_skills_renders_budget_skip_reason_from_decision(tmp_path: Path) -> None
     assert "no" in out
     assert "Reason" in out
     assert "skipped: skill budget" in out
+
+
+# --- In-app slash menu helpers (§31.20) -------------------------------------
+
+from shellpilot.cli.slash import (  # noqa: E402
+    SlashMenuItem,
+    slash_menu_items,
+    slash_menu_matches,
+    slash_menu_open,
+    slash_menu_window,
+)
+
+
+def test_slash_menu_items_cover_help_rows_with_args_flag() -> None:
+    items = slash_menu_items()
+    by_label = {it.label: it for it in items}
+    # argless command: fill == label, takes_args False
+    assert by_label["/status"].fill == "/status"
+    assert by_label["/status"].takes_args is False
+    # arg command: fill drops the <placeholder>, takes_args True, label keeps it
+    use = by_label["/model use <name>"]
+    assert use.fill == "/model use"
+    assert use.takes_args is True
+    assert "Switch the active local model" in use.description
+
+
+def test_slash_menu_matches_filters_by_typed_prefix() -> None:
+    items = slash_menu_items()
+    fills = {it.fill for it in slash_menu_matches("/co", items)}
+    assert "/compact" in fills and "/config edit" in fills and "/context" in fills
+    assert "/status" not in fills
+    # case-insensitive
+    assert slash_menu_matches("/CO", items) == slash_menu_matches("/co", items)
+
+
+def test_slash_menu_matches_bare_slash_returns_all() -> None:
+    items = slash_menu_items()
+    assert slash_menu_matches("/", items) == items
+
+
+def test_slash_menu_matches_non_slash_or_empty_is_empty() -> None:
+    items = slash_menu_items()
+    assert slash_menu_matches("", items) == []
+    assert slash_menu_matches("hello", items) == []
+    assert slash_menu_matches("/zzz", items) == []  # no command starts with /zzz
+
+
+def test_slash_menu_open_only_while_typing_the_token() -> None:
+    assert slash_menu_open("/") is True
+    assert slash_menu_open("/conf") is True
+    assert slash_menu_open("/model use") is False  # a space ended the token
+    assert slash_menu_open("/model\n") is False  # newline → multiline, closed
+    assert slash_menu_open("hello") is False
+    assert slash_menu_open("") is False
+
+
+def test_slash_menu_window_scrolls_to_keep_selection_visible() -> None:
+    # total 5, window 3: selection slides the window, clamped at both ends.
+    assert slash_menu_window(0, 5, 3) == 0
+    assert slash_menu_window(1, 5, 3) == 0
+    assert slash_menu_window(2, 5, 3) == 1
+    assert slash_menu_window(3, 5, 3) == 2
+    assert slash_menu_window(4, 5, 3) == 2  # clamped: never scrolls past the end
+    # fewer items than the window → always start at 0
+    assert slash_menu_window(1, 2, 3) == 0
+
+
+def test_slash_menu_item_is_frozen_dataclass() -> None:
+    it = SlashMenuItem(fill="/x", label="/x", description="d", takes_args=False)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        it.fill = "/y"  # type: ignore[misc]
+
+
+import dataclasses  # noqa: E402

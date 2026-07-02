@@ -8,17 +8,20 @@ guaranteed at any terminal width. Styles are theme names from cli/theme.py.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from rich import box
 from rich.cells import cell_len
-from rich.console import Group
+from rich.console import Group, RenderableType
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
 from shellpilot.cli.theme import Glyphs
 from shellpilot.policy.approvals import ApprovalRequest
+from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.planner import PlanStep, TaskPlan
 
 WORD_HIGHLIGHT_RATIO = 0.5
@@ -61,12 +64,130 @@ def context_line(
     return Text(path_str + suffix, style="sp.dim")
 
 
+# Syntax theme for fenced code in model responses (§31.7): ANSI colors on the
+# terminal's own background — never a painted fill like monokai's.
+MARKDOWN_CODE_THEME = "ansi_dark"
+
+
+def response_markdown(text: str) -> Markdown:
+    """Model-response markdown (§31.7): sanitized, code on the terminal background.
+
+    The one builder for every response sink (the app pane's committed and
+    in-progress responses, the legacy REPL's live stream and final render), so
+    code rendering can't drift between them.
+    """
+    return Markdown(_sanitize_line(text), code_theme=MARKDOWN_CODE_THEME)
+
+
 def tool_call(name: str, args_summary: str, glyphs: Glyphs) -> Text:
+    # Generic fallback line for tools with no clean primary subject (§31.3): name
+    # bright, the key=value summary dim so routine plumbing doesn't shout. Tools
+    # with a subject route through tool_call_block (framed or inline) instead.
     return Text.assemble(
         (f"{glyphs.bullet} ", ""),
         (_sanitize_line(name), "sp.emph"),
         (f"({_sanitize_line(args_summary)})", "sp.dim"),
     )
+
+
+# Built-in tools whose primary action deserves a framed, high-contrast subject
+# (§31.3): the command that runs, the URL that egresses. Their tool-call line is
+# `⏺ <label>` followed by a bordered box holding the actual subject.
+_FRAMED_LABELS = {"run_command": "run command", "web_fetch": "web_fetch"}
+
+# The single argument that IS the subject for each built-in tool that has one
+# (`⏺ name  subject`, readable, not the name(key=repr) form). run_command is the
+# exception — its subject is the joined argv, handled directly below. A `path`
+# subject is resolved (display-integrity, §14.5) by the caller.
+_SUBJECT_KEY = {
+    "read_file": "path",
+    "list_dir": "path",
+    "view_image": "path",
+    "write_file": "path",
+    "patch_file": "path",
+    "web_search": "query",
+    "search_text": "pattern",
+    "skill_read": "resource",
+    "web_fetch": "url",
+}
+
+
+def _tool_subject(
+    name: str, redacted: dict[str, object], path_display: Callable[[str], str]
+) -> str | None:
+    """The clean primary subject for a built-in tool, or None to fall back.
+
+    `redacted` is the secret-redacted argument dict; a `path` subject is run
+    through `path_display` so the shown target is the resolved, workspace-relative
+    one the handler acts on (never the raw, possibly spoofing arg, §14.5).
+    """
+    if name == "run_command":
+        argv = redacted.get("argv")
+        if isinstance(argv, list) and argv:
+            return " ".join(str(token) for token in argv)
+        return None
+    key = _SUBJECT_KEY.get(name)
+    if key is None:
+        return None
+    value = redacted.get(key)
+    if not isinstance(value, str) or not value:
+        return None
+    return path_display(value) if key == "path" else value
+
+
+def _arg_summary(
+    redacted: dict[str, object], glyphs: Glyphs, path_display: Callable[[str], str]
+) -> str:
+    # The generic key=value summary. A `path` value is resolved (§14.5); the line
+    # is capped so a chatty argument set can't run off the side.
+    parts = []
+    for key, value in redacted.items():
+        if key == "path" and isinstance(value, str):
+            parts.append(f"{key}={path_display(value)!r}")
+        else:
+            parts.append(f"{key}={value!r}")
+    summary = ", ".join(parts)
+    if len(summary) > 80:
+        summary = summary[:79] + glyphs.ellipsis
+    return summary
+
+
+def tool_call_block(
+    name: str,
+    redacted: dict[str, object],
+    glyphs: Glyphs,
+    *,
+    path_display: Callable[[str], str],
+) -> list[RenderableType]:
+    """Renderable(s) for one tool-call line (§31.3).
+
+    Pure: `redacted` is the already secret-redacted argument dict and `path_display`
+    resolves a path arg to its workspace-relative display — no I/O here. Returns a
+    framed [header, box] for the consequential tools (run_command, web_fetch), a
+    single inline `⏺ name  subject` line for tools with a clean primary subject,
+    or the generic `⏺ name(args)` line for everything else.
+    """
+    subject = _tool_subject(name, redacted, path_display)
+    label = _FRAMED_LABELS.get(name)
+    if subject and label is not None:
+        header = Text.assemble((f"{glyphs.bullet} ", ""), (_sanitize_line(label), "sp.emph"))
+        frame = Panel(
+            Text(_sanitize_line(subject), style="sp.cmd"),
+            box=box.ROUNDED,
+            border_style="sp.faint",
+            expand=False,
+            padding=(0, 1),
+        )
+        return [header, frame]
+    if subject:
+        return [
+            Text.assemble(
+                (f"{glyphs.bullet} ", ""),
+                (_sanitize_line(name), "sp.emph"),
+                (f"  {_sanitize_line(subject)}", "sp.value"),
+            )
+        ]
+    return [tool_call(name, _arg_summary(redacted, glyphs, path_display), glyphs)]
 
 
 def tool_result(success: bool, summary: str, glyphs: Glyphs) -> Text:
@@ -155,25 +276,39 @@ def _diff_row(
     return row
 
 
-def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
+def _diff_rows(
+    diff_text: str, glyphs: Glyphs, *, width: int | None = None
+) -> tuple[list[Text], str]:
     """Parse a unified diff into rendered rows plus the panel title name.
 
     Shared by :func:`render_diff` and the streaming ``DiffReveal`` so the reveal
     animation and the settled panel never drift in how a diff is rendered.
+
+    *width* is the target panel width (§31.16). When given, changed-line bars
+    fill to the panel's INNER width so every bar is full at the standardized
+    size; a line longer than that target keeps its length and folds at render
+    time (the pad clamp leaves it untouched). ``None`` (the default for
+    ``DiffReveal`` and unsized callers) pads to the widest changed line as before.
     """
     lines = [_sanitize_line(line) for line in diff_text.splitlines()]
-    width = _gutter_width(lines)
-    # Widest changed-line content, so every removal/addition fills its colored
-    # background to a uniform width (full-line red/green bars, DESIGN 31.4).
-    pad_width = max(
-        (
-            cell_len(line[1:])
-            for line in lines
-            if (line.startswith("-") and not line.startswith("---"))
-            or (line.startswith("+") and not line.startswith("+++"))
-        ),
-        default=0,
-    )
+    gutter = _gutter_width(lines)
+    if width is not None:
+        # Inner content region = width - 2 (borders) - 2 (padding); a row is the
+        # gutter ("{n} ", gutter+1 chars) + "{marker} {content}" (2 + content), so
+        # content fills the region when its length is width - gutter - 7.
+        pad_width = max(0, width - gutter - 7)
+    else:
+        # Widest changed-line content, so every removal/addition fills its colored
+        # background to a uniform width (full-line red/green bars, DESIGN 31.4).
+        pad_width = max(
+            (
+                cell_len(line[1:])
+                for line in lines
+                if (line.startswith("-") and not line.startswith("---"))
+                or (line.startswith("+") and not line.startswith("+++"))
+            ),
+            default=0,
+        )
     title_name = "diff"
     rows: list[Text] = []
     old_no = new_no = 0
@@ -213,7 +348,7 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
                 rows.append(
                     _diff_row(
                         old_no,
-                        width,
+                        gutter,
                         "-",
                         content,
                         "sp.diff.remove",
@@ -227,7 +362,7 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
                 rows.append(
                     _diff_row(
                         new_no,
-                        width,
+                        gutter,
                         "+",
                         content,
                         "sp.diff.add",
@@ -240,7 +375,7 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
         elif line.startswith("+"):
             rows.append(
                 _diff_row(
-                    new_no, width, "+", line[1:], "sp.diff.add", None, None, pad_width=pad_width
+                    new_no, gutter, "+", line[1:], "sp.diff.add", None, None, pad_width=pad_width
                 )
             )
             new_no += 1
@@ -250,22 +385,28 @@ def _diff_rows(diff_text: str, glyphs: Glyphs) -> tuple[list[Text], str]:
             i += 1
         else:
             content = line[1:] if line.startswith(" ") else line
-            rows.append(_diff_row(new_no, width, " ", content, None, None, None))
+            rows.append(_diff_row(new_no, gutter, " ", content, None, None, None))
             old_no += 1
             new_no += 1
             i += 1
     return rows, title_name
 
 
-def render_diff(diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None) -> Panel:
+def render_diff(
+    diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None, width: int | None = None
+) -> Panel:
     """An editor-style diff panel: gutter, line backgrounds, word highlights.
 
     When *max_rows* is set and the rendered diff exceeds it, the panel keeps the
     first ``max_rows`` rows and appends one ``… (+N more)`` footer (``sp.faint``,
     mirroring :func:`output_truncation`). ``max_rows=None`` (the default at every
     existing call site) renders the full diff unchanged.
+
+    *width* standardizes the panel to that fixed width (§31.16): bars fill to the
+    inner width and over-long lines fold onto continuation rows instead of running
+    off the side. ``None`` keeps the legacy hug-the-widest-line sizing.
     """
-    rows, title_name = _diff_rows(diff_text, glyphs)
+    rows, title_name = _diff_rows(diff_text, glyphs, width=width)
     if max_rows is not None and len(rows) > max_rows:
         hidden = len(rows) - max_rows
         rows = rows[:max_rows]
@@ -278,8 +419,18 @@ def render_diff(diff_text: str, glyphs: Glyphs, *, max_rows: int | None = None) 
         box=box.ROUNDED,
         border_style="sp.faint",
         expand=False,
+        width=width,
         padding=(0, 1),
     )
+
+
+def diff_row_count(diff_text: str, glyphs: Glyphs) -> int:
+    """Rendered row count of a diff — what a collapse cap is compared against.
+
+    Lets a caller decide whether a diff overflows a row cap (and thus needs a
+    collapse/expand affordance) without rendering the panel.
+    """
+    return len(_diff_rows(diff_text, glyphs)[0])
 
 
 def badge(level: str, *, plain: bool = False) -> Text:
@@ -289,18 +440,86 @@ def badge(level: str, *, plain: bool = False) -> Text:
     return Text(f" {label} ", style=_BADGE_STYLES.get(level.lower(), "sp.badge.medium"))
 
 
+def _stat_row(info: Text, label: str, value: str) -> None:
+    # One stat-block row (§31.5): a muted fixed-width label and a readable value.
+    # The value is sanitized — defense in depth even though reasons/purpose are
+    # classifier/template strings, not model output. Callers own the line break
+    # between rows so a standalone row (approval_cwd) carries no leading blank.
+    info.append(f"  {label:<6} ", style="sp.label")
+    info.append(_sanitize_line(value), style="sp.value")
+
+
 def approval_info(request: ApprovalRequest, *, plain_badge: bool = False) -> Text:
+    # Stat block (§31.5): a colored risk badge, then muted labels with readable
+    # values, so WHY the action is gated and its EFFECT can't be missed — the old
+    # single dim "kind · reasons · purpose" line buried all of it in gray.
     info = Text("  ")
     info.append_text(badge(request.risk.value, plain=plain_badge))
-    details = [request.kind, *request.reasons]
+    if request.reasons:
+        info.append("\n")
+        _stat_row(info, "WHY", " · ".join(request.reasons))
     if request.purpose:
-        details.append(f'"{request.purpose}"')
-    info.append(" " + " · ".join(details), style="sp.dim")
+        info.append("\n")
+        _stat_row(info, "EFFECT", request.purpose)
     return info
 
 
 def approval_cwd(request: ApprovalRequest) -> Text:
-    return Text(f"  CWD: {request.cwd}", style="sp.dim")
+    info = Text()
+    _stat_row(info, "CWD", str(request.cwd))
+    return info
+
+
+def approval_card(request: ApprovalRequest) -> Panel:
+    """The approval block as ONE risk-bordered panel (§31.5, app pane).
+
+    Composes the shared stat-block builders (badge + WHY/EFFECT, then CWD) into
+    a single rounded panel whose border carries the decision color: amber for a
+    gated action, red when the risk is HIGH — the same hue the dock border takes
+    while the prompt is active, so the card and the input read as one decision
+    zone. The choice line stays outside (the gate re-prompts it on its own).
+    """
+    border = "sp.error" if request.risk is RiskLevel.HIGH else "sp.warn"
+    return Panel(
+        Group(approval_info(request), approval_cwd(request)),
+        box=box.ROUNDED,
+        border_style=border,
+        expand=False,
+        padding=(0, 1),
+    )
+
+
+def approval_choices(request: ApprovalRequest) -> Text:
+    """The actionable choice line (§31.5): yes=green, edit=amber, no=red.
+
+    A HIGH-risk *command* requires typing "run" (red); a HIGH-risk *tool* (a
+    sensitive read) keeps the standard y/e/n prompt. Display only — the input
+    parsing in the approval gates is unchanged, so the literal tokens stay put.
+    """
+    if request.risk is RiskLevel.HIGH and request.kind == "command":
+        run = Text("  Type ")
+        run.append('"run"', style="sp.risk.high")
+        run.append(" to execute, ")
+        run.append("[e]dit", style="sp.choice.edit")
+        run.append(" to steer, or press Enter to cancel: ")
+        return run
+    return _yes_edit_no("  Approve? ")
+
+
+def plan_choices() -> Text:
+    """The plan-approval choice line (§31.5): same colored y/e/n as commands."""
+    return _yes_edit_no("  Approve plan? ")
+
+
+def _yes_edit_no(lead: str) -> Text:
+    line = Text(lead)
+    line.append("[y]es", style="sp.choice.yes")
+    line.append(" / ")
+    line.append("[e]dit", style="sp.choice.edit")
+    line.append(" / ")
+    line.append("[n]o", style="sp.choice.no")
+    line.append(" ")
+    return line
 
 
 def plan_step_line(index: int, step: PlanStep, glyphs: Glyphs) -> Text:

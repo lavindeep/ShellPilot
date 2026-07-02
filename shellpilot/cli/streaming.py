@@ -21,7 +21,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
-from shellpilot.cli.render import _diff_rows, _sanitize_line
+from shellpilot.cli.render import _diff_rows, _sanitize_line, response_markdown
 from shellpilot.cli.theme import Glyphs
 
 _PHRASE_SECONDS = 10
@@ -128,7 +128,7 @@ class ResponseStream:
     def _tail_markdown(self) -> Markdown:
         max_lines = max(4, self._console.size.height - 4)
         tail = "\n".join(self._buffer.splitlines()[-max_lines:])
-        return Markdown(_sanitize_line(tail))
+        return response_markdown(tail)
 
     def feed(self, token: str) -> None:
         if not self._console.is_terminal:
@@ -168,7 +168,7 @@ class ResponseStream:
             self._live.stop()
             self._live = None
         if self._buffer:
-            self._console.print(Markdown(_sanitize_line(self._buffer)))
+            self._console.print(response_markdown(self._buffer))
         self._buffer = ""
 
 

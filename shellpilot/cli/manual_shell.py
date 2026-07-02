@@ -25,19 +25,47 @@ PROMPT = "manual$ "
 EXIT_COMMAND = "/exit-shell"
 
 
+def _audit_manual_command(audit: AuditLogger | None, command: str, exit_code: int) -> None:
+    """Single source of truth for the manual-shell audit event shape."""
+    if audit is not None:
+        audit.write(
+            "manual_shell_command",
+            command=command,
+            exit_code=exit_code,
+            risk="raw_shell",
+        )
+
+
 def run_manual_command(command: str, cwd: Path, audit: AuditLogger | None) -> int:
     """Run one user-typed command with shell=True, streaming to the terminal."""
     completed = subprocess.run(  # noqa: S602 - raw shell is this mode's explicit contract
         command, shell=True, cwd=cwd, check=False
     )
-    if audit is not None:
-        audit.write(
-            "manual_shell_command",
-            command=command,
-            exit_code=completed.returncode,
-            risk="raw_shell",
-        )
+    _audit_manual_command(audit, command, completed.returncode)
     return completed.returncode
+
+
+def run_manual_command_captured(
+    command: str, cwd: Path, audit: AuditLogger | None
+) -> tuple[int, str]:
+    """Run one ``!<cmd>`` with shell=True, CAPTURING its combined output.
+
+    Same audit as :func:`run_manual_command`, but stdout+stderr are captured
+    (stderr interleaved into stdout in real order) instead of streaming to the
+    inherited terminal, so the full-screen app can render the output into its
+    pane rather than flashing the real terminal (§31.17).
+    """
+    completed = subprocess.run(  # noqa: S602 - raw shell is this mode's explicit contract
+        command,
+        shell=True,
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    _audit_manual_command(audit, command, completed.returncode)
+    return completed.returncode, completed.stdout or ""
 
 
 def manual_shell_loop(

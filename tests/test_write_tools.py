@@ -408,3 +408,53 @@ def test_non_utf8_edit_refused(tmp_path: Path) -> None:
     )
     assert not result.success
     assert "UTF-8" in result.content
+
+
+# -- approval preview shows the entire diff; model-context result stays capped --
+
+BIG_CONTENT = "".join(f"line {i}\n" for i in range(100))  # 100 lines > MAX_PREVIEW_LINES
+
+
+def test_unified_diff_max_lines_none_shows_all_changes() -> None:
+    from shellpilot.tools.patch import unified_diff
+
+    capped = unified_diff("f.txt", "", BIG_CONTENT)
+    full = unified_diff("f.txt", "", BIG_CONTENT, max_lines=None)
+    assert "more lines)" in capped  # the default cap still truncates
+    assert "more lines)" not in full  # max_lines=None shows everything
+    assert "line 99" in full and "line 99" not in capped
+
+
+def test_write_preview_shows_the_entire_diff(tmp_path: Path) -> None:
+    # The human-facing approval preview is uncapped, so expand reveals all changes.
+    diff = WRITE_FILE.preview(  # type: ignore[misc]
+        ctx(tmp_path),
+        {"path": "big.txt", "content": BIG_CONTENT, "mode": "create"},
+    )
+    assert "line 99" in diff
+    assert "more lines)" not in diff
+
+
+def test_patch_preview_shows_the_entire_diff(tmp_path: Path) -> None:
+    (tmp_path / "f.txt").write_text("x\n")
+    context = read_then_ctx(tmp_path, "f.txt")
+    diff = PATCH_FILE.preview(  # type: ignore[misc]
+        context,
+        {
+            "path": "f.txt",
+            "operation": "replace_exact",
+            "old": "x",
+            "new": BIG_CONTENT.rstrip("\n"),
+        },
+    )
+    assert "line 99" in diff
+    assert "more lines)" not in diff
+
+
+def test_write_file_result_diff_stays_capped_for_model_context(tmp_path: Path) -> None:
+    # The diff the MODEL sees in the tool result stays bounded (context budget).
+    result = WRITE_FILE.handler(
+        ctx(tmp_path), {"path": "big.txt", "content": BIG_CONTENT, "mode": "create"}
+    )
+    assert result.success
+    assert "more lines)" in result.content

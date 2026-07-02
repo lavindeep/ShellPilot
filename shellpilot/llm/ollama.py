@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import queue
+import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -11,11 +14,18 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from shellpilot.llm.client import GenerationCancelled
 from shellpilot.llm.messages import Message, ToolCall, ToolDefinition
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_GENERATE_TIMEOUT_SECONDS = 300.0
+
+# The worker wakes this often to check the cancel signal and the inactivity cap
+# while draining the stream — small enough that Ctrl-C feels instant.
+_STREAM_POLL_SECONDS = 0.1
+# Sentinel: the reader thread has finished (cleanly or with a captured error).
+_STREAM_DONE = object()
 
 
 class OllamaError(Exception):
@@ -26,8 +36,54 @@ class OllamaUnreachableError(OllamaError):
     """The Ollama API could not be reached."""
 
 
+class OllamaTimeoutError(OllamaError):
+    """The model stopped producing output (a stalled/hung generation)."""
+
+
 class OllamaResponseError(OllamaError):
-    """The Ollama API returned an unexpected response."""
+    """The Ollama API returned an unexpected response.
+
+    ``status_code`` carries the HTTP status when the failure was an error
+    *response* (vs. a malformed/truncated stream, where it is ``None``). It is the
+    only upstream detail surfaced to the user — the raw body is never embedded in
+    the message because a cloud gateway error can carry internal IPs / infra JSON.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, detail: str = "") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        # Raw upstream body, kept for INTERNAL checks only (e.g. think-unsupported
+        # detection) — never shown to the user and never in str(self).
+        self.detail = detail
+
+
+_GATEWAY_STATUSES = frozenset({502, 503, 504})
+
+
+def describe_turn_error(exc: Exception) -> str:
+    """A friendly, leak-free one-line description of a turn failure.
+
+    Maps the typed Ollama/transport errors to user-facing text by category and
+    HTTP status. The raw upstream body is NEVER echoed (a cloud 502's body embeds
+    tcp endpoints / infra JSON); the status code is the only upstream detail
+    surfaced, as a diagnostic breadcrumb. Unknown exceptions degrade to their
+    class name only — never ``str(exc)``, which could carry leaked detail.
+    """
+    if isinstance(exc, OllamaUnreachableError):
+        return "Can't reach Ollama — is it running? Try: ollama serve"
+    if isinstance(exc, OllamaTimeoutError):
+        return "The model stopped responding — check your connection and retry."
+    if isinstance(exc, OllamaResponseError):
+        code = exc.status_code
+        if code in _GATEWAY_STATUSES:
+            return (
+                f"The cloud model is unavailable or timed out (HTTP {code}). "
+                "Check your connection and retry."
+            )
+        if code is not None:
+            return f"The model request failed (HTTP {code})."
+        return "The model response was incomplete or malformed."
+    return f"The turn failed unexpectedly ({type(exc).__name__})."
 
 
 @dataclass(frozen=True)
@@ -86,6 +142,7 @@ class OllamaClient:
         generate_timeout_seconds: float = DEFAULT_GENERATE_TIMEOUT_SECONDS,
         reasoning: bool = False,
         transport: httpx.BaseTransport | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = httpx.Client(
             base_url=base_url or resolve_base_url(),
@@ -94,6 +151,14 @@ class OllamaClient:
             trust_env=False,
         )
         self._reasoning = reasoning
+        # Worker-side inactivity cap for a stalled stream — defaults to the same
+        # value as the connection read timeout, so a silent stall fails no later
+        # than before (no regression) but with a clean OllamaTimeoutError. The
+        # clock is injectable so the cap is testable without real waiting.
+        # NOTE: one knob shared with the read timeout; split into its own config
+        # value if a shorter fast-fail than 300s is ever wanted.
+        self._generate_timeout_seconds = generate_timeout_seconds
+        self._monotonic = monotonic
         # Per-model fallback cache: models that rejected the think flag.
         self._no_think: set[str] = set()
 
@@ -198,11 +263,19 @@ class OllamaClient:
         num_ctx: int,
         options: dict[str, Any] | None = None,
         on_token: Callable[[str], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> Message:
         """Stream one chat completion; num_ctx is set explicitly on every request.
 
         Configured `options` pass through verbatim, but num_ctx ALWAYS wins:
         the context budget owns it (design section 10.5).
+
+        ``cancel`` is a branch-6 turn-abort signal (§31.15): when the app SETS it
+        (from the Ctrl-C keybinding on the loop thread), the next stream-read
+        boundary raises ``GenerationCancelled``. It is threaded into the
+        think-retry path too, so a cancel requested during the first (think)
+        attempt still aborts the retried call.
         """
         payload: dict[str, Any] = {
             "model": model,
@@ -215,71 +288,184 @@ class OllamaClient:
         if self._reasoning and model not in self._no_think:
             payload["think"] = True
         try:
-            return self._stream_chat(payload, on_token)
+            return self._stream_chat(payload, on_token, on_thinking, cancel)
         except OllamaResponseError as exc:
             # Reasoning mode unavailable for this model: cache and retry once without
             # think (design section 24.6). Other models are not affected.
-            if self._reasoning and model not in self._no_think and "think" in str(exc).lower():
+            # Detect the think-unsupported signal in BOTH the message (a stream
+            # `{"error": "...thinking..."}` chunk) and the stashed body `detail` (a
+            # 400 whose body says so) — the body is no longer in str(exc).
+            diagnostic = f"{exc} {exc.detail}".lower()
+            if self._reasoning and model not in self._no_think and "think" in diagnostic:
                 self._no_think.add(model)
                 payload.pop("think", None)
-                return self._stream_chat(payload, on_token)
+                return self._stream_chat(payload, on_token, on_thinking, cancel)
             raise
 
     def _stream_chat(
-        self, payload: dict[str, Any], on_token: Callable[[str], None] | None
+        self,
+        payload: dict[str, Any],
+        on_token: Callable[[str], None] | None,
+        on_thinking: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> Message:
+        # The blocking HTTP read runs on a daemon READER thread that owns the whole
+        # `with client.stream(...)` block — it opens, iterates, and closes the
+        # response all in-thread, so the response is NEVER closed cross-thread
+        # (§31.15). This thread (the worker) drains a queue and checks `cancel`
+        # every poll, so a Ctrl-C aborts INSTANTLY even when the read is hung on a
+        # dead connection — the orphaned reader just finishes on its own (daemon)
+        # at the connection read timeout. A worker-side inactivity cap fails a
+        # silent stall with a clean OllamaTimeoutError instead of hanging.
+        lines: queue.Queue[object] = queue.Queue()
+        box: dict[str, Exception] = {}
+        stop = threading.Event()
+
+        def _read() -> None:
+            try:
+                with self._client.stream("POST", "/api/chat", json=payload) as response:
+                    if response.status_code >= 400:
+                        # Keep only the status in the user-facing message — a cloud
+                        # gateway error (e.g. a 502) carries internal IPs / infra
+                        # JSON, which describe_turn_error must never surface. The
+                        # body is stashed in `detail` for INTERNAL checks only (the
+                        # think-unsupported retry), never displayed.
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise OllamaResponseError(
+                            f"Ollama API error {response.status_code}",
+                            status_code=response.status_code,
+                            detail=body,
+                        )
+                    for line in response.iter_lines():
+                        if stop.is_set() or (cancel is not None and cancel.is_set()):
+                            # The worker is done (cancel / error / normal) or the
+                            # user cancelled: break so the `with` closes the
+                            # response IN-THREAD, instead of draining a doomed
+                            # stream to the read timeout. A HUNG read can't reach
+                            # this (blocked in iter_lines) — bounded by that timeout.
+                            break
+                        lines.put(line)
+            except httpx.TimeoutException:
+                box["exc"] = OllamaTimeoutError("the model stopped responding")
+            except httpx.TransportError as exc:
+                box["exc"] = OllamaUnreachableError(f"Ollama API unreachable: {exc}")
+            except Exception as exc:  # noqa: BLE001 - surfaced to the worker, not swallowed
+                box["exc"] = exc
+            finally:
+                lines.put(_STREAM_DONE)
+
+        reader = threading.Thread(target=_read, name="ollama-stream-reader", daemon=True)
+        reader.start()
+        try:
+            return self._drain_stream(lines, box, cancel, on_token, on_thinking)
+        finally:
+            # On ANY worker exit (normal / error / cancel) tell the reader to stop
+            # pulling, so a worker-side parse error doesn't leave it draining a
+            # doomed stream (and holding the connection) up to the read timeout.
+            stop.set()
+
+    def _drain_stream(
+        self,
+        lines: queue.Queue[object],
+        box: dict[str, Exception],
+        cancel: threading.Event | None,
+        on_token: Callable[[str], None] | None,
+        on_thinking: Callable[[str], None] | None,
+    ) -> Message:
+        # Consume the reader's lines, applying cancellation and the inactivity cap.
+        # Pure with respect to the network — driven only by the queue + the
+        # injectable clock — so cancel/inactivity are testable without real waits.
         content_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         done_seen = False
-        try:
-            with self._client.stream("POST", "/api/chat", json=payload) as response:
-                if response.status_code >= 400:
-                    body = response.read().decode("utf-8", errors="replace")
-                    raise OllamaResponseError(f"Ollama API error {response.status_code}: {body}")
-                for line in response.iter_lines():
-                    if not line.strip():
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        raise OllamaResponseError(f"invalid stream chunk: {line[:200]}") from exc
-                    if not isinstance(chunk, dict):
-                        raise OllamaResponseError(f"unexpected stream chunk shape: {line[:200]}")
-                    if chunk.get("error"):
-                        raise OllamaResponseError(str(chunk["error"]))
-                    if chunk.get("done"):
-                        done_seen = True
-                    message = chunk.get("message") or {}
-                    if not isinstance(message, dict):
-                        raise OllamaResponseError(f"unexpected stream message shape: {line[:200]}")
-                    token = message.get("content") or ""
-                    if token:
-                        content_parts.append(token)
-                        if on_token is not None:
-                            on_token(token)
-                    # Reasoning text streams in a separate field; capture it so a
-                    # reasoning-only turn is observable instead of silently empty
-                    # (design section 24.6). It is never streamed to the UI.
-                    thinking = message.get("thinking") or ""
-                    if thinking:
-                        thinking_parts.append(thinking)
-                    raw_calls = message.get("tool_calls") or []
-                    if not isinstance(raw_calls, list):
-                        raise OllamaResponseError(f"unexpected tool_calls shape: {line[:200]}")
-                    for raw_call in raw_calls:
-                        parsed = _decode_tool_call(raw_call)
-                        if parsed is not None:
-                            tool_calls.append(parsed)
-            if not done_seen:
-                raise OllamaResponseError("stream ended before completion (no done sentinel)")
-        except httpx.TransportError as exc:
-            raise OllamaUnreachableError(f"Ollama API unreachable: {exc}") from exc
+        output_tokens = 0
+        last_activity = self._monotonic()
+        while True:
+            try:
+                item = lines.get(timeout=_STREAM_POLL_SECONDS)
+            except queue.Empty:
+                # No data this tick. A KNOWN reader error wins (drain to the queued
+                # _STREAM_DONE next, which surfaces it) — consistent with the
+                # post-loop order, so a captured think-unsupported 400 isn't masked.
+                # Otherwise a Ctrl-C aborts immediately (not stuck behind a hung
+                # read) and a silent stall past the cap fails cleanly. A
+                # not-yet-arrived error does NOT delay cancel: an abort cannot wait
+                # on a read that may never return.
+                if "exc" in box:
+                    continue
+                if cancel is not None and cancel.is_set():
+                    raise GenerationCancelled from None
+                if self._monotonic() - last_activity > self._generate_timeout_seconds:
+                    raise OllamaTimeoutError("the model stopped responding") from None
+                continue
+            if item is _STREAM_DONE:
+                break
+            # A cancel mid-stream aborts promptly (a line arrived but the user hit
+            # Ctrl-C). The cancel-truncated and reader-error cases are settled
+            # after the loop, so a reader error (e.g. a think-unsupported 400) is
+            # surfaced for the retry rather than masked by the cancel.
+            if cancel is not None and cancel.is_set():
+                raise GenerationCancelled
+            last_activity = self._monotonic()
+            assert isinstance(item, str)
+            line = item
+            if not line.strip():
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise OllamaResponseError(f"invalid stream chunk: {line[:200]}") from exc
+            if not isinstance(chunk, dict):
+                raise OllamaResponseError(f"unexpected stream chunk shape: {line[:200]}")
+            if chunk.get("error"):
+                # Stash the raw error in `detail` (never displayed), like the
+                # >=400 path — a gateway failure delivered as a stream chunk can
+                # carry internal IPs / infra JSON. think-detection reads `detail`.
+                raise OllamaResponseError("the model returned an error", detail=str(chunk["error"]))
+            if chunk.get("done"):
+                done_seen = True
+                raw_count = chunk.get("eval_count")
+                output_tokens = raw_count if isinstance(raw_count, int) else 0
+            message = chunk.get("message") or {}
+            if not isinstance(message, dict):
+                raise OllamaResponseError(f"unexpected stream message shape: {line[:200]}")
+            token = message.get("content") or ""
+            if token:
+                content_parts.append(token)
+                if on_token is not None:
+                    on_token(token)
+            # Reasoning text streams in a separate field; capture it so a
+            # reasoning-only turn is observable instead of silently empty (design
+            # section 24.6). May be streamed to the UI via on_thinking when a
+            # consumer is wired; never echoed back to the API.
+            thinking = message.get("thinking") or ""
+            if thinking:
+                thinking_parts.append(thinking)
+                if on_thinking is not None:
+                    on_thinking(thinking)
+            raw_calls = message.get("tool_calls") or []
+            if not isinstance(raw_calls, list):
+                raise OllamaResponseError(f"unexpected tool_calls shape: {line[:200]}")
+            for raw_call in raw_calls:
+                parsed = _decode_tool_call(raw_call)
+                if parsed is not None:
+                    tool_calls.append(parsed)
+        # The reader signalled done. Surface its terminal error FIRST (a 400
+        # think-unsupported must reach the retry, not be masked by cancel), then a
+        # cancel-truncated stream, then an incomplete stream.
+        if "exc" in box:
+            raise box["exc"]
+        if cancel is not None and cancel.is_set():
+            raise GenerationCancelled
+        if not done_seen:
+            raise OllamaResponseError("stream ended before completion (no done sentinel)")
         return Message(
             role="assistant",
             content="".join(content_parts),
             tool_calls=tuple(tool_calls),
             thinking="".join(thinking_parts),
+            output_tokens=output_tokens,
         )
 
 

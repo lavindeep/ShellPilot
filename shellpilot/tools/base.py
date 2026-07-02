@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,10 @@ class ToolContext:
     # Hard ceiling for run_command timeout; model may request shorter but never
     # longer (design section 13.1).
     command_timeout_seconds: int = 600
+    # Branch-6b turn-abort signal (§31.15): set by the app's Ctrl-C so a running
+    # run_command child can be killed mid-execution instead of waiting out its
+    # timeout.
+    cancel: threading.Event | None = None
 
 
 @dataclass(frozen=True)

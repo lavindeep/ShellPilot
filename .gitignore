@@ -21,3 +21,7 @@ htmlcov/
 
 # Local agent settings
 .claude/
+
+# Local harness / session scratch (never commit)
+# Feature mockups / design prototypes — local-only ideas, never tracked
+prototype/

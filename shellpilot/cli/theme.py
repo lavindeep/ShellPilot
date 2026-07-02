@@ -15,12 +15,14 @@ from rich.theme import Theme
 
 from shellpilot.config.model import Settings
 
-# Single-source hex values for the four shared theme colors.  Other modules
-# (banner.py, status_bar.py) import these constants so the values can't drift.
+# Single-source hex values for the shared theme colors.  Other modules
+# (banner.py, status_bar.py, app.py) import these constants so the values
+# can't drift.
 COLOR_ACCENT = "#98c379"
 COLOR_WARN = "#e5c07b"
 COLOR_DIM = "#6b6b6b"
 COLOR_FAINT = "#444444"
+COLOR_ERROR = "#e06c75"
 
 SHELLPILOT_THEME = Theme(
     {
@@ -32,6 +34,15 @@ SHELLPILOT_THEME = Theme(
         "sp.warn": COLOR_WARN,
         "sp.error": "#e06c75",
         "sp.risk.high": "bold #e06c75",
+        # Approval hierarchy (§31.5): the command under approval and the
+        # actionable choices must be impossible to miss; the WHY/EFFECT values
+        # stay readable; only their labels recede.
+        "sp.cmd": "bold bright_white",
+        "sp.label": COLOR_DIM,
+        "sp.value": "#cfcfcf",
+        "sp.choice.yes": f"bold {COLOR_ACCENT}",
+        "sp.choice.edit": f"bold {COLOR_WARN}",
+        "sp.choice.no": "bold #e06c75",
         "sp.badge.medium": "bold white on #3a3a3a",
         "sp.badge.high": "bold white on #c14949",
         "sp.badge.blocked": "bold black on #e5c07b",
@@ -41,6 +52,21 @@ SHELLPILOT_THEME = Theme(
         "sp.diff.remove_word": "#ffd7d7 on #5c3338",
         "sp.diff.gutter": "#6b6b6b",
         "sp.chevron": "bold #98c379",
+        # Markdown responses (§31.7): Rich's defaults paint inline code
+        # "bold cyan on black" and headings magenta — off-palette, and the
+        # black chip breaks the never-set-a-background rule above. Re-pin
+        # them to the instrument-minimal palette (no backgrounds; brightness
+        # for structure, accent green only as the meaning-bearing hue).
+        "markdown.code": f"bold {COLOR_ACCENT}",
+        "markdown.h1": "bold bright_white",
+        "markdown.h1.border": COLOR_FAINT,
+        "markdown.h2": "bold bright_white",
+        "markdown.h3": "bold bright_white",
+        "markdown.h4": "bold",
+        "markdown.hr": COLOR_FAINT,
+        "markdown.link": COLOR_ACCENT,
+        "markdown.link_url": COLOR_DIM,
+        "markdown.block_quote": COLOR_DIM,
     }
 )
 
