@@ -1232,6 +1232,41 @@ def test_slash_menu_enter_runs_argless_command(tmp_path: Path) -> None:
     assert slashes == ["/status"]
 
 
+def test_slash_menu_arrow_preview_enter_hides_menu(tmp_path: Path) -> None:
+    # Arrow preview + smart Enter on an argless command must clear menu state:
+    # preview mode keeps the original query, and reset() does not fire
+    # on_text_changed, so _submit_current must clear the menu explicitly.
+    slashes: list[str] = []
+    submits: list[str] = []
+    menu_visible: list[bool] = []
+    app_holder: list[Application[None]] = []
+
+    def on_slash(line: str) -> None:
+        slashes.append(line)
+        if line.strip() == "/help":
+            menu_visible.append(_find_control_text(app_holder[0], "/help") != "")
+            app_holder[0].exit()
+
+    with create_pipe_input() as inp:
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80),
+            on_slash=on_slash,
+            on_submit=submits.append,
+        )
+        app_holder.append(app)
+        inp.send_text("/\x1b[B\x1b[A\r")  # down to /exit, up to preview /help, run
+        app.run()
+    assert slashes == ["/help"]
+    assert menu_visible == [False]
+
+
 def test_slash_menu_down_arrow_and_enter_fills_arg_command(tmp_path: Path) -> None:
     # Down-arrow navigates to /model use (3rd match); smart Enter FILLS it (does
     # not run an argless command), so the typed arg completes a real line.

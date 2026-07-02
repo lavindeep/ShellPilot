@@ -377,6 +377,13 @@ def build_app(
     }
     path_menu: _PathMenuState = {"index": 0}
 
+    def _clear_menu_state() -> None:
+        slash_menu["index"] = 0
+        slash_menu["query"] = ""
+        slash_menu["preview"] = False
+        slash_menu["suppress_change"] = False
+        path_menu["index"] = 0
+
     def _reset_menu_index(_buffer: Buffer) -> None:
         if slash_menu["suppress_change"]:
             return
@@ -654,10 +661,12 @@ def build_app(
         if approval_gate is not None and approval_gate.active:
             line = dock_buffer.text
             dock_buffer.reset()
+            _clear_menu_state()
             approval_gate.submit(line)
             return
         text = dock_buffer.text
         dock_buffer.reset()
+        _clear_menu_state()
         if text.strip() == "/exit":
             get_app().exit()
             return

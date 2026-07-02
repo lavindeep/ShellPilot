@@ -1,8 +1,10 @@
 """Tests for `shellpilot doctor` checks (no live Ollama; everything injected)."""
 
+from io import StringIO
 from pathlib import Path
 
 import httpx
+from rich.console import Console
 
 from shellpilot.cli.doctor import (
     check_dir_writable,
@@ -11,6 +13,7 @@ from shellpilot.cli.doctor import (
     check_ollama_binary,
     check_python,
     run_all,
+    run_doctor,
 )
 from shellpilot.llm.ollama import OllamaClient
 from shellpilot.persistence.paths import AppPaths
@@ -128,3 +131,43 @@ def test_run_all_aggregates_all_checks(tmp_path: Path) -> None:
     assert len(results) >= 6
     names = [result.name for result in results]
     assert names == sorted(set(names), key=names.index)  # unique, stable order
+
+
+def test_run_doctor_renders_to_injected_console(tmp_path: Path) -> None:
+    paths = AppPaths(
+        config_dir=tmp_path / "config",
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        cache_dir=tmp_path / "cache",
+    )
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=80)
+    run_doctor(tmp_path, paths=paths, client=ok_client(), console=console)
+    assert "shellpilot doctor" in buf.getvalue()
+    assert "Python" in buf.getvalue()
+
+
+def test_run_doctor_returns_nonzero_when_checks_fail(tmp_path: Path) -> None:
+    paths = AppPaths(
+        config_dir=tmp_path / "config",
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        cache_dir=tmp_path / "cache",
+    )
+    assert run_doctor(tmp_path, paths=paths, client=down_client()) == 1
+
+
+def test_run_doctor_fail_output_includes_fail_status(tmp_path: Path) -> None:
+    paths = AppPaths(
+        config_dir=tmp_path / "config",
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        cache_dir=tmp_path / "cache",
+    )
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=80)
+    run_doctor(tmp_path, paths=paths, client=down_client(), console=console)
+    output = buf.getvalue()
+    assert "shellpilot doctor" in output
+    assert "fail" in output
+    assert "Ollama API" in output

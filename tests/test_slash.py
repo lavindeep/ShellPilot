@@ -75,6 +75,22 @@ def test_help_lists_commands(tmp_path: Path) -> None:
     assert "/model" in out
 
 
+def test_doctor_slash_exit_code_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_doctor import down_client
+
+    monkeypatch.setattr(
+        "shellpilot.cli.doctor.OllamaClient",
+        lambda timeout_seconds=3.0: down_client(),
+    )
+    harness = Harness(tmp_path)
+    harness.dispatcher.handle("/doctor")
+    out = harness.output()
+    assert "fail" in out
+    assert "exit code 1" in out
+
+
 def test_unknown_command_reports(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/bogus")

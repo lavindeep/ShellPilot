@@ -162,8 +162,7 @@ def needs_terminal(line: str) -> bool:
 
     The full-screen app (§31.17) runs fast, display-only commands on the loop
     thread with a pane-capturing console; the forms below instead call
-    ``self._confirm`` / the cloud-consent prompt, print to their own
-    ``Console()`` (``/doctor`` → ``run_doctor``), or do slow preload work
+    ``self._confirm``, the cloud-consent prompt, or do slow preload work
     (``/model use``), none of which can run on the event-loop thread.
 
     NOTE: this enumerates every confirm()/consent/own-stdout/preload command. If
@@ -178,8 +177,6 @@ def needs_terminal(line: str) -> bool:
     if cmd == "/shell":  # manual shell
         return True
     if cmd == "/clear":  # confirm
-        return True
-    if cmd == "/doctor":  # run_doctor prints to its own Console()/stdout
         return True
     if cmd == "/plan" and sub == "cancel":  # confirm
         return True
@@ -210,24 +207,29 @@ def needs_worker(line: str) -> bool:
 
 
 def needs_background(line: str) -> bool:
-    """True for a NON-interactive slash command that makes a blocking network/IO
-    call. It must run off the loop thread (the event loop must never block — a
-    hung Ollama would otherwise freeze the TUI for the client timeout with no
-    Ctrl-C), but it needs no real terminal (no confirm/consent/own-stdout), so the
-    router runs it on the worker and marshals the captured output into the pane.
+    """True for a NON-interactive slash command that makes a blocking network or
+    filesystem I/O call. It must run off the loop thread (the event loop must
+    never block — a hung Ollama would otherwise freeze the TUI for the client
+    timeout with no Ctrl-C), but it needs no real terminal (no confirm/consent/
+    own-stdout), so the router runs it on the worker and marshals the captured
+    output into the pane.
 
-    ``/model list`` (``GET /api/tags``) and ``/attach <path>`` (``POST /api/show``
+    ``/doctor`` (Ollama health + model list + writable-path probes),
+    ``/model list`` (``GET /api/tags``), and ``/attach <path>`` (``POST /api/show``
     for the vision-capability check + image load). A bare ``/attach`` only lists
     already-staged images in memory, so it stays on the loop path.
 
-    NOTE: add any other non-interactive command that makes a blocking network/IO
-    call here — the criterion is "blocks the loop", not just confirm/consent.
+    NOTE: add any other non-interactive command that makes a blocking network or
+    filesystem I/O call here — the criterion is "blocks the loop", not just
+    confirm/consent.
     """
     parts = line.strip().split()
     if not parts:
         return False
     cmd = parts[0].lower()
     sub = parts[1].lower() if len(parts) > 1 else ""
+    if cmd == "/doctor":
+        return True
     if cmd == "/model" and sub == "list":
         return True
     if cmd == "/attach" and len(parts) > 1:  # /attach <path> probes /api/show
@@ -746,7 +748,9 @@ class SlashDispatcher:
     def _doctor(self) -> None:
         from shellpilot.cli.doctor import run_doctor
 
-        run_doctor(self._runtime.status().workspace)
+        code = run_doctor(self._runtime.status().workspace, console=self._console)
+        if code != 0:
+            self._console.print(f"[dim]exit code {code}[/dim]")
 
     def _diff(self) -> None:
         diffs = self._runtime.recent_diffs

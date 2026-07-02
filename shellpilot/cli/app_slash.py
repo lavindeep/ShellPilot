@@ -10,8 +10,8 @@ must never block, so this router splits the work two ways:
 * **Interactive / slow / own-stdout / manual-shell** commands run via
   ``run_in_terminal`` (the app suspends, the real terminal is restored, the
   handler runs synchronously, then the app redraws) so ``confirm()`` /
-  cloud-consent ``input()`` and ``run_doctor``'s own stdout work, and a slow
-  model preload never freezes the TUI. :func:`~shellpilot.cli.slash.needs_terminal`
+  cloud-consent ``input()`` and slow model preload never freeze the TUI.
+  :func:`~shellpilot.cli.slash.needs_terminal`
   classifies which form needs the real terminal.
 
 The router is built to be testable by INJECTING its effects (``dispatch``,
@@ -109,9 +109,9 @@ class SlashRouter:
             #   * needs_worker (/plan revise) — a model turn: its output reaches the
             #     pane via the runtime UI and approvals use the focus-swap gate, so
             #     echo the command first (mirrors a turn submission).
-            #   * needs_background (/model list, /attach <path>) — a non-interactive
-            #     blocking network/IO call: NO echo; its captured output IS the
-            #     result and is marshaled to the pane.
+            #   * needs_background (/doctor, /model list, /attach <path>) — a
+            #     non-interactive blocking network or filesystem I/O call: NO echo;
+            #     its captured output IS the result and is marshaled to the pane.
             # The loop thread must never block on either. Read the width here (loop
             # thread) and pass it in — get_app() is unavailable on the worker.
             if needs_worker(stripped):
@@ -195,8 +195,7 @@ class SlashRouter:
 
     def _dispatch_terminal(self, line: str) -> None:
         # Runs inside run_in_terminal (app suspended, real terminal available).
-        # The dispatch is given the REAL console, so confirm()/consent input() and
-        # run_doctor's own stdout work.
+        # The dispatch is given the REAL console, so confirm()/consent input() work.
         action = self._dispatch(line, self._real_console)
         self._after_action(action)
 

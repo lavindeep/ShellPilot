@@ -11,6 +11,7 @@ import io
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from shellpilot.cli.app_slash import SlashRouter
@@ -23,13 +24,12 @@ from shellpilot.cli.theme import SHELLPILOT_THEME
 # needs_terminal — exhaustive TRUE cases + representative FALSE cases
 # ---------------------------------------------------------------------------
 
-# Every slash form that confirms / prompts for consent / prints to its own
-# stdout / preloads. Mirrors the self._confirm + cloud-consent + run_doctor
-# call sites in slash.py (see the module NOTE in app_slash classification).
+# Every slash form that confirms / prompts for consent / preloads. Mirrors the
+# self._confirm + cloud-consent call sites in slash.py (see the module NOTE in
+# app_slash classification).
 _TERMINAL_LINES = [
     "/shell",
     "/clear",
-    "/doctor",
     "/plan cancel",
     "/cwd set /tmp",
     "/config set model.default gemma4:e4b",
@@ -405,6 +405,8 @@ def test_busy_rejects_plan_revise() -> None:
 
 
 def test_needs_background_true_for_network_commands() -> None:
+    assert needs_background("/doctor") is True
+    assert needs_background("/DOCTOR") is True
     assert needs_background("/model list") is True
     assert needs_background("/MODEL LIST") is True
     assert needs_background("/attach /tmp/cat.png") is True
@@ -414,6 +416,7 @@ def test_needs_background_false_otherwise() -> None:
     for line in ["/attach", "/model", "/model use gemma4:e4b", "/help", "/status", "", "hello"]:
         assert needs_background(line) is False, line
     # These run a blocking call but must NOT also be loop/terminal-classified.
+    assert needs_terminal("/doctor") is False
     assert needs_terminal("/model list") is False
     assert needs_worker("/model list") is False
 
@@ -446,6 +449,55 @@ def test_bare_attach_stays_on_loop() -> None:
     assert worker.fns == []
     assert len(dispatch.calls) == 1  # loop-capture dispatch
     assert terminal.fns == []
+
+
+def test_doctor_runs_on_worker_and_captures_to_pane() -> None:
+    worker = FakeWorker(run=True)
+    dispatch = FakeDispatch(output="DOCTOR-TABLE")
+    router, ui, _, terminal, manual_lines, _, real_buf = make_router(
+        dispatch=dispatch, worker=worker
+    )
+    router.route("/doctor")
+    assert len(worker.fns) == 1
+    assert terminal.fns == []
+    assert manual_lines == []
+    assert len(dispatch.calls) == 1
+    assert dispatch.calls[0][1] is not router._real_console
+    assert "DOCTOR-TABLE" in ui._render_ansi()
+    assert "DOCTOR-TABLE" not in real_buf.getvalue()
+    assert "❯ /doctor" not in ui._render_ansi()
+
+
+def test_doctor_failure_captures_fail_rows_to_pane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_doctor import down_client
+    from tests.test_slash import Harness
+
+    monkeypatch.setattr(
+        "shellpilot.cli.doctor.OllamaClient",
+        lambda timeout_seconds=3.0: down_client(),
+    )
+    harness = Harness(tmp_path)
+
+    def dispatch(line: str, console: Console) -> SlashAction:
+        harness.dispatcher._console = console
+        return harness.dispatcher.handle(line)
+
+    worker = FakeWorker(run=True)
+    router, ui, _, terminal, _, _, real_buf = make_router(
+        dispatch=dispatch,
+        worker=worker,
+        workspace_fn=lambda: tmp_path,
+    )
+    router.route("/doctor")
+    rendered = ui._render_ansi()
+    assert len(worker.fns) == 1
+    assert terminal.fns == []
+    assert "fail" in rendered
+    assert "Ollama API" in rendered
+    assert "exit code" in rendered
+    assert "exit code 1" not in real_buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
