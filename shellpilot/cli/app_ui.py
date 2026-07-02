@@ -8,8 +8,9 @@ over ``ANSI(ui._render_ansi())``, so Rich handles all wrapping and theming at wi
 W while prompt_toolkit handles layout and scrolling.
 
 ``AppUI`` is a pure state-and-render object: it never calls ``get_app()`` or
-``invalidate()`` — periodic repaint is the app's job (``refresh_interval``) and the
-clock is injected (``time_fn``) — so it is fully testable without a running app.
+``invalidate()`` — periodic repaint is the app's job (``run_app``'s gated refresh
+loop, which invalidates only while a turn is in flight) and the clock is injected
+(``time_fn``) — so it is fully testable without a running app.
 """
 
 from __future__ import annotations
@@ -336,7 +337,7 @@ class AppUI:
     def _render_trail(self, trail: _Trail) -> Text:
         # Display-only thinking (§31.19), faint + indented, header carries the
         # reasoning-token estimate. Model-controlled text → EVERY line sanitized.
-        # Blank lines are dropped so the 10-line cap counts real reasoning lines.
+        # Blank lines are dropped so TRAIL_COLLAPSED_LINES counts real reasoning lines.
         lines = [ln for ln in trail.text.splitlines() if ln.strip()]
         reasoning = math.ceil(len(trail.text) / CHARS_PER_TOKEN)
         caret = (

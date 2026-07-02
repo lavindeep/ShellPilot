@@ -345,6 +345,15 @@ def test_cwd_set_relative_path_resolves_from_workspace(tmp_path: Path) -> None:
     assert "other" in out
 
 
+def test_cwd_set_rejects_missing_dir_with_markup_in_name(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+
+    harness.dispatcher.handle("/cwd set 'nope[/bold]'")
+
+    assert harness.runtime.status().workspace == tmp_path
+    assert "not a directory" in harness.output()
+
+
 def test_cwd_set_accepts_escaped_space_in_relative_path(tmp_path: Path) -> None:
     new_workspace = tmp_path / "My Project"
     new_workspace.mkdir()

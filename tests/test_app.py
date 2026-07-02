@@ -714,6 +714,39 @@ def test_up_arrow_recalls_staged_message(tmp_path: Path) -> None:
     assert _chip_visible(app) is False  # recall cleared the slot
 
 
+def test_up_arrow_does_nothing_during_active_approval(tmp_path: Path) -> None:
+    # A staged message plus an approval that goes active before Up is pressed must
+    # NOT recall into the dock — a following Enter would otherwise feed the staged
+    # text to the approval gate as its answer (§31.16/§31.18 interaction).
+    gate = _FakeGate(active=False)
+
+    def is_busy() -> bool:
+        gate._active = True  # the approval starts while the turn is still busy
+        return True
+
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            approval_gate=gate,  # type: ignore[arg-type]
+            is_busy=is_busy,
+        )
+        inp.send_text("recall me\n")  # staged (busy), and the gate goes active
+        inp.send_text("\x1b[A")  # Up while the approval is active → must be a no-op
+        inp.send_text("n\n")  # resolve the approval so /exit isn't swallowed
+        inp.send_text("/exit\n")
+        app.run()
+    assert gate.submitted == ["n"]  # the Up-recalled text never reached the gate
+    assert _chip_visible(app) is True  # still staged — Up did not clear the slot
+
+
 def test_up_arrow_passthrough_when_nothing_staged(tmp_path: Path) -> None:
     # With nothing staged the filter is false, so Up is the default (cursor/history)
     # and never wipes the in-progress line; the typed text submits intact.

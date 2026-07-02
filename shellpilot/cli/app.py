@@ -712,13 +712,22 @@ def build_app(
     @kb.add(
         "up",
         filter=dock_focused
-        & Condition(lambda: not dock_buffer.text and pending["text"] is not None),
+        & Condition(
+            lambda: (
+                not dock_buffer.text
+                and pending["text"] is not None
+                and (approval_gate is None or not approval_gate.active)
+            )
+        ),
     )
     def _recall(event: KeyPressEvent) -> None:
         # Up in an EMPTY dock with a staged message pulls it back into the box to
         # edit/clear/re-send; the chip disappears (pending cleared), §31.18. When
         # the box is non-empty or nothing is staged the filter is false and the
         # default Up (cursor up / history) applies — this binding is not reached.
+        # During an active approval the dock IS the approval input (§31.16), so
+        # recall is suppressed there too — Enter would otherwise feed the staged
+        # text back to the approval gate as its answer.
         dock_buffer.text = pending["text"] or ""
         dock_buffer.cursor_position = len(dock_buffer.text)
         pending["text"] = None

@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -492,7 +493,7 @@ class SlashDispatcher:
             # Cloud models are absent from /api/tags — skip the availability gate
             # for them (the typo-catch survives for local names).
             if name not in installed and not is_cloud_model(name):
-                self._console.print(f"[red]{name} is not installed.[/red] See /model list.")
+                self._console.print(f"[red]{escape(name)} is not installed.[/red] See /model list.")
                 return
             # Cloud-egress consent boundary (design section 15.2): switching to a
             # cloud/remote model mid-session requires allow_cloud + per-session
@@ -740,7 +741,7 @@ class SlashDispatcher:
         if args[0] == "set" and len(args) > 1:
             new_workspace = _resolve_user_path(args[1], self._runtime.status().workspace)
             if not new_workspace.is_dir():
-                self._console.print(f"[red]{new_workspace} is not a directory.[/red]")
+                self._console.print(f"[red]{escape(str(new_workspace))} is not a directory.[/red]")
                 return
             if self._confirm(f"Change the workspace boundary to {new_workspace}?"):
                 self._runtime.set_workspace(new_workspace)
