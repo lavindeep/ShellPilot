@@ -8,6 +8,7 @@ decision and the pane-capture path are exercised deterministically.
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 from rich.console import Console
@@ -152,6 +153,7 @@ def make_router(
     worker: FakeWorker | None = None,
     shell: FakeShell | None = None,
     is_busy: bool = False,
+    workspace_fn: Callable[[], Path] | None = None,
 ) -> tuple[SlashRouter, AppUI, FakeDispatch, FakeTerminal, list[str], list[int], io.StringIO]:
     ui = AppUI(width_fn=lambda: 80)
     dispatch = dispatch or FakeDispatch()
@@ -174,6 +176,7 @@ def make_router(
         run_shell=shell,
         on_exit=lambda: exits.append(1),
         is_busy=lambda: is_busy,
+        workspace_fn=workspace_fn,
     )
     return router, ui, dispatch, terminal, manual_lines, exits, real_buf
 
@@ -202,6 +205,53 @@ def test_interactive_command_routes_to_terminal_real_console() -> None:
     # Output went to the real terminal, NOT loop-captured into the pane.
     assert "TERM-OUT" in real_buf.getvalue()
     assert "TERM-OUT" not in ui._render_ansi()
+
+
+def test_invalid_cwd_set_is_reported_in_pane_without_terminal_handoff() -> None:
+    dispatch = FakeDispatch(output="missing is not a directory.")
+    router, ui, _, terminal, _, _, real_buf = make_router(dispatch=dispatch)
+
+    router.route("/cwd set /definitely/not/here")
+
+    assert terminal.fns == []
+    assert len(dispatch.calls) == 1
+    assert dispatch.calls[0][1] is not router._real_console
+    assert "missing is not a directory." in ui._render_ansi()
+    assert "missing is not a directory." not in real_buf.getvalue()
+
+
+def test_valid_cwd_set_still_routes_to_terminal_confirmation(tmp_path: Path) -> None:
+    target = tmp_path / "next"
+    target.mkdir()
+    dispatch = FakeDispatch(output="Workspace boundary changed.")
+    router, ui, _, terminal, _, _, real_buf = make_router(
+        dispatch=dispatch,
+        workspace_fn=lambda: tmp_path,
+    )
+
+    router.route("/cwd set next")
+
+    assert len(terminal.fns) == 1
+    assert dispatch.calls[0][1] is router._real_console
+    assert "Workspace boundary changed." in real_buf.getvalue()
+    assert "Workspace boundary changed." not in ui._render_ansi()
+
+
+def test_valid_cwd_set_with_escaped_space_routes_to_terminal_confirmation(tmp_path: Path) -> None:
+    target = tmp_path / "My Project"
+    target.mkdir()
+    dispatch = FakeDispatch(output="Workspace boundary changed.")
+    router, ui, _, terminal, _, _, real_buf = make_router(
+        dispatch=dispatch,
+        workspace_fn=lambda: tmp_path,
+    )
+
+    router.route("/cwd set My\\ Project/")
+
+    assert len(terminal.fns) == 1
+    assert dispatch.calls[0][1] is router._real_console
+    assert "Workspace boundary changed." in real_buf.getvalue()
+    assert "Workspace boundary changed." not in ui._render_ansi()
 
 
 def test_clear_action_clears_app_pane_after_terminal_confirmation() -> None:

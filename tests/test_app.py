@@ -773,6 +773,105 @@ def test_up_arrow_passthrough_when_box_nonempty(tmp_path: Path) -> None:
     assert _chip_visible(app) is True  # the staged slot is untouched
 
 
+def test_tab_completes_cwd_set_path_argument(tmp_path: Path) -> None:
+    (tmp_path / "Projects").mkdir()
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+        )
+        inp.send_text("/cwd set Pro")
+        inp.send_text("\t")
+        inp.send_text("\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/cwd set Projects/"]
+
+
+def test_tab_completes_path_at_cursor_and_preserves_suffix(tmp_path: Path) -> None:
+    (tmp_path / "Projects").mkdir()
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+        )
+        inp.send_text("/cwd set Pro suffix")
+        inp.send_text("\x1b[D" * len(" suffix"))
+        inp.send_text("\t")
+        inp.send_text("\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/cwd set Projects/ suffix"]
+
+
+def test_down_arrow_selects_next_path_completion(tmp_path: Path) -> None:
+    (tmp_path / "Alpha").mkdir()
+    (tmp_path / "Alpine").mkdir()
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+        )
+        inp.send_text("/cwd set Al")
+        inp.send_text("\x1b[B")
+        inp.send_text("\t")
+        inp.send_text("\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/cwd set Alpine/"]
+
+
+def test_tab_completion_escapes_spaces_for_dispatcher(tmp_path: Path) -> None:
+    (tmp_path / "My Project").mkdir()
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+        )
+        inp.send_text("/cwd set My")
+        inp.send_text("\t")
+        inp.send_text("\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/cwd set My\\ Project/"]
+
+
 def test_mouse_wheel_scroll_pins_then_resumes_follow(tmp_path: Path) -> None:
     # Mouse-wheel scroll drives the SAME cursor-line model as PageUp/PageDown:
     # SCROLL_UP pins a line (leaves follow), SCROLL_DOWN back to bottom resumes it.

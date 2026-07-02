@@ -757,6 +757,7 @@ def run_interactive(
             run_shell=app_run_shell,
             on_exit=lambda: get_app().exit(),
             is_busy=lambda: runner.busy,
+            workspace_fn=lambda: runtime.status().workspace,
             glyphs=glyphs,
         )
 

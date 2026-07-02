@@ -45,6 +45,7 @@ from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import Output
 
 from shellpilot.cli.app_ui import AppUI
+from shellpilot.cli.path_completion import PathCompletionMatch, path_completion_matches
 from shellpilot.cli.render import _sanitize_line
 from shellpilot.cli.slash import (
     SlashMenuItem,
@@ -88,6 +89,10 @@ class _SlashMenuState(TypedDict):
     query: str
     preview: bool
     suppress_change: bool
+
+
+class _PathMenuState(TypedDict):
+    index: int
 
 
 @dataclass(frozen=True)
@@ -370,6 +375,7 @@ def build_app(
         "preview": False,
         "suppress_change": False,
     }
+    path_menu: _PathMenuState = {"index": 0}
 
     def _reset_menu_index(_buffer: Buffer) -> None:
         if slash_menu["suppress_change"]:
@@ -377,8 +383,13 @@ def build_app(
         slash_menu["index"] = 0
         slash_menu["query"] = dock_buffer.text
         slash_menu["preview"] = False
+        path_menu["index"] = 0
 
     dock_buffer.on_text_changed += _reset_menu_index
+
+    def _current_workspace() -> Path:
+        values = status_fn() if status_fn is not None else None
+        return values.workspace if values is not None else workspace
 
     def _menu_query() -> str:
         if slash_menu["preview"]:
@@ -402,6 +413,25 @@ def build_app(
         return max(0, min(slash_menu["index"], len(matches) - 1))
 
     menu_open = Condition(_menu_open)
+
+    def _path_matches() -> list[PathCompletionMatch]:
+        return path_completion_matches(
+            dock_buffer.document.text_before_cursor,
+            _current_workspace(),
+        )
+
+    def _path_menu_open() -> bool:
+        if approval_gate is not None and approval_gate.active:
+            return False
+        return not _menu_open() and bool(_path_matches())
+
+    def _path_menu_index() -> int:
+        matches = _path_matches()
+        if not matches:
+            return 0
+        return max(0, min(path_menu["index"], len(matches) - 1))
+
+    path_menu_open = Condition(_path_menu_open)
 
     def _dock_color() -> str:
         # The modal dock (§31.16): during an approval the border carries the
@@ -520,6 +550,35 @@ def build_app(
         filter=menu_open,
     )
 
+    def _path_menu_content() -> StyleAndTextTuples:
+        matches = _path_matches()
+        if not matches:
+            return []
+        index = _path_menu_index()
+        start = slash_menu_window(index, len(matches), MENU_VISIBLE_ROWS)
+        caret_on = "▸ " if glyphs is UNICODE_GLYPHS else "> "
+        frags: StyleAndTextTuples = []
+        for offset, item in enumerate(matches[start : start + MENU_VISIBLE_ROWS]):
+            selected = (start + offset) == index
+            caret = caret_on if selected else "  "
+            label_style = f"fg:{COLOR_ACCENT} bold" if selected else ""
+            hint_style = f"fg:{COLOR_ACCENT}" if selected else f"fg:{COLOR_FAINT}"
+            kind = "dir" if item.label.endswith("/") else "file"
+            frags.append((label_style, f" {caret}{item.label}"))
+            frags.append((hint_style, f"  {kind}"))
+            frags.append(("", "\n"))
+        frags.pop()
+        return frags
+
+    path_menu_window = ConditionalContainer(
+        content=Window(
+            FormattedTextControl(_path_menu_content),
+            height=Dimension(max=MENU_VISIBLE_ROWS),
+            dont_extend_height=True,
+        ),
+        filter=path_menu_open,
+    )
+
     def _bar() -> Window:
         # The side bars share the border's approval-state color (callable style,
         # re-evaluated per render).
@@ -540,6 +599,7 @@ def build_app(
             pane_window,
             chip_window,
             menu_window,
+            path_menu_window,
             Window(FormattedTextControl(_border(top=True)), height=1),
             dock_row,
             Window(FormattedTextControl(_border(top=False)), height=1),
@@ -678,6 +738,28 @@ def build_app(
     @kb.add("tab", filter=dock_focused & menu_open)
     def _menu_tab(event: KeyPressEvent) -> None:
         _menu_fill(_menu_matches()[_menu_index()])
+
+    @kb.add("up", filter=dock_focused & path_menu_open)
+    def _path_menu_up(event: KeyPressEvent) -> None:
+        matches = _path_matches()
+        path_menu["index"] = max(0, _path_menu_index() - 1)
+        if path_menu["index"] >= len(matches):
+            path_menu["index"] = max(0, len(matches) - 1)
+
+    @kb.add("down", filter=dock_focused & path_menu_open)
+    def _path_menu_down(event: KeyPressEvent) -> None:
+        matches = _path_matches()
+        path_menu["index"] = min(len(matches) - 1, _path_menu_index() + 1)
+
+    @kb.add("tab", filter=dock_focused & path_menu_open)
+    def _path_menu_tab(event: KeyPressEvent) -> None:
+        matches = _path_matches()
+        if not matches:
+            return
+        fill = matches[_path_menu_index()].fill
+        suffix = dock_buffer.document.text_after_cursor
+        dock_buffer.text = fill + suffix
+        dock_buffer.cursor_position = len(fill)
 
     @kb.add(
         "c-o",

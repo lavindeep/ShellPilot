@@ -22,7 +22,9 @@ prompt_toolkit app is needed in CI.
 from __future__ import annotations
 
 import io
+import shlex
 from collections.abc import Callable
+from pathlib import Path
 
 from rich.console import Console
 
@@ -57,6 +59,7 @@ class SlashRouter:
         run_shell: Callable[[str], tuple[int, str]],
         on_exit: Callable[[], None],
         is_busy: Callable[[], bool],
+        workspace_fn: Callable[[], Path] | None = None,
         glyphs: Glyphs = UNICODE_GLYPHS,
     ) -> None:
         self._ui = ui
@@ -74,6 +77,7 @@ class SlashRouter:
         self._run_shell = run_shell
         self._on_exit = on_exit
         self._is_busy = is_busy
+        self._workspace_fn = workspace_fn or Path.cwd
         self._glyphs = glyphs
 
     def route(self, line: str) -> None:
@@ -115,10 +119,27 @@ class SlashRouter:
             width = self._width_fn()
             self._run_worker(lambda: self._dispatch_worker(stripped, width))
             return
+        if self._cwd_set_can_run_in_pane(stripped):
+            self._dispatch_loop(stripped)
+            return
         if needs_terminal(stripped):
             self._run_terminal(lambda: self._dispatch_terminal(stripped))
             return
         self._dispatch_loop(stripped)  # fast display command — capture into the pane
+
+    def _cwd_set_can_run_in_pane(self, line: str) -> bool:
+        try:
+            parts = shlex.split(line)
+        except ValueError:
+            return True
+        if len(parts) < 2 or parts[0].lower() != "/cwd" or parts[1].lower() != "set":
+            return False
+        if len(parts) < 3:
+            return True
+        candidate = Path(parts[2]).expanduser()
+        if not candidate.is_absolute():
+            candidate = (self._workspace_fn() / parts[2]).resolve()
+        return not candidate.is_dir()
 
     def _capturing_console(self, width: int) -> tuple[Console, io.StringIO]:
         buf = io.StringIO()

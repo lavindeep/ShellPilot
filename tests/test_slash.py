@@ -8,13 +8,19 @@ from rich.console import Console
 from shellpilot.cli.slash import SlashAction, SlashDispatcher
 from shellpilot.config.loader import LoadedConfig, load_config
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.persistence.sessions import SessionStore
 from shellpilot.runtime.conversation import ConversationRuntime
 from tests.fakes.fake_llm import FakeLLM, answer
 from tests.fakes.fake_ui import FakeUI
 
 
 class Harness:
-    def __init__(self, tmp_path: Path, confirm_answer: bool = True) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        confirm_answer: bool = True,
+        session: SessionStore | None = None,
+    ) -> None:
         self.console = Console(record=True, width=100)
         self.fake = FakeLLM(script=[answer("hello")])
         self.loaded = self._load(tmp_path)
@@ -24,6 +30,7 @@ class Harness:
             workspace=tmp_path,
             behavior=BehaviorInstructions(global_text=None, project_text=None),
             ui=FakeUI(),
+            session=session,
         )
         self.reloads = 0
 
@@ -300,6 +307,40 @@ def test_cwd_set_rejects_missing_dir(tmp_path: Path) -> None:
     assert "not a directory" in harness.output()
 
 
+def test_cwd_set_rejects_relative_missing_dir_from_workspace(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+
+    harness.dispatcher.handle("/cwd set nope")
+
+    assert harness.runtime.status().workspace == tmp_path
+    out = harness.output()
+    assert "nope is not a directory" in out
+    assert "Projects/ShellPilot/nope" not in out
+
+
+def test_cwd_set_relative_path_resolves_from_workspace(tmp_path: Path) -> None:
+    new_workspace = tmp_path / "other"
+    new_workspace.mkdir()
+    harness = Harness(tmp_path, confirm_answer=True)
+
+    harness.dispatcher.handle("/cwd set other")
+
+    assert harness.runtime.status().workspace == new_workspace.resolve()
+    out = harness.output()
+    assert "Workspace boundary:" in out
+    assert "other" in out
+
+
+def test_cwd_set_accepts_escaped_space_in_relative_path(tmp_path: Path) -> None:
+    new_workspace = tmp_path / "My Project"
+    new_workspace.mkdir()
+    harness = Harness(tmp_path, confirm_answer=True)
+
+    harness.dispatcher.handle("/cwd set My\\ Project")
+
+    assert harness.runtime.status().workspace == new_workspace.resolve()
+
+
 def test_profile_use_switches_and_audits(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/profile use supervised")
@@ -324,6 +365,32 @@ def test_export_without_session_store_reports(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.dispatcher.handle("/export")
     assert "No session transcript" in harness.output()
+
+
+def test_export_relative_path_resolves_from_workspace(tmp_path: Path) -> None:
+    session = SessionStore(tmp_path / "sessions", "s1")
+    session.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    harness = Harness(tmp_path, session=session)
+
+    harness.dispatcher.handle("/export exports/out.md")
+
+    target = tmp_path / "exports" / "out.md"
+    assert target.is_file()
+    assert "ShellPilot session s1" in target.read_text(encoding="utf-8")
+    out = harness.output()
+    assert "Exported transcript to" in out
+    assert "out.md" in out
+
+
+def test_export_accepts_escaped_space_in_relative_path(tmp_path: Path) -> None:
+    session = SessionStore(tmp_path / "sessions", "s1")
+    session.write_meta(model="gemma4:e4b", profile="balanced", workspace=tmp_path)
+    harness = Harness(tmp_path, session=session)
+
+    harness.dispatcher.handle("/export My\\ Export.md")
+
+    target = tmp_path / "My Export.md"
+    assert target.is_file()
 
 
 # ---------------------------------------------------------------------------
