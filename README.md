@@ -85,7 +85,7 @@ ShellPilot is developed and tested on **macOS** (Apple Silicon) and is **continu
 
 ## A session
 
-A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text). On launch, ShellPilot v0.10.1 prints a panel banner — a block-art logo alongside Commands, Tips, Workflow-skills, and Recent-sessions sections — then drops to the prompt; the transcript below picks up there:
+A representative session in the default `balanced` profile (risk badges are colored chips in the terminal, shown here as text), rendered here as the line-based view — the legacy REPL, available with `--legacy-ui`; on an interactive terminal ShellPilot opens a full-screen app by default. On launch it prints a panel banner — a block-art logo alongside Commands, Tips, Workflow-skills, and Recent-sessions sections — before the first prompt; the transcript below picks up there:
 
 ```text
 ~/my-project · gemma4:e4b · balanced · ● local   6% ctx
@@ -293,7 +293,7 @@ Current release: **v0.10.1** — post-v0.10.0 hardening and cleanup. Recent mile
 
 - **v0.10.1** — post-v0.10.0 hardening and cleanup: a wave of external-review logic and security fixes (classifier escalation of git mutating verbs and option-encoded paths, hard-bounded command output, `trust_env=False` on every HTTP client, broader secret redaction including prefixed and JSON-shaped keys, planner stuck-state and artifact-path fixes, Ollama stream done-sentinel and typed errors on malformed responses, session-id traversal guard, exact-byte web-fetch boundary) plus behavior-preserving internal cleanups. No model-facing behavior change — a default session is unchanged.
 
-Next up is a full-screen TUI input dock (framed input box, queueable input, completion-menu integration), deferred from v0.10.0. Later candidates include controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
+The full-screen app is now the default UI on an interactive terminal — a framed input dock with a type-ahead queue, completion menus, and an approval focus-swap — with the legacy line-based REPL available via `--legacy-ui`. Later candidates include controlled skill-script execution under its own safety design, a `trusted-local` profile, and `/undo`.
 
 ## License
 
