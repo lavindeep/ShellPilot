@@ -125,7 +125,25 @@ class SessionStore:
         self._append(self._message_record("message", message))
 
     def replace_last_message(self, message: Message) -> None:
+        """Record a replacement for the last ASSISTANT message on reload.
+
+        On load this replaces the most recent role=="assistant" message, NOT
+        simply the last message. The mid-batch decline path can record tool
+        results (from earlier auto-run calls in the same batch) between the
+        assistant reply and this record; targeting the last assistant reply
+        keeps those trailing tool results intact.
+        """
         self._append(self._message_record("replace_last_message", message))
+
+    def truncate_last_turn(self) -> None:
+        """Record that the last assistant turn is discarded (mid-tool cancel).
+
+        On load this deletes from the most recent role=="assistant" message to
+        the end of the transcript, mirroring the in-memory rollback so a
+        cancelled turn leaves no orphaned assistant tool_call on --resume. If no
+        assistant message precedes it, the record is ignored.
+        """
+        self._append({"type": "truncate_last_turn"})
 
     def _message_record(self, kind: str, message: Message) -> dict[str, Any]:
         content = redact_secrets(message.content) if self._redact else message.content
@@ -190,6 +208,13 @@ class SessionStore:
             elif kind == "active_plan":
                 raw = record.get("task_id")
                 active_plan_task_id = str(raw) if isinstance(raw, str) else None
+            elif kind == "truncate_last_turn":
+                # Discard from the last assistant message to the end (a cancelled
+                # mid-tool turn). If no assistant message precedes it, ignore.
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].role == "assistant":
+                        del messages[i:]
+                        break
             elif kind in ("message", "replace_last_message"):
                 role = record.get("role")
                 if not role:
@@ -209,8 +234,13 @@ class SessionStore:
                     tool_calls=calls,
                 )
                 if kind == "replace_last_message":
-                    if messages:
-                        messages[-1] = message
+                    # Replace the last ASSISTANT message, not blindly messages[-1]:
+                    # trailing tool results from earlier calls in the same batch
+                    # must survive the mid-batch decline's reply truncation.
+                    for i in range(len(messages) - 1, -1, -1):
+                        if messages[i].role == "assistant":
+                            messages[i] = message
+                            break
                     continue
                 messages.append(message)
         return LoadedSession(

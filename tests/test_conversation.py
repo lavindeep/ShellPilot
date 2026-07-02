@@ -308,6 +308,241 @@ def test_plain_decline_in_multi_tool_batch_trims_persisted_session(tmp_path: Pat
     assert len(tool_messages) == 1
 
 
+def _reader_and_writer_registry() -> tuple[ToolRegistry, list[str]]:
+    """A benign auto-running reader plus an approval-gated writer.
+
+    The reader has no side effect and no risk, so it auto-runs and records a
+    tool result; the writer is approval-gated so a FakeUI(approve_actions=False)
+    declines it. ``ran`` records which handlers actually executed.
+    """
+    ran: list[str] = []
+
+    def _reader(context: ToolContext, arguments: dict[str, object]) -> ToolResult:
+        ran.append("reader")
+        return ToolResult(success=True, summary="read", content="contents")
+
+    def _writer(context: ToolContext, arguments: dict[str, object]) -> ToolResult:
+        ran.append("writer")
+        return ToolResult(success=True, summary="wrote", content="")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            definition=ToolDefinition(
+                name="reader", description="benign read", parameters={}, required=()
+            ),
+            side_effect=SideEffect.NONE,
+            default_risk=RiskLevel.LOW,
+            allowed_profiles=ALL_PROFILES,
+            handler=_reader,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            definition=ToolDefinition(
+                name="writer",
+                description="side-effecting write",
+                parameters={"x": {"type": "string"}},
+                required=("x",),
+            ),
+            side_effect=SideEffect.WORKSPACE_WRITE,
+            default_risk=RiskLevel.MEDIUM,
+            allowed_profiles=ALL_PROFILES,
+            handler=_writer,
+        )
+    )
+    return registry, ran
+
+
+def test_mid_batch_decline_persists_without_losing_earlier_tool_result(tmp_path: Path) -> None:
+    """A decline that is NOT the last call in the batch must not corrupt the mirror.
+
+    The batch is [reader (auto-runs → tr0), writer (declined → truncate+replace),
+    reader (never runs)]. The declined call truncates the reply and mirrors the
+    truncation with replace_last_message; an earlier auto-run tool result already
+    sits after the reply in the transcript. On reload the session must match the
+    in-memory history tail — no lost tool result, no duplicated assistant message.
+    """
+    registry, ran = _reader_and_writer_registry()
+    store = SessionStore(tmp_path / "sessions", "mid-batch-decline")
+    fake = FakeLLM(
+        script=[
+            assistant(
+                "",
+                tool_calls=(
+                    ToolCall(name="reader", arguments={}),
+                    ToolCall(name="writer", arguments={"x": "v"}),
+                    ToolCall(name="reader", arguments={}),
+                ),
+            ),
+            answer("This must not be called."),
+        ]
+    )
+    ui = FakeUI(approve_actions=False)
+    runtime = ConversationRuntime(
+        llm=fake,
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=ui,
+        registry=registry,
+        session=store,
+    )
+
+    runtime.run_turn("do three things")
+    loaded = SessionStore.load(store.path)
+
+    assert ran == ["reader"]  # writer declined, third reader never reached
+    assert len(fake.calls) == 1  # no follow-up model call after the decline
+    # The reload must reproduce the in-memory history exactly (role, content,
+    # tool-call count) — nothing lost, nothing duplicated.
+    assert len(loaded.messages) == len(runtime._history)
+    for loaded_msg, mem_msg in zip(loaded.messages, runtime._history, strict=True):
+        assert loaded_msg.role == mem_msg.role
+        assert loaded_msg.content == mem_msg.content
+        assert len(loaded_msg.tool_calls) == len(mem_msg.tool_calls)
+    assistant_messages = [m for m in loaded.messages if m.role == "assistant"]
+    tool_messages = [m for m in loaded.messages if m.role == "tool"]
+    assert len(assistant_messages) == 1  # not two — the reply is replaced, not appended
+    assert len(assistant_messages[0].tool_calls) == 2  # truncated to reader + writer
+    assert len(tool_messages) == 2  # tr0 (reader) preserved + tr1 (decline)
+
+
+def test_cancel_mid_tool_reconciles_persisted_session(tmp_path: Path) -> None:
+    """A Ctrl-C during tool execution must not leave an orphaned tool_call on disk.
+
+    The batch is [reader (auto-runs → tr0), cancel_tool (sets the cancel event)].
+    The in-memory history is rolled back to just the user message, so the session
+    file must be reconciled the same way — otherwise --resume re-sends the
+    orphaned assistant tool_call.
+    """
+    ran: list[str] = []
+
+    def _reader(context: ToolContext, arguments: dict[str, object]) -> ToolResult:
+        ran.append("reader")
+        return ToolResult(success=True, summary="read", content="contents")
+
+    def _cancel_tool(context: ToolContext, arguments: dict[str, object]) -> ToolResult:
+        assert context.cancel is not None
+        context.cancel.set()
+        return ToolResult(success=True, summary="cancelled mid-run", content="discarded")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            definition=ToolDefinition(
+                name="reader", description="benign read", parameters={}, required=()
+            ),
+            side_effect=SideEffect.NONE,
+            default_risk=RiskLevel.LOW,
+            allowed_profiles=ALL_PROFILES,
+            handler=_reader,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            definition=ToolDefinition(
+                name="cancel_tool", description="cancels", parameters={}, required=()
+            ),
+            side_effect=SideEffect.NONE,
+            default_risk=RiskLevel.LOW,
+            allowed_profiles=ALL_PROFILES,
+            handler=_cancel_tool,
+        )
+    )
+
+    store = SessionStore(tmp_path / "sessions", "cancel-mid-tool")
+    fake = FakeLLM(
+        script=[
+            assistant(
+                "",
+                tool_calls=(
+                    ToolCall(name="reader", arguments={}),
+                    ToolCall(name="cancel_tool", arguments={}),
+                ),
+            ),
+            answer("must never be recorded"),
+        ]
+    )
+    runtime = ConversationRuntime(
+        llm=fake,
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        registry=registry,
+        session=store,
+    )
+    cancel = threading.Event()
+
+    with pytest.raises(GenerationCancelled):
+        runtime.run_turn("go", cancel=cancel)
+
+    loaded = SessionStore.load(store.path)
+
+    assert ran == ["reader"]
+    assert len(fake.calls) == 1
+    # In-memory rolled back to just the user turn; the transcript must match —
+    # no orphaned assistant tool_call, no partial tool result.
+    assert [m.role for m in runtime._history] == ["user"]
+    assert [m.role for m in loaded.messages] == ["user"]
+    assert loaded.messages[0].content == "go"
+
+
+def test_load_replace_last_message_targets_last_assistant(tmp_path: Path) -> None:
+    """replace_last_message replaces the last assistant message, not messages[-1]."""
+    store = SessionStore(tmp_path / "sessions", "replace-unit")
+    store.record_message(
+        Message(role="assistant", content="A", tool_calls=(ToolCall(name="t", arguments={}),))
+    )
+    store.record_message(Message(role="tool", content="tr0"))
+    store.replace_last_message(Message(role="assistant", content="A2"))
+
+    loaded = SessionStore.load(store.path)
+
+    assert [m.role for m in loaded.messages] == ["assistant", "tool"]
+    assert loaded.messages[0].content == "A2"  # assistant replaced
+    assert loaded.messages[0].tool_calls == ()  # ...with the new (empty) tool calls
+    assert loaded.messages[1].content == "tr0"  # trailing tool result preserved
+
+
+def test_load_replace_last_message_with_no_assistant_is_ignored(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions", "replace-noassist")
+    store.record_message(Message(role="tool", content="orphan"))
+    store.replace_last_message(Message(role="assistant", content="X"))
+
+    loaded = SessionStore.load(store.path)
+
+    assert [m.role for m in loaded.messages] == ["tool"]
+    assert loaded.messages[0].content == "orphan"
+
+
+def test_load_truncate_last_turn_deletes_from_last_assistant(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions", "truncate-unit")
+    store.record_message(Message(role="user", content="hi"))
+    store.record_message(
+        Message(role="assistant", content="", tool_calls=(ToolCall(name="t", arguments={}),))
+    )
+    store.record_message(Message(role="tool", content="tr0"))
+    store.truncate_last_turn()
+
+    loaded = SessionStore.load(store.path)
+
+    assert [m.role for m in loaded.messages] == ["user"]
+    assert loaded.messages[0].content == "hi"
+
+
+def test_load_truncate_last_turn_with_no_assistant_is_ignored(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions", "truncate-noassist")
+    store.record_message(Message(role="user", content="hi"))
+    store.truncate_last_turn()
+
+    loaded = SessionStore.load(store.path)
+
+    assert [m.role for m in loaded.messages] == ["user"]
+    assert loaded.messages[0].content == "hi"
+
+
 def test_plain_decline_after_step_skip_does_not_show_plan_pause_message(tmp_path: Path) -> None:
     registry, ran = _side_effect_registry()
     fake = FakeLLM(

@@ -734,6 +734,8 @@ class ConversationRuntime:
                     # abort_turn (⏹ aborted), and partial command output already
                     # streamed to the pane stays visible (§31.15).
                     del self._history[history_before_reply:]
+                    if self._session is not None:
+                        self._session.truncate_last_turn()
                     raise GenerationCancelled
                 # Feed side-effecting tool outcomes to the plan completion guard.
                 # Key off the SPEC's side_effect (not the result's): a failed or
