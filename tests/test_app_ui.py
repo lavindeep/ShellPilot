@@ -34,6 +34,20 @@ def test_intro_renders_as_first_pane_content() -> None:
     assert "BANNER-MARKER" in ui._render_ansi()
 
 
+def test_clear_conversation_preserves_intro_banner() -> None:
+    from rich.text import Text
+
+    ui = AppUI(glyphs=GLYPHS, width_fn=lambda: 80, intro=Text("BANNER-MARKER"))
+    ui.show_user_message("old visible transcript")
+
+    ui.clear_conversation("Conversation cleared.")
+
+    out = plain(ui)
+    assert "BANNER-MARKER" in out
+    assert "old visible transcript" not in out
+    assert "Conversation cleared." in out
+
+
 def ansi_text(ui: AppUI) -> str:
     """Raw ANSI string from _render_ansi."""
     return ui._render_ansi()

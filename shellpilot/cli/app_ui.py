@@ -177,14 +177,15 @@ class AppUI:
         # Injected clock so the indicator's elapsed/animation is testable with a
         # fixed time_fn rather than the wall clock.
         self._time_fn = time_fn
+        # Durable pane chrome. The boot banner is not conversation history, so it
+        # is restored after /clear even though transcript renderables are dropped.
+        self._intro = intro
         # Source of truth: every committed renderable in the transcript. A _Trail
         # entry is a live thinking block rendered via _render_trail (§31.19). The
         # boot banner (when provided) is seeded as the first transcript entry so it
         # renders inside the alt-screen pane — a console.print would be lost behind
         # the full-screen app (§31.13).
-        self._renderables: list[RenderableType | _Trail | _Diff] = (
-            [intro] if intro is not None else []
-        )
+        self._renderables: list[RenderableType | _Trail | _Diff] = self._initial_renderables()
         # Accumulated token text for the current open response.
         # None means no response is open; an open response is the last renderable
         # in spirit but lives here until end_response() finalizes it.
@@ -222,6 +223,9 @@ class AppUI:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _initial_renderables(self) -> list[RenderableType | _Trail | _Diff]:
+        return [self._intro] if self._intro is not None else []
 
     def _close_open_response(self) -> None:
         """Finalize the open response as a Markdown renderable, if one is open."""
@@ -557,7 +561,7 @@ class AppUI:
 
     def clear_conversation(self, message: str | None = None) -> None:
         """Reset the visible pane after the runtime history has been cleared."""
-        self._renderables.clear()
+        self._renderables = self._initial_renderables()
         self._open_response = None
         self._indicator = None
         self._active_trail = None

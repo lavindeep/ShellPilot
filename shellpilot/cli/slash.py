@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shlex
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
@@ -250,6 +251,13 @@ def _default_confirm(prompt: str) -> bool:
     return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
 
 
+def _resolve_user_path(raw: str, workspace: Path) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = workspace / raw
+    return path.resolve()
+
+
 # Per-key risk phrasing for the HIGH_STAKES_KEYS confirm-gate in /config set.
 _HIGH_STAKES_RISK: dict[str, str] = {
     "model.allow_cloud": "enables cloud egress — model calls may leave the device",
@@ -335,7 +343,13 @@ class SlashDispatcher:
         self._tty = tty
 
     def handle(self, line: str) -> SlashAction:
-        parts = line.strip().split()
+        try:
+            parts = shlex.split(line.strip())
+        except ValueError as exc:
+            self._console.print(f"[red]Could not parse command:[/red] {exc}")
+            return SlashAction.CONTINUE
+        if not parts:
+            return SlashAction.CONTINUE
         command, args = parts[0].lower(), parts[1:]
 
         if command == "/exit":
@@ -719,7 +733,7 @@ class SlashDispatcher:
             self._console.print(f"Workspace boundary: {status.workspace}")
             return
         if args[0] == "set" and len(args) > 1:
-            new_workspace = Path(args[1]).expanduser().resolve()
+            new_workspace = _resolve_user_path(args[1], self._runtime.status().workspace)
             if not new_workspace.is_dir():
                 self._console.print(f"[red]{new_workspace} is not a directory.[/red]")
                 return
@@ -797,7 +811,7 @@ class SlashDispatcher:
             return
         workspace = self._runtime.status().workspace
         target = (
-            Path(args[0]).expanduser()
+            _resolve_user_path(args[0], workspace)
             if args
             else project_state_dir(workspace) / "exports" / f"{store.session_id}.md"
         )
