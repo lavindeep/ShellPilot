@@ -73,7 +73,12 @@ def _search_parts(raw_path: str, workspace: Path) -> tuple[Path, str]:
 
 def _expand_path(raw_path: str, workspace: Path) -> Path:
     if raw_path.startswith("~"):
-        return Path(raw_path).expanduser()
+        try:
+            return Path(raw_path).expanduser()
+        except RuntimeError:
+            # Home cannot be resolved (no $HOME, no pwd entry) — this runs per
+            # keystroke, so degrade to no matches instead of crashing the app.
+            return workspace / raw_path
     path = Path(raw_path)
     if path.is_absolute():
         return path

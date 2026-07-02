@@ -22,12 +22,23 @@ def test_cwd_set_path_suggestions_are_workspace_relative(tmp_path: Path) -> None
 def test_path_suggestions_support_tilde_home(tmp_path: Path, monkeypatch) -> None:
     home = tmp_path / "home"
     (home / "Desktop").mkdir(parents=True)
-    monkeypatch.setattr(Path, "home", lambda: home)
+    # expanduser() reads $HOME on POSIX, not Path.home() — patch the env var so
+    # the test is hermetic instead of depending on the machine's real home.
+    monkeypatch.setenv("HOME", str(home))
 
     matches = path_completion_matches("/cwd set ~/De", tmp_path)
 
     assert _labels(matches) == ["~/Desktop/"]
     assert matches[0].fill == "/cwd set ~/Desktop/"
+
+
+def test_tilde_without_resolvable_home_suggests_nothing(tmp_path: Path, monkeypatch) -> None:
+    def raise_runtime_error(self: Path) -> Path:
+        raise RuntimeError("could not determine home directory")
+
+    monkeypatch.setattr(Path, "expanduser", raise_runtime_error)
+
+    assert path_completion_matches("/cwd set ~/De", tmp_path) == []
 
 
 def test_non_path_slash_command_has_no_path_suggestions(tmp_path: Path) -> None:
