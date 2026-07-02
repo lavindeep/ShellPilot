@@ -28,8 +28,7 @@ from rich.text import Text
 
 from shellpilot.cli.render import (
     _sanitize_line,
-    approval_cwd,
-    approval_info,
+    approval_card,
     diff_row_count,
     plan_panel,
     plan_step_line,
@@ -646,8 +645,9 @@ class AppUI:
             self._renderables.append(diff)
             self._latest_diff = diff
             self._cache = None
-        self._add_renderable(approval_info(request, plain_badge=False))
-        self._add_renderable(approval_cwd(request))
+        # One risk-bordered card (§31.5): badge + WHY/EFFECT + CWD as a single
+        # decision zone, matching the dock border's approval color.
+        self._add_renderable(approval_card(request))
 
     def show_plan_approval(self, plan: TaskPlan, path: str) -> None:
         self._add_renderable(plan_panel(plan, self._glyphs))

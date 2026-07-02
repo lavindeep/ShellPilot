@@ -92,6 +92,53 @@ def test_tool_renderers_sanitize_external_text() -> None:
     assert "updated file.py" in result.plain
 
 
+def make_request(
+    risk: RiskLevel = RiskLevel.MEDIUM,
+    kind: str = "command",
+    reasons: tuple[str, ...] = ("writes inside workspace",),
+    purpose: str = "Writes the file.",
+) -> ApprovalRequest:
+    return ApprovalRequest(
+        kind=kind,
+        display="do the thing",
+        risk=risk,
+        reasons=reasons,
+        purpose=purpose,
+        cwd=Path("/tmp/ws"),
+    )
+
+
+def test_approval_card_binds_badge_stats_and_cwd_in_one_panel() -> None:
+    from shellpilot.cli.render import approval_card
+
+    card = approval_card(make_request())
+    assert isinstance(card, Panel)
+    out = rendered(card)
+    assert "MEDIUM" in out
+    assert "WHY" in out and "writes inside workspace" in out
+    assert "EFFECT" in out and "Writes the file." in out
+    assert "CWD" in out and "/tmp/ws" in out
+
+
+def test_approval_card_border_carries_the_risk_color() -> None:
+    from shellpilot.cli.render import approval_card
+
+    medium = approval_card(make_request(risk=RiskLevel.MEDIUM))
+    high = approval_card(make_request(risk=RiskLevel.HIGH))
+    # A gated action is a decision point → amber border; HIGH escalates to red.
+    assert str(medium.border_style) == "sp.warn"
+    assert str(high.border_style) == "sp.error"
+
+
+def test_approval_card_omits_empty_rows() -> None:
+    from shellpilot.cli.render import approval_card
+
+    card = approval_card(make_request(reasons=(), purpose=""))
+    out = rendered(card)
+    assert "WHY" not in out and "EFFECT" not in out
+    assert "CWD" in out
+
+
 def test_response_markdown_uses_ansi_code_theme() -> None:
     # Fenced code must render with ANSI colors on the terminal's own background
     # (§31.7) — never monokai's painted fill.

@@ -470,6 +470,25 @@ def approval_cwd(request: ApprovalRequest) -> Text:
     return info
 
 
+def approval_card(request: ApprovalRequest) -> Panel:
+    """The approval block as ONE risk-bordered panel (§31.5, app pane).
+
+    Composes the shared stat-block builders (badge + WHY/EFFECT, then CWD) into
+    a single rounded panel whose border carries the decision color: amber for a
+    gated action, red when the risk is HIGH — the same hue the dock border takes
+    while the prompt is active, so the card and the input read as one decision
+    zone. The choice line stays outside (the gate re-prompts it on its own).
+    """
+    border = "sp.error" if request.risk is RiskLevel.HIGH else "sp.warn"
+    return Panel(
+        Group(approval_info(request), approval_cwd(request)),
+        box=box.ROUNDED,
+        border_style=border,
+        expand=False,
+        padding=(0, 1),
+    )
+
+
 def approval_choices(request: ApprovalRequest) -> Text:
     """The actionable choice line (§31.5): yes=green, edit=amber, no=red.
 

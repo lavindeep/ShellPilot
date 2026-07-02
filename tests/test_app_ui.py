@@ -370,6 +370,25 @@ def test_show_approval_renders_diff_info_and_cwd() -> None:
     assert "oldline" in text and "newline" in text  # the diff content rendered
 
 
+def test_show_approval_renders_the_risk_card() -> None:
+    """The badge + stat rows + CWD arrive as ONE risk-bordered panel (§31.5),
+    not loose flush-left lines."""
+    from rich.panel import Panel
+
+    ui = make_ui()
+    request = ApprovalRequest(
+        kind="tool",
+        display="patch_file hello.py",
+        risk=RiskLevel.MEDIUM,
+        reasons=("writes inside workspace",),
+        cwd=Path("/tmp/ws"),
+    )
+    ui.show_approval(request)
+    cards = [r for r in ui._renderables if isinstance(r, Panel)]
+    assert len(cards) == 1
+    assert str(cards[0].border_style) == "sp.warn"
+
+
 def test_show_approval_without_diff_omits_panel() -> None:
     ui = make_ui()
     request = ApprovalRequest(
