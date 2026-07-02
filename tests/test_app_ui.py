@@ -700,6 +700,43 @@ def test_show_user_message_echoes_with_chevron() -> None:
     assert "run the tests" in out
 
 
+def test_show_user_message_brightens_text_and_accents_chevron() -> None:
+    """The echo carries brightness hierarchy (§31.12): green chevron, bright
+    message — not the old all-accent line that colored the user's own words."""
+    from rich.text import Text
+
+    ui = make_ui()
+    ui.show_user_message("run the tests")
+    echo = ui._renderables[-1]
+    assert isinstance(echo, Text)
+    styles = {str(span.style) for span in echo.spans}
+    assert "sp.chevron" in styles
+    assert "sp.emph" in styles
+    assert "sp.accent" not in styles
+
+
+def test_show_user_message_adds_breathing_room_between_turns() -> None:
+    """A blank spacer line precedes the echo when the transcript already has
+    content, so consecutive turns don't blur together — but the first message
+    into an empty pane gets no leading blank."""
+    from rich.text import Text
+
+    ui = make_ui()
+    ui.show_user_message("first turn")
+    first = ui._renderables[0]
+    assert isinstance(first, Text)
+    assert first.plain != ""  # no leading blank on an empty pane
+
+    ui.turn_finished(make_stats(elapsed_s=1.0, output_tokens=5))
+    ui.show_user_message("second turn")
+    echo_index = next(
+        i for i, r in enumerate(ui._renderables) if isinstance(r, Text) and "second turn" in r.plain
+    )
+    spacer = ui._renderables[echo_index - 1]
+    assert isinstance(spacer, Text)
+    assert spacer.plain == ""  # blank line between the done line and the echo
+
+
 def test_show_user_message_sanitizes_control_chars() -> None:
     ui = make_ui()
     ui.show_user_message("clean\x1b[2J\x00\x07injected")

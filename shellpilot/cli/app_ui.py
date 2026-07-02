@@ -523,8 +523,18 @@ class AppUI:
         # is the minimal guard so an error never poisons the following turn.
         self._indicator = None
         self._idle_hint_shown = False  # a new turn re-arms the idle hint
-        echo = f"{self._glyphs.chevron} {_sanitize_line(text)}"
-        self._add_renderable(Text(echo, style="sp.accent"))
+        # Breathing room between turns (§31.12): a blank spacer above the echo
+        # keeps consecutive turns from blurring together. The first message
+        # into an empty pane (or over only an open response) skips it.
+        if self._renderables:
+            self._add_renderable(Text(""))
+        # Brightness hierarchy: the chevron carries the accent, the user's own
+        # words render bright — not tinted green like harness machinery.
+        echo = Text.assemble(
+            (f"{self._glyphs.chevron} ", "sp.chevron"),
+            (_sanitize_line(text), "sp.emph"),
+        )
+        self._add_renderable(echo)
 
     def show_idle_hint(self, text: str) -> None:
         # An idle Ctrl-C hint (§31.17). Deduped: repeated Ctrl-C while idle shows
