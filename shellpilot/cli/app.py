@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
@@ -78,6 +78,13 @@ MENU_VISIBLE_ROWS = 3
 # real turn cancellation through on_interrupt; this hint is the idle fallback.
 # NOTE: subprocess-kill on cancel is branch 6b.
 _IDLE_HINT = "(idle — type /exit to quit)"
+
+
+class _SlashMenuState(TypedDict):
+    index: int
+    query: str
+    preview: bool
+    suppress_change: bool
 
 
 @dataclass(frozen=True)
@@ -339,26 +346,41 @@ def build_app(
     dock_focused = has_focus(dock_buffer)
 
     # The slash menu (§31.20): rows derived once from HELP_ROWS; `index` is the
-    # current selection, reset to the top whenever the dock text changes (so each
-    # new keystroke re-filters from the first match).
+    # current selection. `query` is the user-typed slash token used for filtering;
+    # arrow-key previews can write multi-word commands into the dock while this
+    # query keeps the menu open over the original sibling set.
     menu_items = slash_menu_items()
     menu_label_width = max((len(it.label) for it in menu_items), default=0)
-    slash_menu = {"index": 0}
+    slash_menu: _SlashMenuState = {
+        "index": 0,
+        "query": "",
+        "preview": False,
+        "suppress_change": False,
+    }
 
     def _reset_menu_index(_buffer: Buffer) -> None:
+        if slash_menu["suppress_change"]:
+            return
         slash_menu["index"] = 0
+        slash_menu["query"] = dock_buffer.text
+        slash_menu["preview"] = False
 
     dock_buffer.on_text_changed += _reset_menu_index
 
+    def _menu_query() -> str:
+        if slash_menu["preview"]:
+            return str(slash_menu["query"])
+        return dock_buffer.text
+
     def _menu_matches() -> list[SlashMenuItem]:
-        return slash_menu_matches(dock_buffer.text, menu_items)
+        return slash_menu_matches(_menu_query(), menu_items)
 
     def _menu_open() -> bool:
         # Closed during an approval (the dock is the approval input then) and when
         # nothing matches; otherwise open while the command token is being typed.
         if approval_gate is not None and approval_gate.active:
             return False
-        return slash_menu_open(dock_buffer.text) and bool(_menu_matches())
+        return slash_menu_open(_menu_query()) and bool(_menu_matches())
 
     def _menu_index() -> int:
         matches = _menu_matches()
@@ -579,13 +601,29 @@ def build_app(
         dock_buffer.text = item.fill + " "
         dock_buffer.cursor_position = len(dock_buffer.text)
 
+    def _menu_preview(item: SlashMenuItem) -> None:
+        # Arrow selection previews the highlighted command without accepting it.
+        # The original typed query remains active so multi-word previews such as
+        # "/model list" do not close the menu before the user can keep arrowing.
+        slash_menu["suppress_change"] = True
+        try:
+            dock_buffer.text = item.fill
+            dock_buffer.cursor_position = len(dock_buffer.text)
+        finally:
+            slash_menu["suppress_change"] = False
+        slash_menu["preview"] = True
+
     @kb.add("up", filter=dock_focused & menu_open)
     def _menu_up(event: KeyPressEvent) -> None:
+        matches = _menu_matches()
         slash_menu["index"] = max(0, _menu_index() - 1)
+        _menu_preview(matches[_menu_index()])
 
     @kb.add("down", filter=dock_focused & menu_open)
     def _menu_down(event: KeyPressEvent) -> None:
-        slash_menu["index"] = min(len(_menu_matches()) - 1, _menu_index() + 1)
+        matches = _menu_matches()
+        slash_menu["index"] = min(len(matches) - 1, _menu_index() + 1)
+        _menu_preview(matches[_menu_index()])
 
     @kb.add("enter", filter=dock_focused & menu_open)
     def _menu_enter(event: KeyPressEvent) -> None:

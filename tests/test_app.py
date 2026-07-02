@@ -1137,6 +1137,21 @@ def test_slash_menu_down_arrow_and_enter_fills_arg_command(tmp_path: Path) -> No
     assert slashes == ["/model use llama"]
 
 
+def test_slash_menu_arrow_selection_previews_command_in_dock(tmp_path: Path) -> None:
+    # Arrow navigation writes the highlighted command into the dock immediately
+    # while keeping the menu open, so users can continue through sibling matches.
+    slashes: list[str] = []
+    submits: list[str] = []
+    with create_pipe_input() as inp:
+        app = _menu_app(tmp_path, inp, slashes, submits)
+        inp.send_text("/model")  # matches /model, /model list, /model use
+        inp.send_text("\x1b[B\x1b[B")  # down, down previews /model use
+        inp.send_text(" llama\r")  # continue from the previewed command
+        inp.send_text("/exit\r")
+        app.run()
+    assert slashes == ["/model use llama"]
+
+
 def test_slash_menu_tab_fills_without_running(tmp_path: Path) -> None:
     # Tab fills the highlighted command + a space and never runs it; a later Enter
     # (menu now closed by the space) submits the filled line.
