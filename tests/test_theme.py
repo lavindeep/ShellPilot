@@ -48,6 +48,18 @@ class _EncodedFile(io.StringIO):
         return self._encoding
 
 
+def test_color_env_is_hermetic() -> None:
+    """No ambient color override reaches a test, regardless of the invoking
+    shell — the autouse fixture in conftest.py strips them (FORCE_COLOR=3 in a
+    dev shell otherwise makes StringIO consoles claim to be terminals)."""
+    import os
+
+    from tests.conftest import COLOR_ENV_VARS
+
+    for var in COLOR_ENV_VARS:
+        assert var not in os.environ, f"{var} leaked into the test environment"
+
+
 def test_theme_defines_all_required_styles() -> None:
     for name in REQUIRED_STYLES:
         assert name in SHELLPILOT_THEME.styles, f"missing theme style: {name}"
