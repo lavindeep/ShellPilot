@@ -83,3 +83,28 @@ def test_glyph_sets_cover_the_same_fields() -> None:
     assert UNICODE_GLYPHS.bullet != ASCII_GLYPHS.bullet
     assert UNICODE_GLYPHS.spinner_frames and ASCII_GLYPHS.spinner_frames
     assert UNICODE_GLYPHS.beacon_frames and ASCII_GLYPHS.beacon_frames
+
+
+MARKDOWN_STYLES = (
+    "markdown.code",
+    "markdown.h1",
+    "markdown.h2",
+    "markdown.h3",
+    "markdown.hr",
+    "markdown.link",
+    "markdown.link_url",
+)
+
+
+def test_theme_overrides_markdown_styles() -> None:
+    # Rich's defaults paint inline code "bold cyan on black" and headings
+    # magenta — both off-palette, and the black chip violates the theme's own
+    # never-set-a-background rule (§31.1). The theme must own these names.
+    for name in MARKDOWN_STYLES:
+        assert name in SHELLPILOT_THEME.styles, f"missing markdown override: {name}"
+
+
+def test_markdown_styles_paint_no_background() -> None:
+    for name in MARKDOWN_STYLES:
+        style = SHELLPILOT_THEME.styles[name]
+        assert style.bgcolor is None, f"{name} sets a background fill"

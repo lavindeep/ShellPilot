@@ -50,6 +50,21 @@ SHELLPILOT_THEME = Theme(
         "sp.diff.remove_word": "#ffd7d7 on #5c3338",
         "sp.diff.gutter": "#6b6b6b",
         "sp.chevron": "bold #98c379",
+        # Markdown responses (§31.7): Rich's defaults paint inline code
+        # "bold cyan on black" and headings magenta — off-palette, and the
+        # black chip breaks the never-set-a-background rule above. Re-pin
+        # them to the instrument-minimal palette (no backgrounds; brightness
+        # for structure, accent green only as the meaning-bearing hue).
+        "markdown.code": f"bold {COLOR_ACCENT}",
+        "markdown.h1": "bold bright_white",
+        "markdown.h1.border": COLOR_FAINT,
+        "markdown.h2": "bold bright_white",
+        "markdown.h3": "bold bright_white",
+        "markdown.h4": "bold",
+        "markdown.hr": COLOR_FAINT,
+        "markdown.link": COLOR_ACCENT,
+        "markdown.link_url": COLOR_DIM,
+        "markdown.block_quote": COLOR_DIM,
     }
 )
 

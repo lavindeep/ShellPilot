@@ -92,6 +92,23 @@ def test_tool_renderers_sanitize_external_text() -> None:
     assert "updated file.py" in result.plain
 
 
+def test_response_markdown_uses_ansi_code_theme() -> None:
+    # Fenced code must render with ANSI colors on the terminal's own background
+    # (§31.7) — never monokai's painted fill.
+    from shellpilot.cli.render import response_markdown
+
+    md = response_markdown("```python\nx = 1\n```")
+    assert md.code_theme == "ansi_dark"
+
+
+def test_response_markdown_sanitizes_control_chars() -> None:
+    from shellpilot.cli.render import response_markdown
+
+    md = response_markdown("hello\x00\x07 world")
+    assert "\x00" not in md.markup and "\x07" not in md.markup
+    assert "hello" in md.markup
+
+
 def test_word_highlight_ranges_similar_pair() -> None:
     result = word_highlight_ranges('print("done")', 'print("Goodbye World")')
     assert result is not None

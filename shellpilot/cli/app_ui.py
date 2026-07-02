@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, cast
 
 from rich.console import Console, Group, RenderableType
-from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.text import Text
 
@@ -35,6 +34,7 @@ from shellpilot.cli.render import (
     plan_panel,
     plan_step_line,
     render_diff,
+    response_markdown,
     tool_call_block,
 )
 from shellpilot.cli.render import tool_result as render_tool_result
@@ -227,7 +227,7 @@ class AppUI:
     def _close_open_response(self) -> None:
         """Finalize the open response as a Markdown renderable, if one is open."""
         if self._open_response is not None:
-            self._renderables.append(Markdown(_sanitize_line(self._open_response)))
+            self._renderables.append(response_markdown(self._open_response))
             self._open_response = None
             self._cache = None
 
@@ -282,7 +282,7 @@ class AppUI:
             # Include in-progress response without committing it yet. Sanitize the
             # model text at the sink (mirrors ResponseStream, streaming.py:171) —
             # _sanitize_line keeps LF, so markdown structure survives.
-            renderables.append(Markdown(_sanitize_line(self._open_response)))
+            renderables.append(response_markdown(self._open_response))
         if active:
             # The live frontier line always renders LAST, below all completed
             # content, so it "moves down" as tool calls/responses append above it.

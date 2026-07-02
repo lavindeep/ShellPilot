@@ -146,6 +146,20 @@ def test_stream_token_in_progress_included_in_render() -> None:
     assert "partial" in plain(ui)
 
 
+def test_responses_render_via_response_markdown() -> None:
+    """Both the committed and the in-progress response use the shared builder
+    (§31.7): sanitized markdown with the ANSI code theme, so fenced code never
+    paints monokai's background into the pane."""
+    from rich.markdown import Markdown
+
+    ui = make_ui()
+    ui.stream_token("```python\nx = 1\n```")
+    ui.end_response()
+    committed = ui._renderables[-1]
+    assert isinstance(committed, Markdown)
+    assert committed.code_theme == "ansi_dark"
+
+
 # ---------------------------------------------------------------------------
 # Security: redaction and sanitization
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from pathlib import Path
 from rich import box
 from rich.cells import cell_len
 from rich.console import Group, RenderableType
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
@@ -61,6 +62,21 @@ def context_line(
         head = keep // 2
         path_str = path_str[:head] + "…" + path_str[-(keep - head) :]
     return Text(path_str + suffix, style="sp.dim")
+
+
+# Syntax theme for fenced code in model responses (§31.7): ANSI colors on the
+# terminal's own background — never a painted fill like monokai's.
+MARKDOWN_CODE_THEME = "ansi_dark"
+
+
+def response_markdown(text: str) -> Markdown:
+    """Model-response markdown (§31.7): sanitized, code on the terminal background.
+
+    The one builder for every response sink (the app pane's committed and
+    in-progress responses, the legacy REPL's live stream and final render), so
+    code rendering can't drift between them.
+    """
+    return Markdown(_sanitize_line(text), code_theme=MARKDOWN_CODE_THEME)
 
 
 def tool_call(name: str, args_summary: str, glyphs: Glyphs) -> Text:
