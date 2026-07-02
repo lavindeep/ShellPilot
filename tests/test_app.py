@@ -849,6 +849,54 @@ def test_down_arrow_selects_next_path_completion(tmp_path: Path) -> None:
     assert slashes == ["/cwd set Alpine/"]
 
 
+def test_enter_submits_cwd_set_without_accepting_path_completion(tmp_path: Path) -> None:
+    (tmp_path / "Projects").mkdir()
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+        )
+        inp.send_text("/cwd set Pro")
+        inp.send_text("\r")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/cwd set Pro"]
+
+
+def test_enter_submits_cwd_set_even_when_path_highlight_differs(tmp_path: Path) -> None:
+    (tmp_path / "Alpha").mkdir()
+    (tmp_path / "Alpine").mkdir()
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+        )
+        inp.send_text("/cwd set Al")
+        inp.send_text("\x1b[B")
+        inp.send_text("\r")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/cwd set Al"]
+
+
 def test_tab_completion_escapes_spaces_for_dispatcher(tmp_path: Path) -> None:
     (tmp_path / "My Project").mkdir()
     slashes: list[str] = []
@@ -925,6 +973,34 @@ def test_down_arrow_selects_next_model_completion(tmp_path: Path) -> None:
         inp.send_text("\x1b[B")
         inp.send_text("\t")
         inp.send_text("\n")
+        inp.send_text("/exit\n")
+        app.run()
+    assert slashes == ["/model use gemma4:31b-cloud"]
+
+
+def test_enter_accepts_selected_model_completion(tmp_path: Path) -> None:
+    models = [
+        LocalModel(name="gemma4:e4b", size_bytes=4_500_000_000),
+        LocalModel(name="gemma4:31b-cloud", size_bytes=31_000_000_000),
+    ]
+    slashes: list[str] = []
+    with create_pipe_input() as inp:
+        ui = AppUI(glyphs=UNICODE_GLYPHS, width_fn=lambda: 80)
+        app = build_app(
+            workspace=tmp_path,
+            model="gemma4:e4b",
+            profile="balanced",
+            glyphs=UNICODE_GLYPHS,
+            commands=command_words(),
+            input=inp,  # type: ignore[arg-type]
+            output=DummyOutput(),
+            ui=ui,
+            on_slash=slashes.append,
+            model_completion_models=lambda: models,
+        )
+        inp.send_text("/model use gem")
+        inp.send_text("\x1b[B")
+        inp.send_text("\r")
         inp.send_text("/exit\n")
         app.run()
     assert slashes == ["/model use gemma4:31b-cloud"]

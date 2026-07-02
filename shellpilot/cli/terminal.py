@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 import time
 import uuid
@@ -750,6 +751,15 @@ def run_interactive(
             # Fire-and-forget: the returned Future is intentionally not awaited.
             run_in_terminal(fn)
 
+        def model_use_needs_terminal(line: str) -> bool:
+            try:
+                parts = shlex.split(line)
+            except ValueError:
+                return False
+            if len(parts) < 3:
+                return False
+            return is_egressing(parts[2], settings.model.base_url)
+
         router = SlashRouter(
             ui=app_ui,
             dispatch=dispatch,
@@ -763,6 +773,7 @@ def run_interactive(
             on_exit=lambda: get_app().exit(),
             is_busy=lambda: runner.busy,
             workspace_fn=lambda: runtime.status().workspace,
+            model_use_needs_terminal=model_use_needs_terminal,
             glyphs=glyphs,
         )
 

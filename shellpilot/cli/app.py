@@ -702,6 +702,11 @@ def build_app(
     @kb.add("enter", filter=dock_focused)
     @kb.add("c-j", filter=dock_focused)
     def _submit(event: KeyPressEvent) -> None:
+        if _path_menu_open():
+            matches = _path_matches()
+            if matches and isinstance(matches[_path_menu_index()], ModelCompletionMatch):
+                _accept_path_menu_completion(submit_model=True)
+                return
         _submit_current()
 
     @kb.add(
@@ -781,13 +786,19 @@ def build_app(
 
     @kb.add("tab", filter=dock_focused & path_menu_open)
     def _path_menu_tab(event: KeyPressEvent) -> None:
+        _accept_path_menu_completion(submit_model=False)
+
+    def _accept_path_menu_completion(*, submit_model: bool) -> None:
         matches = _path_matches()
         if not matches:
             return
-        fill = matches[_path_menu_index()].fill
+        item = matches[_path_menu_index()]
+        fill = item.fill
         suffix = dock_buffer.document.text_after_cursor
         dock_buffer.text = fill + suffix
         dock_buffer.cursor_position = len(fill)
+        if submit_model and isinstance(item, ModelCompletionMatch):
+            _submit_current()
 
     @kb.add(
         "c-o",

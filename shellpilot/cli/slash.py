@@ -187,6 +187,9 @@ def needs_terminal(line: str) -> bool:
     if cmd == "/memory" and sub in ("add", "forget", "compact"):  # confirm
         return True
     if cmd == "/model" and sub == "use":  # cloud-consent prompt + slow preload
+        # App mode overrides this conservatively: local targets run on the worker
+        # with captured pane output; egressing targets keep the real terminal for
+        # consent. Legacy prompt mode still treats all switches as terminal work.
         return True
     return False
 

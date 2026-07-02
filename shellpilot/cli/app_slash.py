@@ -25,12 +25,46 @@ import io
 import shlex
 from collections.abc import Callable
 from pathlib import Path
+from typing import IO, cast
 
 from rich.console import Console
 
 from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.slash import SlashAction, needs_background, needs_terminal, needs_worker
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS, Glyphs
+
+
+class _TeeWriter:
+    """Write terminal command output to the real console and a capture buffer."""
+
+    def __init__(self, primary: IO[str], capture: io.StringIO) -> None:
+        self._primary = primary
+        self._capture = capture
+        self.encoding = str(getattr(primary, "encoding", "utf-8"))
+
+    def write(self, text: str) -> int:
+        written = self._primary.write(text)
+        self._capture.write(text)
+        return written
+
+    def flush(self) -> None:
+        self._primary.flush()
+
+    def isatty(self) -> bool:
+        return self._primary.isatty()
+
+    def writable(self) -> bool:
+        return True
+
+
+def _split_model_use(line: str) -> list[str] | None:
+    try:
+        parts = shlex.split(line)
+    except ValueError:
+        return None
+    if len(parts) < 2 or parts[0].lower() != "/model" or parts[1].lower() != "use":
+        return None
+    return parts
 
 
 class SlashRouter:
@@ -60,6 +94,7 @@ class SlashRouter:
         on_exit: Callable[[], None],
         is_busy: Callable[[], bool],
         workspace_fn: Callable[[], Path] | None = None,
+        model_use_needs_terminal: Callable[[str], bool] | None = None,
         glyphs: Glyphs = UNICODE_GLYPHS,
     ) -> None:
         self._ui = ui
@@ -78,6 +113,7 @@ class SlashRouter:
         self._on_exit = on_exit
         self._is_busy = is_busy
         self._workspace_fn = workspace_fn or Path.cwd
+        self._model_use_needs_terminal = model_use_needs_terminal or (lambda _line: True)
         self._glyphs = glyphs
 
     def route(self, line: str) -> None:
@@ -122,6 +158,16 @@ class SlashRouter:
         if self._cwd_set_can_run_in_pane(stripped):
             self._dispatch_loop(stripped)
             return
+        if self._model_use_can_run_in_pane(stripped):
+            width = self._width_fn()
+            self._run_worker(lambda: self._dispatch_worker(stripped, width))
+            return
+        if self._model_use_can_copy_terminal_output(stripped):
+            width = self._width_fn()
+            self._run_terminal(
+                lambda: self._dispatch_terminal(stripped, copy_output=True, width=width)
+            )
+            return
         if needs_terminal(stripped):
             self._run_terminal(lambda: self._dispatch_terminal(stripped))
             return
@@ -140,6 +186,18 @@ class SlashRouter:
         if not candidate.is_absolute():
             candidate = (self._workspace_fn() / parts[2]).resolve()
         return not candidate.is_dir()
+
+    def _model_use_can_copy_terminal_output(self, line: str) -> bool:
+        parts = _split_model_use(line)
+        return parts is not None and self._model_use_needs_terminal(line)
+
+    def _model_use_can_run_in_pane(self, line: str) -> bool:
+        parts = _split_model_use(line)
+        if parts is None:
+            return False
+        if len(parts) < 3:
+            return True
+        return not self._model_use_needs_terminal(line)
 
     def _capturing_console(self, width: int) -> tuple[Console, io.StringIO]:
         buf = io.StringIO()
@@ -193,10 +251,26 @@ class SlashRouter:
         if exit_code != 0:
             self._ui.show_status(f"exit code {exit_code}")
 
-    def _dispatch_terminal(self, line: str) -> None:
+    def _dispatch_terminal(
+        self, line: str, *, copy_output: bool = False, width: int | None = None
+    ) -> None:
         # Runs inside run_in_terminal (app suspended, real terminal available).
         # The dispatch is given the REAL console, so confirm()/consent input() work.
-        action = self._dispatch(line, self._real_console)
+        if not copy_output:
+            action = self._dispatch(line, self._real_console)
+            self._after_action(action)
+            return
+
+        buf = io.StringIO()
+        console = Console(
+            file=cast(IO[str], _TeeWriter(self._real_console.file, buf)),
+            force_terminal=True,
+            color_system="truecolor",
+            theme=SHELLPILOT_THEME,
+            width=width or self._width_fn(),
+        )
+        action = self._dispatch(line, console)
+        self._ui.show_slash_output(buf.getvalue())
         self._after_action(action)
 
     def _after_action(self, action: SlashAction) -> None:

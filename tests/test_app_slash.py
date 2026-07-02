@@ -8,6 +8,7 @@ decision and the pane-capture path are exercised deterministically.
 from __future__ import annotations
 
 import io
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,6 +20,11 @@ from shellpilot.cli.app_ui import AppUI
 from shellpilot.cli.manual_shell import run_manual_command_captured
 from shellpilot.cli.slash import SlashAction, needs_background, needs_terminal, needs_worker
 from shellpilot.cli.theme import SHELLPILOT_THEME
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
 
 # ---------------------------------------------------------------------------
 # needs_terminal — exhaustive TRUE cases + representative FALSE cases
@@ -154,6 +160,7 @@ def make_router(
     shell: FakeShell | None = None,
     is_busy: bool = False,
     workspace_fn: Callable[[], Path] | None = None,
+    model_use_needs_terminal: Callable[[str], bool] | None = None,
 ) -> tuple[SlashRouter, AppUI, FakeDispatch, FakeTerminal, list[str], list[int], io.StringIO]:
     ui = AppUI(width_fn=lambda: 80)
     dispatch = dispatch or FakeDispatch()
@@ -177,6 +184,7 @@ def make_router(
         on_exit=lambda: exits.append(1),
         is_busy=lambda: is_busy,
         workspace_fn=workspace_fn,
+        model_use_needs_terminal=model_use_needs_terminal,
     )
     return router, ui, dispatch, terminal, manual_lines, exits, real_buf
 
@@ -252,6 +260,77 @@ def test_valid_cwd_set_with_escaped_space_routes_to_terminal_confirmation(tmp_pa
     assert dispatch.calls[0][1] is router._real_console
     assert "Workspace boundary changed." in real_buf.getvalue()
     assert "Workspace boundary changed." not in ui._render_ansi()
+
+
+def test_model_use_terminal_output_is_copied_to_pane() -> None:
+    dispatch = FakeDispatch(output="Switched to gemma4:e4b.")
+    router, ui, _, terminal, _, _, real_buf = make_router(dispatch=dispatch)
+
+    router.route("/model use gemma4:e4b")
+
+    assert len(terminal.fns) == 1
+    assert "Switched to gemma4:e4b." in _strip_ansi(real_buf.getvalue())
+    assert "Switched to gemma4:e4b." in _strip_ansi(ui._render_ansi())
+
+
+def test_model_use_app_route_switches_model_and_reports_in_pane(tmp_path: Path) -> None:
+    from shellpilot.llm.ollama import LocalModel
+    from tests.test_slash import Harness
+
+    harness = Harness(tmp_path)
+    harness.fake.models.append(LocalModel(name="gemma4:e2b", size_bytes=2_500_000_000))
+
+    def dispatch(line: str, console: Console) -> SlashAction:
+        harness.dispatcher._console = console
+        return harness.dispatcher.handle(line)
+
+    worker = FakeWorker(run=True)
+    router, ui, _, terminal, _, _, _ = make_router(
+        dispatch=dispatch,  # type: ignore[arg-type]
+        worker=worker,
+        model_use_needs_terminal=lambda _line: False,
+    )
+
+    router.route("/model use gemma4:e2b")
+
+    assert terminal.fns == []
+    assert len(worker.fns) == 1
+    assert harness.runtime.model == "gemma4:e2b"
+    assert "Switched to gemma4:e2b." in _strip_ansi(ui._render_ansi())
+
+
+def test_cloud_model_use_still_routes_to_terminal_for_consent() -> None:
+    dispatch = FakeDispatch(output="Cloud consent prompt")
+    worker = FakeWorker(run=True)
+    router, ui, _, terminal, _, _, real_buf = make_router(
+        dispatch=dispatch,
+        worker=worker,
+        model_use_needs_terminal=lambda _line: True,
+    )
+
+    router.route("/model use gemma4:31b-cloud")
+
+    assert len(terminal.fns) == 1
+    assert worker.fns == []
+    assert "Cloud consent prompt" in _strip_ansi(real_buf.getvalue())
+    assert "Cloud consent prompt" in _strip_ansi(ui._render_ansi())
+
+
+def test_bare_model_use_usage_is_reported_in_pane_without_terminal() -> None:
+    dispatch = FakeDispatch(output="Usage: /model | /model list | /model use <name>")
+    worker = FakeWorker(run=True)
+    router, ui, _, terminal, _, _, real_buf = make_router(
+        dispatch=dispatch,
+        worker=worker,
+        model_use_needs_terminal=lambda _line: False,
+    )
+
+    router.route("/model use")
+
+    assert terminal.fns == []
+    assert len(worker.fns) == 1
+    assert "Usage: /model" in _strip_ansi(ui._render_ansi())
+    assert real_buf.getvalue() == ""
 
 
 def test_clear_action_clears_app_pane_after_terminal_confirmation() -> None:
