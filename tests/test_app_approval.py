@@ -327,3 +327,52 @@ def test_gate_feed_exception_resolves_future_not_hang() -> None:
     assert not thread.is_alive()
     assert errs and "boom-echo" in str(errs[0])
     assert not gate.active
+
+
+# --- Modal-dock state (the dock border reads these per render) ----------------
+
+
+def test_dock_state_none_when_idle() -> None:
+    gate, _ = make_gate()
+    assert gate.dock_hint is None
+    assert gate.dock_risk is None
+
+
+def test_dock_state_high_command_and_steer_phase() -> None:
+    gate, sink = make_gate()
+    thread, _ = run_command(gate, high_command())
+    drain_enter(sink)
+    assert gate.dock_risk is RiskLevel.HIGH
+    assert gate.dock_hint == 'type "run" to execute'
+    gate.submit("e")  # steer phase — hint follows the prompt
+    assert gate.dock_hint == "tell the model what to do instead"
+    assert gate.dock_risk is RiskLevel.HIGH
+    gate.submit("do X instead")
+    thread.join(2.0)
+    assert gate.dock_hint is None
+    assert gate.dock_risk is None
+
+
+def test_dock_state_normal_tool_clears_on_cancel() -> None:
+    gate, sink = make_gate()
+    thread, _ = run_command(gate, normal_tool())
+    drain_enter(sink)
+    assert gate.dock_risk is RiskLevel.MEDIUM
+    assert gate.dock_hint == "approve?"
+    gate.cancel()
+    thread.join(2.0)
+    assert gate.dock_hint is None
+    assert gate.dock_risk is None
+
+
+def test_dock_state_plan_and_revision_phase() -> None:
+    gate, sink = make_gate()
+    thread, _ = run_plan(gate, make_plan(), "/tmp/ws/PLAN.md")
+    drain_enter(sink)
+    assert gate.dock_risk is None  # a plan carries no command risk
+    assert gate.dock_hint == "approve plan?"
+    gate.submit("e")
+    assert gate.dock_hint == "describe the changes you want"
+    gate.submit("shorter please")
+    thread.join(2.0)
+    assert gate.dock_hint is None

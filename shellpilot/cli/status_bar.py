@@ -26,12 +26,13 @@ from pathlib import Path
 from prompt_toolkit.formatted_text import FormattedText
 
 from shellpilot.cli.render import _abbreviate_home, _sanitize_line
-from shellpilot.cli.theme import COLOR_ACCENT, COLOR_DIM, COLOR_FAINT, COLOR_WARN
-
-# prompt_toolkit cannot read the rich Theme, so the bar uses the shared hex
-# constants from theme.py directly.  COLOR_ERROR is status-bar-only (not in
-# the four shared theme colors) so it remains defined here.
-COLOR_ERROR = "#e06c75"  # red — high ctx
+from shellpilot.cli.theme import (
+    COLOR_ACCENT,
+    COLOR_DIM,
+    COLOR_ERROR,
+    COLOR_FAINT,
+    COLOR_WARN,
+)
 
 # Context-utilization color thresholds (percent full): green below MID, amber
 # from MID up to HI, red at/above HI.

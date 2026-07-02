@@ -56,10 +56,13 @@ from shellpilot.cli.slash import (
 from shellpilot.cli.status_bar import status_bar
 from shellpilot.cli.theme import (
     COLOR_ACCENT,
+    COLOR_ERROR,
     COLOR_FAINT,
+    COLOR_WARN,
     UNICODE_GLYPHS,
     Glyphs,
 )
+from shellpilot.policy.risk import RiskLevel
 
 if TYPE_CHECKING:
     from shellpilot.cli.app_approval import ApprovalGate
@@ -103,18 +106,28 @@ UNICODE_BOX = BoxChars("╭", "╮", "╰", "╯", "─", "│")
 ASCII_BOX = BoxChars("+", "+", "+", "+", "-", "|")
 
 
-def horizontal_border(width: int, box: BoxChars, *, top: bool) -> str:
+def horizontal_border(width: int, box: BoxChars, *, top: bool, label: str | None = None) -> str:
     """A horizontal dock border line of exactly ``width`` cells.
 
     Pure function of ``width`` (and the glyph set): ``╭───╮`` for the top row,
     ``╰───╯`` for the bottom. The border, the pane wrap width, and the terminal
     width are one shared value (see :func:`build_app`), so this is rebuilt per
     render from the live terminal width and nothing caches a stale size.
+
+    ``label`` (modal dock, §31.16) embeds a short state hint into the TOP
+    border — ``╭─ approve? ───╮`` — so the dock says what it is asking while an
+    approval owns the input. Dropped whole when it cannot fit the width; the
+    bottom border never carries it.
     """
     if width < 2:
         return box.horizontal * max(0, width)
     left = box.top_left if top else box.bottom_left
     right = box.top_right if top else box.bottom_right
+    if top and label:
+        decorated = f"{box.horizontal} {label} "
+        if len(decorated) + 2 <= width:
+            fill = box.horizontal * (width - 2 - len(decorated))
+            return left + decorated + fill + right
     return left + box.horizontal * (width - 2) + right
 
 
@@ -390,9 +403,31 @@ def build_app(
 
     menu_open = Condition(_menu_open)
 
+    def _dock_color() -> str:
+        # The modal dock (§31.16): during an approval the border carries the
+        # decision color — red for a HIGH-risk prompt, amber for any other —
+        # matching the approval card in the pane; idle it stays faint. Read
+        # per render, so the swap tracks the gate exactly.
+        if approval_gate is not None and approval_gate.active:
+            return COLOR_ERROR if approval_gate.dock_risk is RiskLevel.HIGH else COLOR_WARN
+        return COLOR_FAINT
+
+    def _dock_label() -> str | None:
+        if approval_gate is not None and approval_gate.active:
+            return approval_gate.dock_hint
+        return None
+
     def _dock_prefix(line_number: int, wrap_count: int) -> StyleAndTextTuples:
         if line_number == 0 and wrap_count == 0:
-            return [(f"fg:{COLOR_ACCENT} bold", f"{glyphs.chevron} ")]
+            # The chevron follows the mode: the approval color while a prompt
+            # owns the dock, accent green otherwise. Deliberately NOT keyed on
+            # is_busy — a render must never consume a busy read the submit
+            # keybinding's stage-or-dispatch decision depends on.
+            if approval_gate is not None and approval_gate.active:
+                color = _dock_color()
+            else:
+                color = COLOR_ACCENT
+            return [(f"fg:{color} bold", f"{glyphs.chevron} ")]
         return [("", "  ")]
 
     dock_window = Window(
@@ -405,10 +440,13 @@ def build_app(
 
     def _border(*, top: bool) -> Callable[[], StyleAndTextTuples]:
         # One shared width: the live terminal columns, read at render time so a
-        # resize re-derives the line and nothing is pinned to a stale size.
+        # resize re-derives the line and nothing is pinned to a stale size. The
+        # color and the top-border label follow the approval state per render
+        # (modal dock, §31.16).
         def _render() -> StyleAndTextTuples:
             width = get_app().output.get_size().columns
-            return [(f"fg:{COLOR_FAINT}", horizontal_border(width, box, top=top))]
+            label = _dock_label() if top else None
+            return [(f"fg:{_dock_color()}", horizontal_border(width, box, top=top, label=label))]
 
         return _render
 
@@ -483,7 +521,9 @@ def build_app(
     )
 
     def _bar() -> Window:
-        return Window(width=1, char=box.vertical, style=f"fg:{COLOR_FAINT}")
+        # The side bars share the border's approval-state color (callable style,
+        # re-evaluated per render).
+        return Window(width=1, char=box.vertical, style=lambda: f"fg:{_dock_color()}")
 
     dock_row = VSplit(
         [

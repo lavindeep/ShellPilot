@@ -384,10 +384,18 @@ class _FakeGate:
     mirroring the real gate clearing ``_pending`` once the future resolves.
     """
 
-    def __init__(self, *, active: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        active: bool = True,
+        dock_risk: RiskLevel | None = None,
+        dock_hint: str | None = None,
+    ) -> None:
         self._active = active
         self.submitted: list[str] = []
         self.cancelled = 0
+        self.dock_risk = dock_risk if active else None
+        self.dock_hint = dock_hint if active else None
 
     @property
     def active(self) -> bool:
@@ -396,10 +404,14 @@ class _FakeGate:
     def submit(self, line: str) -> None:
         self.submitted.append(line)
         self._active = False
+        self.dock_risk = None
+        self.dock_hint = None
 
     def cancel(self) -> None:
         self.cancelled += 1
         self._active = False
+        self.dock_risk = None
+        self.dock_hint = None
 
 
 def _build_with_gate(
@@ -1177,3 +1189,104 @@ def test_bare_message_bypasses_menu_and_submits(tmp_path: Path) -> None:
         app.run()
     assert submits == ["hello"]
     assert slashes == []
+
+
+# --- Modal dock (the border reflects the approval state) ----------------------
+
+
+def test_horizontal_border_embeds_label() -> None:
+    top = horizontal_border(24, UNICODE_BOX, top=True, label="approve?")
+    assert len(top) == 24
+    assert top.startswith("╭─ approve? ─")
+    assert top.endswith("╮")
+    bottom = horizontal_border(24, UNICODE_BOX, top=False, label="approve?")
+    assert bottom[1:-1] == "─" * 22  # label rides the TOP border only
+
+
+def test_horizontal_border_label_ascii() -> None:
+    top = horizontal_border(24, ASCII_BOX, top=True, label="approve?")
+    assert len(top) == 24
+    assert top.startswith("+- approve? -")
+    assert top.endswith("+")
+
+
+def test_horizontal_border_label_dropped_when_it_cannot_fit() -> None:
+    for width in (0, 2, 8):
+        line = horizontal_border(width, UNICODE_BOX, top=True, label="a long label")
+        assert len(line) == width
+        assert "a long" not in line
+
+
+def _border_lines(app: Application[None]) -> list[str]:
+    """Rendered text of the two dock border lines (top first)."""
+    lines: list[str] = []
+    with set_app(app):
+        for control in app.layout.find_all_controls():
+            text = getattr(control, "text", None)
+            if not callable(text):
+                continue
+            try:
+                fragments = to_formatted_text(text())
+            except Exception:  # noqa: BLE001 - a non-fragment control won't match
+                continue
+            rendered = "".join(fragment[1] for fragment in fragments)
+            if (
+                rendered
+                and set(rendered[1:-1]) <= {"─", " "} | set("abcdefghijklmnopqrstuvwxyz\"'?")
+                and rendered[0] in "╭╰"
+            ):
+                lines.append(rendered)
+    return lines
+
+
+def _border_styles(app: Application[None]) -> set[str]:
+    """Style strings carried by the dock border fragments."""
+    styles: set[str] = set()
+    with set_app(app):
+        for control in app.layout.find_all_controls():
+            text = getattr(control, "text", None)
+            if not callable(text):
+                continue
+            try:
+                fragments = to_formatted_text(text())
+            except Exception:  # noqa: BLE001
+                continue
+            for style, content, *_ in fragments:
+                if content and content[0] in "╭╰":
+                    styles.add(style)
+    return styles
+
+
+def test_dock_border_idle_is_faint_with_no_label(tmp_path: Path) -> None:
+    gate = _FakeGate(active=False)
+    with create_pipe_input() as inp:
+        app, _ = _build_with_gate(tmp_path, inp, gate)
+        tops = [ln for ln in _border_lines(app) if ln.startswith("╭")]
+        assert tops and all(set(ln[1:-1]) == {"─"} for ln in tops)
+        assert all("#444444" in s for s in _border_styles(app))
+        inp.send_text("/exit\n")
+        app.run()
+
+
+def test_dock_border_high_approval_is_red_and_labeled(tmp_path: Path) -> None:
+    gate = _FakeGate(active=True, dock_risk=RiskLevel.HIGH, dock_hint='type "run" to execute')
+    with create_pipe_input() as inp:
+        app, _ = _build_with_gate(tmp_path, inp, gate)
+        tops = [ln for ln in _border_lines(app) if ln.startswith("╭")]
+        assert tops and any('type "run" to execute' in ln for ln in tops)
+        assert all("#e06c75" in s for s in _border_styles(app))
+        inp.send_text("y\n")  # resolve the fake gate
+        inp.send_text("/exit\n")
+        app.run()
+
+
+def test_dock_border_medium_approval_is_amber(tmp_path: Path) -> None:
+    gate = _FakeGate(active=True, dock_risk=RiskLevel.MEDIUM, dock_hint="approve?")
+    with create_pipe_input() as inp:
+        app, _ = _build_with_gate(tmp_path, inp, gate)
+        tops = [ln for ln in _border_lines(app) if ln.startswith("╭")]
+        assert tops and any("approve?" in ln for ln in tops)
+        assert all("#e5c07b" in s for s in _border_styles(app))
+        inp.send_text("y\n")
+        inp.send_text("/exit\n")
+        app.run()

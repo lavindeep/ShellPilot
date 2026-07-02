@@ -109,6 +109,12 @@ class ApprovalGate:
         self._schedule = schedule
         self._glyphs = glyphs
         self._pending: _Pending | None = None
+        # Modal-dock state (§31.16): what the dock border shows while a prompt
+        # is active. Loop-thread-only, exactly like _pending — set by the
+        # _enter thunks, updated on phase transitions inside feed(), cleared on
+        # every resolution path (submit-done, cancel, setup/feed exceptions).
+        self._dock_hint: str | None = None
+        self._dock_risk: RiskLevel | None = None
 
     # ------------------------------------------------------------------
     # Worker-thread entry points — block on the future.
@@ -147,6 +153,7 @@ class ApprovalGate:
             self._ui.show_approval(request)
             self._ui.show_choices(approval_choices(request))
         except Exception as exc:  # noqa: BLE001 - never leave the worker hung
+            self._clear_dock()
             self._pending = None
             if not future.done():
                 future.set_exception(exc)
@@ -162,12 +169,18 @@ class ApprovalGate:
             decision = parse_command_choice(request, line)
             if isinstance(decision, _NeedSteer):
                 phase["steer"] = True
+                self._dock_hint = "tell the model what to do instead"
                 self._ui.show_status("  Tell the model what to do instead:")
                 return False
             self._echo(line)
             future.set_result(decision)
             return True
 
+        if request.risk is RiskLevel.HIGH and request.kind == "command":
+            self._dock_hint = 'type "run" to execute'
+        else:
+            self._dock_hint = "approve?"
+        self._dock_risk = request.risk
         self._pending = _Pending(future, feed, lambda: future.set_result(DECLINE))
 
     def _enter_plan(self, plan: TaskPlan, path: str, future: Future[object]) -> None:
@@ -177,6 +190,7 @@ class ApprovalGate:
             self._ui.show_plan_approval(plan, path)
             self._ui.show_choices(plan_choices())
         except Exception as exc:  # noqa: BLE001 - never leave the worker hung
+            self._clear_dock()
             self._pending = None
             if not future.done():
                 future.set_exception(exc)
@@ -195,12 +209,16 @@ class ApprovalGate:
                 return False
             if choice == "e":
                 phase["revision"] = True
+                self._dock_hint = "describe the changes you want"
                 self._ui.show_status("  Describe the changes you want:")
                 return False
             self._echo(line)
             future.set_result((choice, ""))
             return True
 
+        # A plan carries no command risk — the dock shows the amber default.
+        self._dock_hint = "approve plan?"
+        self._dock_risk = None
         self._pending = _Pending(future, feed, lambda: future.set_result(("n", "")))
 
     # ------------------------------------------------------------------
@@ -210,6 +228,23 @@ class ApprovalGate:
     @property
     def active(self) -> bool:
         return self._pending is not None
+
+    @property
+    def dock_hint(self) -> str | None:
+        """Short label the dock's top border carries while a prompt is active
+        (§31.16) — None when idle. Loop-thread-only, read per render."""
+        return self._dock_hint
+
+    @property
+    def dock_risk(self) -> RiskLevel | None:
+        """Risk coloring the dock border during an approval: HIGH → red, any
+        other active prompt → amber. None for a plan prompt (amber default)
+        and while idle. Loop-thread-only, read per render."""
+        return self._dock_risk
+
+    def _clear_dock(self) -> None:
+        self._dock_hint = None
+        self._dock_risk = None
 
     def submit(self, line: str) -> None:
         pending = self._pending
@@ -221,16 +256,19 @@ class ApprovalGate:
         try:
             done = pending.feed(line)
         except Exception as exc:  # noqa: BLE001 - never leave the worker hung
+            self._clear_dock()
             self._pending = None
             if not pending.future.done():
                 pending.future.set_exception(exc)
             return
         if done:
+            self._clear_dock()
             self._pending = None
 
     def cancel(self) -> None:
         pending = self._pending
         if pending is None:
             return
+        self._clear_dock()
         self._pending = None
         pending.on_cancel()
