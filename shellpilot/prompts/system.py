@@ -2,12 +2,67 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
 # Tracks behavioral prompt revisions: v1 = initial, v2 = plan-discipline hardening,
 # v3 = proposal/execution split, v4 = Skills v2 builtin resources/triggers,
-# v5 = conditional locality line (honest under opt-in cloud egress).
-PROMPT_VERSION = 5
+# v5 = conditional locality line (honest under opt-in cloud egress),
+# v6 = dynamic registry-derived tool guide.
+PROMPT_VERSION = 6
+
+_TOOL_GUIDE_GROUPS = (
+    (
+        "Context",
+        (
+            ("env_info", "env_info for OS, Python, and workspace facts"),
+            ("list_dir", "list_dir for directory entries"),
+            ("read_file", "read_file for bounded file windows"),
+            ("search_text", "search_text for exact workspace text"),
+        ),
+    ),
+    (
+        "Action",
+        (
+            ("run_command", "run_command for argv commands"),
+            ("patch_file", "patch_file for anchored edits after reading the file"),
+            ("write_file", "write_file for new files, appends, or whole-file rewrites"),
+        ),
+    ),
+    (
+        "Planning",
+        (
+            ("propose_plan", "propose_plan for real work with 3 or more steps"),
+            ("update_plan", "update_plan for active-plan progress or blockers"),
+        ),
+    ),
+    (
+        "Memory",
+        (
+            ("memory_read", "memory_read for stored preferences and project facts"),
+            (
+                "memory_propose_update",
+                "memory_propose_update to request approved memory changes "
+                "(global=user facts/preferences; project=workspace facts/preferences)",
+            ),
+        ),
+    ),
+    (
+        "Images",
+        (("view_image", "view_image to inspect a workspace image in vision-capable sessions"),),
+    ),
+    (
+        "Web",
+        (
+            ("web_search", "web_search for current or external leads"),
+            ("web_fetch", "web_fetch to verify a specific page"),
+        ),
+    ),
+    (
+        "Skills",
+        (("skill_read", "skill_read to open on-demand docs for loaded skills"),),
+    ),
+)
 
 # Local (non-egressing) opening: byte-identical to the pre-v0.10.0 prompt so the
 # gemma4 baseline session is unchanged.
@@ -56,6 +111,20 @@ and the runtime will ask when policy requires it.
 - Never store or repeat secrets (keys, tokens, passwords) in plans, summaries, or output.
 - Summarize evidence and state uncertainty honestly; never claim verification that did not run.\
 """
+
+
+def build_tool_guide(tool_names: Iterable[str], *, plan_active: bool = False) -> str:
+    available = set(tool_names)
+    if not plan_active:
+        available.discard("update_plan")
+    lines: list[str] = []
+    for group, entries in _TOOL_GUIDE_GROUPS:
+        parts = [text for name, text in entries if name in available]
+        if parts:
+            lines.append(f"- {group}: {'; '.join(parts)}.")
+    if not lines:
+        return ""
+    return "Tool guide:\n" + "\n".join(lines)
 
 
 def build_system_prompt(

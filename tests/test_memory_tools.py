@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from rich.console import Console
@@ -10,7 +11,7 @@ from shellpilot.cli.slash import SlashDispatcher
 from shellpilot.cli.theme import SHELLPILOT_THEME
 from shellpilot.config.loader import LoadedConfig, load_config
 from shellpilot.memory.agents_md import BehaviorInstructions
-from shellpilot.memory.store import MemoryStore, MemoryStores, project_id_for
+from shellpilot.memory.store import MAX_MEMORY_FILE_CHARS, MemoryStore, MemoryStores, project_id_for
 from shellpilot.runtime.conversation import ConversationRuntime
 from tests.fakes.fake_llm import FakeLLM, answer, tool_call
 from tests.fakes.fake_ui import FakeUI
@@ -53,6 +54,20 @@ def test_memory_read_runs_without_approval(tmp_path: Path) -> None:
     runtime.run_turn("what do you remember?")
     assert ui.approval_requests == []
     assert any(success for _, success, _ in ui.tool_results)
+
+
+def test_memory_propose_update_schema_explains_scope_policy(tmp_path: Path) -> None:
+    stores = make_stores(tmp_path)
+    runtime, _, _ = make_runtime(tmp_path, stores, [])
+    tool = runtime.registry.get("memory_propose_update")
+    assert tool is not None
+    description = tool.definition.description
+
+    assert "Global memory: durable user facts" in description
+    assert "preferred languages/tools" in description
+    assert "Project memory: current workspace" in description
+    assert "repo commands, paths, architecture" in description
+    assert "If scope is ambiguous" in description
 
 
 def test_propose_add_preference_requires_approval_and_persists(tmp_path: Path) -> None:
@@ -169,6 +184,47 @@ def test_slash_memory_show_add_forget(tmp_path: Path) -> None:
     assert harness.stores.global_store.preferences == ()
 
 
+def test_slash_memory_add_reports_file_cap(tmp_path: Path) -> None:
+    harness = MemoryHarness(tmp_path, [])
+    harness.dispatcher.handle(f"/memory add {'x' * MAX_MEMORY_FILE_CHARS}")
+
+    output = harness.output()
+    assert "limit is" in output
+    assert str(MAX_MEMORY_FILE_CHARS) in output
+    assert harness.stores.global_store.preferences == ()
+
+
+def test_slash_memory_forget_shrinks_over_cap_legacy_store(tmp_path: Path) -> None:
+    harness = MemoryHarness(tmp_path, [])
+    legacy_entries = [
+        {
+            "id": f"pref_{index:03d}",
+            "scope": "global",
+            "text": f"legacy preference {index} " + ("x" * 220),
+            "source": "user",
+            "updated_at": "2026-07-04T00:00:00Z",
+        }
+        for index in range(1, 21)
+    ]
+    harness.stores.global_store.path.write_text(
+        json.dumps({"version": 1, "preferences": legacy_entries, "facts": []}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    before_size = len(harness.stores.global_store.path.read_text(encoding="utf-8"))
+    assert before_size > MAX_MEMORY_FILE_CHARS
+    harness.stores.global_store.reload()
+
+    harness.dispatcher.handle("/memory forget pref_001")
+
+    after = harness.stores.global_store.path.read_text(encoding="utf-8")
+    assert len(after) < before_size
+    assert len(after) > MAX_MEMORY_FILE_CHARS
+    assert "Removed pref_001." in harness.output()
+    assert "pref_001" not in {
+        preference.id for preference in harness.stores.global_store.preferences
+    }
+
+
 def test_memory_show_folds_in_scope_source_and_prefs_retired(tmp_path: Path) -> None:
     """/prefs was retired into /memory show (v0.10.0): the preference view now
     carries the (scope, source) tag /prefs printed, and /prefs is gone."""
@@ -207,3 +263,75 @@ def test_memory_compact_refuses_to_drop_user_entries(tmp_path: Path) -> None:
     harness.dispatcher.handle("/memory compact")
     assert len(harness.stores.global_store.preferences) == 2  # unchanged
     assert "user entries" in harness.output()
+
+
+def test_memory_compact_reports_file_cap(tmp_path: Path) -> None:
+    oversized = "x" * MAX_MEMORY_FILE_CHARS
+    script = [answer(json.dumps([{"id": "pref_001", "text": oversized}]))]
+    harness = MemoryHarness(tmp_path, script)
+    harness.stores.global_store.add_preference(
+        "First assistant entry.", scope="global", source="assistant"
+    )
+    harness.stores.global_store.add_preference(
+        "Second assistant entry.", scope="global", source="assistant"
+    )
+
+    harness.dispatcher.handle("/memory compact")
+
+    output = harness.output()
+    assert "limit is" in output
+    assert str(MAX_MEMORY_FILE_CHARS) in output
+    assert [p.text for p in harness.stores.global_store.preferences] == [
+        "First assistant entry.",
+        "Second assistant entry.",
+    ]
+
+
+def test_memory_compact_rejects_atomically_when_later_store_exceeds_cap(tmp_path: Path) -> None:
+    oversized = "x" * MAX_MEMORY_FILE_CHARS
+    script = [
+        answer(
+            json.dumps(
+                [
+                    {"id": "pref_001", "text": "Global changed."},
+                    {"id": "pref_900", "text": oversized},
+                ]
+            )
+        )
+    ]
+    harness = MemoryHarness(tmp_path, script)
+    harness.stores.global_store.add_preference(
+        "Global original.", scope="global", source="assistant"
+    )
+    harness.stores.project_store.path.parent.mkdir(parents=True, exist_ok=True)
+    harness.stores.project_store.path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "project_id": project_id_for(tmp_path),
+                "preferences": [
+                    {
+                        "id": "pref_900",
+                        "scope": "project",
+                        "text": "Project original.",
+                        "source": "assistant",
+                        "updated_at": "2026-07-04T00:00:00Z",
+                    }
+                ],
+                "facts": [],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    harness.stores.project_store.reload()
+
+    harness.dispatcher.handle("/memory compact")
+
+    output = harness.output()
+    assert "limit is" in output
+    assert str(MAX_MEMORY_FILE_CHARS) in output
+    assert harness.stores.global_store.preferences[0].text == "Global original."
+    assert harness.stores.project_store.preferences[0].text == "Project original."

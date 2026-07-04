@@ -153,6 +153,7 @@ class ContextAssembler:
         self,
         *,
         base_prompt: str,
+        tool_guide: str = "",
         behavior_block: str,
         memory_block: str,
         skills: Sequence[Skill],
@@ -163,9 +164,10 @@ class ContextAssembler:
         """Build the snapshot from already-rendered block texts plus the
         discovered skills.
 
-        Order is load-bearing: base prompt, behavior, memory, the skills group
-        (skills-index block then skill bodies), plan state. Behavior, memory,
-        and plan state are injected only when non-empty.
+        Order is load-bearing: base prompt, dynamic tool guide, behavior,
+        memory, the skills group (skills-index block then skill bodies), plan
+        state. Tool guide, behavior, memory, and plan state are injected only
+        when non-empty.
 
         Skill injection is deterministic. Only valid skills get blocks (planning
         first, then alphabetical). A skill is injected when any of its triggers
@@ -300,6 +302,12 @@ class ContextAssembler:
                 source="system",
                 text=base_prompt,
                 injected=True,
+            ),
+            ContextBlock(
+                name="tool guide",
+                source="tools",
+                text=tool_guide,
+                injected=bool(tool_guide),
             ),
             ContextBlock(
                 name="behavior",

@@ -18,6 +18,20 @@ from shellpilot.tools.base import ALL_PROFILES, ToolContext, ToolResult, ToolSpe
 
 PREVIEW_TOKENS = 2000
 
+MEMORY_SCOPE_POLICY = (
+    "Global memory: durable user facts and cross-project preferences, including name, "
+    "timezone, role, preferred languages/tools, collaboration style, and defaults the "
+    "user wants everywhere. Project memory: current workspace facts/preferences, "
+    "including repo commands, paths, architecture, dependencies, conventions, "
+    "team/product facts, and preferences that apply only here. Facts about the user's "
+    "skills or identity are global unless explicitly project-scoped. Project memory "
+    "overrides global memory only inside this workspace. Do not store secrets, "
+    "credentials, one-off task details, guesses, temporary context, or file contents "
+    "the user did not ask to remember. If scope is ambiguous, prefer project memory "
+    "when global storage could pollute other projects; ask only when the distinction "
+    "matters."
+)
+
 
 def _diff_preview(title: str, lines: list[str]) -> str:
     body = "\n".join(lines)
@@ -138,7 +152,8 @@ def make_memory_tools(stores: MemoryStores) -> list[ToolSpec]:
                 "Propose a memory update for user approval. "
                 "action=add_preference (text, optional scope: global|project), "
                 "action=add_fact (kind, label, value), or action=forget (id). "
-                "The user sees and approves every update; never assume it was saved."
+                "The user sees and approves every update; never assume it was saved. "
+                f"{MEMORY_SCOPE_POLICY}"
             ),
             parameters={
                 "action": {

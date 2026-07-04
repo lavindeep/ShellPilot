@@ -23,7 +23,7 @@ from shellpilot.persistence.paths import project_state_dir
 from shellpilot.persistence.sessions import SessionStore
 from shellpilot.persistence.snapshots import SnapshotStore
 from shellpilot.policy.risk import SideEffect
-from shellpilot.prompts.system import build_system_prompt
+from shellpilot.prompts.system import build_system_prompt, build_tool_guide
 from shellpilot.runtime.budget import ContextBudget, estimate_tokens, resolve_budget
 from shellpilot.runtime.context import ContextAssembler, ContextSnapshot
 from shellpilot.runtime.events import RuntimeUI, TurnStats
@@ -356,9 +356,11 @@ class ConversationRuntime:
         """Structured system-prompt snapshot — single source for the live
         prompt and the /context breakdown. Renders each block here (the
         assembler stays pure) in the order the legacy concatenation used."""
+        profile = self._settings.runtime.security_profile
+        tool_definitions = self._registry.definitions_for_profile(profile)
         base_prompt = build_system_prompt(
             workspace=self._workspace,
-            profile=self._settings.runtime.security_profile,
+            profile=profile,
             is_egressing=self._is_egressing(),
         )
         memory_block = ""
@@ -371,6 +373,7 @@ class ConversationRuntime:
             if plan is not None and plan.status in ("active", "blocked")
             else ""
         )
+        plan_active = plan is not None and plan.status in ("active", "blocked")
         trigger_ctx = TriggerContext(
             plan_status=plan.status if plan is not None else None,
             web_enabled=(
@@ -381,6 +384,10 @@ class ConversationRuntime:
         )
         return self._assembler.assemble(
             base_prompt=base_prompt,
+            tool_guide=build_tool_guide(
+                (definition.name for definition in tool_definitions),
+                plan_active=plan_active,
+            ),
             behavior_block=self._behavior.as_prompt_block(),
             memory_block=memory_block,
             skills=self._skills,
