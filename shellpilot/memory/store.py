@@ -22,6 +22,7 @@ from shellpilot.persistence.json_store import atomic_write_json
 from shellpilot.runtime.budget import truncate_to_tokens
 
 SCHEMA_VERSION = 1
+MAX_MEMORY_FILE_CHARS = 1800
 VALID_SCOPES = ("global", "project")
 VALID_CONFIDENCE = ("observed", "stated", "inferred")
 
@@ -141,6 +142,54 @@ class MemoryStore:
     def _clean(self, text: str) -> str:
         return redact_secrets(text) if self._redact else text
 
+    def _payload(
+        self,
+        preferences: list[Preference] | None = None,
+        facts: list[ProjectFact] | None = None,
+    ) -> dict[str, Any]:
+        stored_preferences = self._preferences if preferences is None else preferences
+        stored_facts = self._facts if facts is None else facts
+        payload: dict[str, Any] = {
+            "version": SCHEMA_VERSION,
+            "preferences": [asdict(p) for p in stored_preferences],
+            "facts": [asdict(f) for f in stored_facts],
+        }
+        if self.project_id is not None:
+            payload["project_id"] = self.project_id
+        return payload
+
+    def _payload_text(self, payload: dict[str, Any]) -> str:
+        return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+    def _current_payload_size(self) -> int:
+        return len(self._payload_text(self._payload()))
+
+    def _ensure_within_file_cap(self, payload: dict[str, Any]) -> None:
+        size = len(self._payload_text(payload))
+        current_size = self._current_payload_size()
+        if size > MAX_MEMORY_FILE_CHARS and size <= current_size:
+            return
+        if size > MAX_MEMORY_FILE_CHARS:
+            raise MemoryFormatError(
+                f"{self.path}: memory file would be {size} characters; "
+                f"limit is {MAX_MEMORY_FILE_CHARS} characters. "
+                "Forget or compact existing memories before adding more."
+            )
+
+    def validate_replacement(self, preferences: list[Preference], facts: list[ProjectFact]) -> None:
+        """Raise if replacing this store would violate the memory file cap."""
+        self._ensure_within_file_cap(self._payload(preferences=preferences, facts=facts))
+
+    def _save_payload(
+        self,
+        *,
+        preferences: list[Preference] | None = None,
+        facts: list[ProjectFact] | None = None,
+    ) -> None:
+        payload = self._payload(preferences=preferences, facts=facts)
+        self._ensure_within_file_cap(payload)
+        atomic_write_json(self.path, payload)
+
     def add_preference(self, text: str, *, scope: str, source: str) -> Preference:
         if scope not in VALID_SCOPES:
             raise MemoryFormatError(f"invalid scope {scope!r}; use one of {VALID_SCOPES}")
@@ -151,8 +200,9 @@ class MemoryStore:
             source=source,
             updated_at=_now_iso(),
         )
-        self._preferences.append(preference)
-        self.save()
+        preferences = [*self._preferences, preference]
+        self._save_payload(preferences=preferences)
+        self._preferences = preferences
         return preference
 
     def add_fact(
@@ -176,34 +226,33 @@ class MemoryStore:
             confidence=confidence,
             source=source,
         )
-        self._facts.append(fact)
-        self.save()
+        facts = [*self._facts, fact]
+        self._save_payload(facts=facts)
+        self._facts = facts
         return fact
 
     def remove(self, entry_id: str) -> bool:
         before = len(self._preferences) + len(self._facts)
-        self._preferences = [p for p in self._preferences if p.id != entry_id]
-        self._facts = [f for f in self._facts if f.id != entry_id]
-        if len(self._preferences) + len(self._facts) == before:
+        preferences = [p for p in self._preferences if p.id != entry_id]
+        facts = [f for f in self._facts if f.id != entry_id]
+        if len(preferences) + len(facts) == before:
             return False
-        self.save()
+        self._save_payload(preferences=preferences, facts=facts)
+        self._preferences = preferences
+        self._facts = facts
         return True
 
     def replace_all(self, preferences: list[Preference], facts: list[ProjectFact]) -> None:
         """Wholesale replacement used by /memory compact after approval."""
-        self._preferences = list(preferences)
-        self._facts = list(facts)
-        self.save()
+        next_preferences = list(preferences)
+        next_facts = list(facts)
+        self.validate_replacement(next_preferences, next_facts)
+        atomic_write_json(self.path, self._payload(preferences=next_preferences, facts=next_facts))
+        self._preferences = next_preferences
+        self._facts = next_facts
 
     def save(self) -> None:
-        payload: dict[str, Any] = {
-            "version": SCHEMA_VERSION,
-            "preferences": [asdict(p) for p in self._preferences],
-            "facts": [asdict(f) for f in self._facts],
-        }
-        if self.project_id is not None:
-            payload["project_id"] = self.project_id
-        atomic_write_json(self.path, payload)
+        self._save_payload()
 
 
 @dataclass(frozen=True)
@@ -216,18 +265,29 @@ class MemoryStores:
     def render(self, max_tokens: int, *, meta: bool = False) -> str:
         """Render the memory block. ``meta`` annotates each preference with its
         (scope, source) for the ``/memory show`` view; the default is the
-        injected prompt format and must stay byte-identical."""
-        preferences = list(self.global_store.preferences) + list(self.project_store.preferences)
+        injected prompt format, grouped by global/project scope."""
+        global_preferences = list(self.global_store.preferences)
+        project_preferences = list(self.project_store.preferences)
         facts = list(self.global_store.facts) + list(self.project_store.facts)
-        if not preferences and not facts:
+        if not global_preferences and not project_preferences and not facts:
             return ""
         lines = ["## Memory"]
-        if preferences:
-            lines.append("Preferences:")
+        if global_preferences:
+            lines.append("Global preferences:")
             if meta:
-                lines.extend(f"- [{p.id}] ({p.scope}, {p.source}) {p.text}" for p in preferences)
+                lines.extend(
+                    f"- [{p.id}] ({p.scope}, {p.source}) {p.text}" for p in global_preferences
+                )
             else:
-                lines.extend(f"- [{p.id}] {p.text}" for p in preferences)
+                lines.extend(f"- [{p.id}] {p.text}" for p in global_preferences)
+        if project_preferences:
+            lines.append("Project preferences:")
+            if meta:
+                lines.extend(
+                    f"- [{p.id}] ({p.scope}, {p.source}) {p.text}" for p in project_preferences
+                )
+            else:
+                lines.extend(f"- [{p.id}] {p.text}" for p in project_preferences)
         if facts:
             lines.append("Project facts:")
             lines.extend(f"- [{f.id}] ({f.kind}) {f.label}: {f.value}" for f in facts)

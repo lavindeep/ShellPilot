@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from shellpilot.prompts.system import _BASE, PROMPT_VERSION, build_system_prompt
+from shellpilot.prompts.system import _BASE, PROMPT_VERSION, build_system_prompt, build_tool_guide
 from shellpilot.skills.loader import discover_skills
 from shellpilot.skills.model import Skill, SkillTrigger
 
@@ -35,6 +35,41 @@ def test_prompt_includes_core_themes() -> None:
         "balanced",
     ):
         assert phrase in prompt, f"missing theme: {phrase}"
+
+
+def test_tool_guide_lists_only_available_tools() -> None:
+    guide = build_tool_guide(
+        (
+            "env_info",
+            "read_file",
+            "search_text",
+            "memory_read",
+            "memory_propose_update",
+            "web_search",
+            "web_fetch",
+            "update_plan",
+        )
+    )
+
+    assert guide.startswith("Tool guide:")
+    assert "env_info" in guide
+    assert "read_file" in guide
+    assert "search_text" in guide
+    assert "memory_read" in guide
+    assert "global=user facts/preferences" in guide
+    assert "project=workspace facts/preferences" in guide
+    assert "web_search" in guide
+    assert "web_fetch" in guide
+    assert "update_plan" not in guide
+    assert "patch_file" not in guide
+    assert "skill_read" not in guide
+
+
+def test_tool_guide_names_update_plan_only_when_plan_active() -> None:
+    guide = build_tool_guide(("propose_plan", "update_plan"), plan_active=True)
+
+    assert "propose_plan" in guide
+    assert "update_plan" in guide
 
 
 def test_prompt_appends_behavior_block() -> None:
@@ -99,7 +134,7 @@ def test_base_prompt_retains_proposal_rules() -> None:
 
 
 def test_prompt_version_bumped() -> None:
-    assert PROMPT_VERSION == 5
+    assert PROMPT_VERSION == 6
 
 
 def test_prompts_planning_module_has_no_live_content() -> None:

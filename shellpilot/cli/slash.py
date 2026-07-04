@@ -34,6 +34,7 @@ from shellpilot.config.model import (
 )
 from shellpilot.config.overrides import load_overrides, overrides_path, save_overrides
 from shellpilot.llm.client import LLMClient
+from shellpilot.memory.store import MemoryFormatError
 from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.skills.model import SkillTrigger
 
@@ -851,7 +852,13 @@ class SlashDispatcher:
                 self._console.print("Usage: /memory add <preference text>")
                 return
             if self._confirm(f'Add global preference "{text}"?'):
-                preference = stores.global_store.add_preference(text, scope="global", source="user")
+                try:
+                    preference = stores.global_store.add_preference(
+                        text, scope="global", source="user"
+                    )
+                except MemoryFormatError as exc:
+                    self._console.print(f"[red]Memory update rejected:[/red] {exc}")
+                    return
                 self._audit_memory(f"add {preference.id}")
                 self._console.print(f"Saved {preference.id}.")
             return
@@ -865,7 +872,11 @@ class SlashDispatcher:
                 self._console.print(f"[red]No memory entry {entry_id}.[/red] See /memory show.")
                 return
             if self._confirm(f"Forget {entry_id}?"):
-                store.remove(entry_id)
+                try:
+                    store.remove(entry_id)
+                except MemoryFormatError as exc:
+                    self._console.print(f"[red]Memory update rejected:[/red] {exc}")
+                    return
                 self._audit_memory(f"forget {entry_id}")
                 self._console.print(f"Removed {entry_id}.")
             return
@@ -942,7 +953,8 @@ class SlashDispatcher:
         kept = len(final_ids)
         if not self._confirm(f"Apply optimization: {len(all_preferences)} preferences -> {kept}?"):
             return
-        for name, store in by_store.items():
+        replacements: dict[str, list[Preference]] = {}
+        for name in by_store:
             new_preferences = []
             for entry in final_entries:
                 if not isinstance(entry, dict):
@@ -961,7 +973,15 @@ class SlashDispatcher:
                         updated_at=original.updated_at,
                     )
                 )
-            store.replace_all(new_preferences, list(store.facts))
+            replacements[name] = new_preferences
+        try:
+            for name, store in by_store.items():
+                store.validate_replacement(replacements[name], list(store.facts))
+        except MemoryFormatError as exc:
+            self._console.print(f"[red]Optimization rejected:[/red] {exc}")
+            return
+        for name, store in by_store.items():
+            store.replace_all(replacements[name], list(store.facts))
         self._audit_memory(f"compact {len(all_preferences)} -> {kept}")
         self._console.print(f"Memory compacted: {len(all_preferences)} -> {kept} preferences.")
 

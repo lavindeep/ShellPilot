@@ -10,6 +10,7 @@ import pytest
 from shellpilot.config.loader import load_config
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.memory.store import (
+    MAX_MEMORY_FILE_CHARS,
     MemoryFormatError,
     MemoryStore,
     MemoryStores,
@@ -72,6 +73,113 @@ def test_secrets_never_stored(tmp_path: Path) -> None:
     assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in raw
 
 
+def test_memory_file_write_is_capped_to_force_selective_storage(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "memory.json")
+    too_large = "x" * MAX_MEMORY_FILE_CHARS
+
+    with pytest.raises(MemoryFormatError, match=f"{MAX_MEMORY_FILE_CHARS} characters"):
+        store.add_preference(too_large, scope="global", source="user")
+
+    assert not (tmp_path / "memory.json").exists()
+
+
+def test_project_memory_file_write_is_capped_separately(tmp_path: Path) -> None:
+    store = MemoryStore(
+        tmp_path / ".shellpilot" / "memory.json", project_id=project_id_for(tmp_path)
+    )
+    too_large = "x" * MAX_MEMORY_FILE_CHARS
+
+    with pytest.raises(MemoryFormatError, match=f"{MAX_MEMORY_FILE_CHARS} characters"):
+        store.add_fact(kind="note", label="oversized", value=too_large, source="assistant")
+
+    assert not (tmp_path / ".shellpilot" / "memory.json").exists()
+
+
+def test_over_cap_legacy_store_can_shrink_by_removing_entry(tmp_path: Path) -> None:
+    path = tmp_path / "memory.json"
+    legacy_entries = [
+        {
+            "id": f"pref_{index:03d}",
+            "scope": "global",
+            "text": f"legacy preference {index} " + ("x" * 220),
+            "source": "user",
+            "updated_at": "2026-07-04T00:00:00Z",
+        }
+        for index in range(1, 21)
+    ]
+    path.write_text(
+        json.dumps({"version": 1, "preferences": legacy_entries, "facts": []}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    before_size = len(path.read_text(encoding="utf-8"))
+    assert before_size > MAX_MEMORY_FILE_CHARS
+
+    store = MemoryStore(path)
+
+    assert store.remove("pref_001") is True
+    after_size = len(path.read_text(encoding="utf-8"))
+    assert after_size < before_size
+    assert after_size > MAX_MEMORY_FILE_CHARS
+    assert "pref_001" not in {preference.id for preference in MemoryStore(path).preferences}
+
+
+def test_over_cap_legacy_store_still_rejects_growth(tmp_path: Path) -> None:
+    path = tmp_path / "memory.json"
+    legacy_entries = [
+        {
+            "id": f"pref_{index:03d}",
+            "scope": "global",
+            "text": f"legacy preference {index} " + ("x" * 220),
+            "source": "user",
+            "updated_at": "2026-07-04T00:00:00Z",
+        }
+        for index in range(1, 21)
+    ]
+    path.write_text(
+        json.dumps({"version": 1, "preferences": legacy_entries, "facts": []}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_text(encoding="utf-8")
+    store = MemoryStore(path)
+
+    with pytest.raises(MemoryFormatError, match="Forget or compact"):
+        store.add_preference("new entry", scope="global", source="user")
+
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_minified_over_cap_legacy_store_can_shrink_by_removing_entry(tmp_path: Path) -> None:
+    path = tmp_path / "memory.json"
+    legacy_entries = [
+        {
+            "id": f"pref_{index:03d}",
+            "scope": "global",
+            "text": f"legacy preference {index} " + ("x" * 220),
+            "source": "user",
+            "updated_at": "2026-07-04T00:00:00Z",
+        }
+        for index in range(1, 21)
+    ]
+    path.write_text(
+        json.dumps(
+            {"version": 1, "preferences": legacy_entries, "facts": []}, separators=(",", ":")
+        ),
+        encoding="utf-8",
+    )
+    raw_size = len(path.read_text(encoding="utf-8"))
+    store = MemoryStore(path)
+    normalized_size = len(store._payload_text(store._payload()))
+    assert raw_size > MAX_MEMORY_FILE_CHARS
+    assert normalized_size > raw_size
+
+    assert store.remove("pref_001") is True
+
+    after_size = len(path.read_text(encoding="utf-8"))
+    assert after_size < normalized_size
+    assert after_size > raw_size
+    assert "pref_001" not in {preference.id for preference in MemoryStore(path).preferences}
+
+
 def test_render_block_lists_entries_and_caps_tokens(tmp_path: Path) -> None:
     global_store = MemoryStore(tmp_path / "global.json")
     project_store = MemoryStore(tmp_path / "project.json", project_id="ShellPilot:abc")
@@ -89,10 +197,25 @@ def test_render_block_lists_entries_and_caps_tokens(tmp_path: Path) -> None:
     assert len(tiny) <= 10 * 4 + 40  # truncated to roughly the cap
 
 
+def test_render_block_keeps_global_and_project_preferences_distinct(tmp_path: Path) -> None:
+    global_store = MemoryStore(tmp_path / "global.json")
+    project_store = MemoryStore(tmp_path / "project.json", project_id="ShellPilot:abc")
+    global_store.add_preference("Use concise answers.", scope="global", source="user")
+    project_store.add_preference("Use detailed release notes.", scope="project", source="user")
+    stores = MemoryStores(global_store=global_store, project_store=project_store)
+
+    block = stores.render(max_tokens=500)
+
+    assert "Global preferences:" in block
+    assert "- [pref_001] Use concise answers." in block
+    assert "Project preferences:" in block
+    assert "- [pref_001] Use detailed release notes." in block
+
+
 def test_render_meta_adds_scope_source_for_display_only(tmp_path: Path) -> None:
     """meta=True annotates preference lines with (scope, source) for the
     /memory show view (folding in what /prefs used to print); the default
-    (injected) format stays byte-identical and never leaks the tag."""
+    injected format shows scope by section, not by source tag."""
     global_store = MemoryStore(tmp_path / "global.json")
     project_store = MemoryStore(tmp_path / "project.json", project_id="ShellPilot:abc")
     global_store.add_preference("Prefer concise answers.", scope="global", source="user")

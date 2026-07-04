@@ -67,24 +67,37 @@ def _planning_reference(name: str) -> str:
 def _expected_system_text(runtime: ConversationRuntime) -> str:
     """Inline reconstruction of the expected system-prompt concatenation.
 
-    Order: base prompt, behavior, memory, skills-index + skill bodies/references,
-    plan state.
+    Order: base prompt, tool guide, behavior, memory,
+    skills-index + skill bodies/references, plan state.
     """
-    from shellpilot.prompts.system import build_system_prompt
+    from shellpilot.prompts.system import build_system_prompt, build_tool_guide
 
     settings = runtime.settings
     prompt = build_system_prompt(
         workspace=runtime.status().workspace,
         profile=settings.runtime.security_profile,
-        behavior_block=runtime._behavior.as_prompt_block(),
     )
+    plan = runtime.plan_manager.active
+    plan_mode = plan.status if plan is not None else None
+    guide = build_tool_guide(
+        (
+            definition.name
+            for definition in runtime.registry.definitions_for_profile(
+                settings.runtime.security_profile
+            )
+        ),
+        plan_active=plan_mode in ("active", "blocked"),
+    )
+    if guide:
+        prompt = f"{prompt}\n\n{guide}"
+    behavior = runtime._behavior.as_prompt_block()
+    if behavior:
+        prompt = f"{prompt}\n\n{behavior}"
     if runtime._memory is not None:
         memory_cap = max(200, runtime.budget.model_context_tokens // 16)
         memory_block = runtime._memory.render(max_tokens=memory_cap)
         if memory_block:
             prompt = f"{prompt}\n\n{memory_block}"
-    plan = runtime.plan_manager.active
-    plan_mode = plan.status if plan is not None else None
     if plan_mode in ("active", "blocked"):
         prompt = f"{prompt}\n\nLoaded skills: planning, context-management."
         prompt = f"{prompt}\n\n## Skill: planning\n{_planning_body()}"
@@ -267,6 +280,7 @@ def _template(name: str) -> SkillResource:
 def _assemble(
     *,
     base_prompt: str = "BASE",
+    tool_guide: str = "",
     behavior_block: str = "",
     memory_block: str = "",
     skills: tuple[Skill, ...] = (),
@@ -282,6 +296,7 @@ def _assemble(
     )
     return ContextAssembler().assemble(
         base_prompt=base_prompt,
+        tool_guide=tool_guide,
         behavior_block=behavior_block,
         memory_block=memory_block,
         skills=skills,
@@ -295,6 +310,7 @@ def test_assembler_block_names_and_order_no_skills() -> None:
     snapshot = _assemble()
     assert [block.name for block in snapshot.blocks] == [
         "base prompt",
+        "tool guide",
         "behavior",
         "memory",
         "skills index",
@@ -307,6 +323,11 @@ def test_assembler_empty_behavior_and_memory_excluded() -> None:
     injected = {block.name for block in snapshot.blocks if block.injected}
     assert injected == {"base prompt"}
     assert snapshot.system_text() == "BASE"
+
+
+def test_assembler_includes_nonempty_tool_guide() -> None:
+    snapshot = _assemble(tool_guide="TOOLS")
+    assert snapshot.system_text() == "BASE\n\nTOOLS"
 
 
 def test_assembler_includes_nonempty_behavior_and_memory() -> None:

@@ -16,6 +16,7 @@ from shellpilot.config.model import (
 from shellpilot.llm.client import GenerationCancelled
 from shellpilot.llm.messages import Message, ToolCall, ToolDefinition, assistant
 from shellpilot.memory.agents_md import BehaviorInstructions
+from shellpilot.memory.store import MemoryStore, MemoryStores, project_id_for
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.persistence.sessions import SessionStore
 from shellpilot.policy.risk import RiskLevel, SideEffect
@@ -1444,6 +1445,39 @@ def test_skill_read_registered_when_skills_enabled(tmp_path: Path) -> None:
     settings = Settings(skills=SkillSettings(enabled=("skill-authoring",)))
     runtime = make_runtime(fake, FakeUI(), tmp_path, settings=settings)
     assert runtime.registry.get("skill_read") is not None
+
+
+def test_tool_guide_tracks_registered_optional_tools(tmp_path: Path) -> None:
+    """The prompt guide names optional tools only when those tools are registered."""
+    default_runtime = make_runtime(FakeLLM(script=[]), FakeUI(), tmp_path, settings=Settings())
+    default_guide = _injected_block_texts(default_runtime)["tool guide"]
+    assert "read_file" in default_guide
+    assert "memory_read" not in default_guide
+    assert "web_search" not in default_guide
+    assert "skill_read" not in default_guide
+
+    global_store = MemoryStore(tmp_path / "global-memory.json")
+    project_store = MemoryStore(
+        tmp_path / ".shellpilot" / "memory.json", project_id=project_id_for(tmp_path)
+    )
+    configured = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(
+            tools=ToolSettings(web=True),
+            skills=SkillSettings(enabled=("skill-authoring",)),
+        ),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        memory=MemoryStores(global_store=global_store, project_store=project_store),
+        skills=tuple(discover_skills(user_skills_dir=Path("/nonexistent/skills"), max_tokens=800)),
+    )
+    configured_guide = _injected_block_texts(configured)["tool guide"]
+    assert "memory_read" in configured_guide
+    assert "memory_propose_update" in configured_guide
+    assert "web_search" in configured_guide
+    assert "web_fetch" in configured_guide
+    assert "skill_read" in configured_guide
 
 
 # ---------------------------------------------------------------------------
