@@ -765,6 +765,67 @@ def _classify_ls(argv: list[str], workspace: Path) -> CommandRisk | None:
     return None
 
 
+def _date_file_operands(argv: list[str]) -> list[str]:
+    """Paths that ``date`` may read via ``-r``/``-f``/``--file``/``--reference``."""
+    names = frozenset({"-r", "-f", "--file", "--reference"})
+    short_letters = frozenset({"r", "f"})
+    found: list[str] = []
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token in names:
+            if index + 1 < len(argv):
+                found.append(argv[index + 1])
+            index += 2
+            continue
+        name = _long_option_name(token)
+        if name in {"--file", "--reference"} and "=" in token:
+            found.append(token.split("=", 1)[1])
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            body = token[1:]
+            # Exact/glued: -rPATH / -fPATH
+            glued = False
+            for letter in short_letters:
+                prefix = f"-{letter}"
+                if token.startswith(prefix) and len(token) > 2:
+                    found.append(token[2:])
+                    glued = True
+                    break
+            if not glued:
+                # Clustered: -ur PATH (value-taking letter last)
+                for offset, letter in enumerate(body):
+                    if letter not in short_letters:
+                        continue
+                    rest = body[offset + 1 :]
+                    if rest:
+                        found.append(rest)
+                    elif index + 1 < len(argv):
+                        found.append(argv[index + 1])
+                    break
+        index += 1
+    return found
+
+
+def _classify_date(argv: list[str], workspace: Path) -> CommandRisk | None:
+    operands = _date_file_operands(argv)
+    if operands:
+        outside = _path_arg_outside_workspace(["date", *operands], workspace)
+        if outside:
+            return CommandRisk(
+                RiskLevel.HIGH,
+                (f"reads outside the workspace boundary: {outside}",),
+            )
+        # In-workspace file-backed date reads are still a filesystem payload —
+        # ask rather than auto-run under the LOW invariant.
+        return CommandRisk(RiskLevel.MEDIUM, ("date reads timestamps from a file",))
+    outside = _path_arg_outside_workspace(argv, workspace)
+    if outside:
+        return CommandRisk(RiskLevel.HIGH, (f"reads outside the workspace boundary: {outside}",))
+    return None
+
+
 def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
     """Classify an argv command (shell=False) by deterministic rules."""
     if not argv or not argv[0].strip():
@@ -839,6 +900,11 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
         return CommandRisk(RiskLevel.LOW, ())
     if executable == "ls":
         special = _classify_ls(argv, workspace)
+        if special is not None:
+            return special
+        return CommandRisk(RiskLevel.LOW, ())
+    if executable == "date":
+        special = _classify_date(argv, workspace)
         if special is not None:
             return special
         return CommandRisk(RiskLevel.LOW, ())

@@ -479,7 +479,10 @@ def test_empty_argv_is_blocked() -> None:
         (["tree", "-aofoo.txt", "."], RiskLevel.MEDIUM),
         # date is not inert: file-backed reads must not auto-run
         (["date", "-r", "/etc/passwd"], RiskLevel.HIGH),
+        (["date", "-r/etc/passwd"], RiskLevel.HIGH),
+        (["date", "-f/etc/passwd"], RiskLevel.HIGH),
         (["date", "--file=/etc/shadow"], RiskLevel.HIGH),
+        (["date", "-r", "README.md"], RiskLevel.MEDIUM),
         # Unknown long options fail the LOW proof on capability tools.
         (["rg", "--totally-unknown-flag", "x"], RiskLevel.MEDIUM),
         (["ls", "--totally-unknown-flag"], RiskLevel.MEDIUM),
