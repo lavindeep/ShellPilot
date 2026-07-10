@@ -2,6 +2,24 @@
 
 Policy is deterministic first: no model call ever decides risk, and the model
 can never downgrade what this module returns (section 14.4).
+
+LOW invariant
+-------------
+A command may be classified LOW only when the argv form cannot:
+
+- execute arbitrary code or configured external helpers
+- write or truncate files
+- perform network I/O
+- read content outside the workspace
+
+Capability-bearing LOW tools (searchers, ``tree``, ``ps``, ``ls``, readers, and
+read-only git verbs) must prove that invariant via explicit checks. Unknown
+long options on those tools escalate to MEDIUM — LOW is earned, not assumed
+from the executable basename alone.
+
+Accepted residual: classification still keys off the basename (PATH substitution
+of a LOW name remains LOW by design of the argv executor); path-qualified
+executables already escalate out of LOW.
 """
 
 from __future__ import annotations
@@ -39,9 +57,17 @@ LOW_EXECUTABLES: Final = frozenset(
         "ps",
     }
 )
+# Inert tools take no filesystem/process payload that can violate the LOW
+# invariant under shell=False argv execution.
+INERT_LOW_EXECUTABLES: Final = frozenset(
+    {"pwd", "true", "false", "uname", "date", "whoami", "which", "echo", "df"}
+)
 READER_EXECUTABLES: Final = frozenset(
     {"cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "file", "stat", "du"}
 )
+SEARCHER_EXECUTABLES: Final = frozenset({"grep", "egrep", "fgrep", "rg"})
+# Path-bearing LOW tools that are not already covered by READER_EXECUTABLES.
+PATH_CHECKED_LOW_EXECUTABLES: Final = frozenset({"ls", "tree"})
 GIT_READONLY_VERBS: Final = frozenset(
     {
         "status",
@@ -71,6 +97,8 @@ GIT_GLOBALS_WITH_SPLIT_VALUES: Final = frozenset(
         "--work-tree",
     }
 )
+# Diff/show helpers that can execute configured external programs.
+GIT_EXTERNAL_HELPER_OPTIONS: Final = frozenset({"--ext-diff", "--textconv"})
 SHELLS: Final = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh"})
 PACKAGE_MANAGERS: Final = frozenset(
     {
@@ -120,6 +148,170 @@ SECRET_MARKERS: Final = (
     "id_ed25519",
     "credentials",
     "secrets",
+)
+
+# Long options that are safe for LOW auto-run on searchers. Anything else
+# unknown escalates — LOW must be proven, not assumed from the basename.
+SEARCHER_SAFE_LONG_OPTIONS: Final = frozenset(
+    {
+        "--help",
+        "--version",
+        "--color",
+        "--colour",
+        "--include",
+        "--exclude",
+        "--exclude-dir",
+        "--exclude-from",
+        "--file",
+        "--regexp",
+        "--ignore-case",
+        "--invert-match",
+        "--word-regexp",
+        "--line-regexp",
+        "--fixed-strings",
+        "--basic-regexp",
+        "--extended-regexp",
+        "--perl-regexp",
+        "--count",
+        "--files-with-matches",
+        "--files-without-match",
+        "--only-matching",
+        "--no-filename",
+        "--with-filename",
+        "--line-number",
+        "--no-messages",
+        "--quiet",
+        "--silent",
+        "--max-count",
+        "--byte-offset",
+        "--binary-files",
+        "--text",
+        "--directories",
+        "--devices",
+        "--recursive",
+        "--dereference-recursive",
+        "--no-ignore-case",
+        "--heading",
+        "--break",
+        "--context",
+        "--after-context",
+        "--before-context",
+        "--column",
+        "--vimgrep",
+        "--json",
+        "--debug",
+        "--trace",
+        "--hidden",
+        "--no-hidden",
+        "--no-ignore",
+        "--no-ignore-vcs",
+        "--no-ignore-parent",
+        "--no-ignore-global",
+        "--ignore-file",
+        "--ignore-file-case",
+        "--glob",
+        "--iglob",
+        "--type",
+        "--type-not",
+        "--type-add",
+        "--type-clear",
+        "--type-list",
+        "--files",
+        "--sort",
+        "--sortr",
+        "--max-depth",
+        "--max-filesize",
+        "--max-columns",
+        "--max-columns-preview",
+        "--line-buffered",
+        "--block-buffered",
+        "--mmap",
+        "--no-mmap",
+        "--search-zip",
+        "--follow",
+        "--one-file-system",
+        "--no-unicode",
+        "--engine",
+        "--regexp-size-limit",
+        "--dfa-size-limit",
+        "--stop-on-nonmatch",
+        "--passthru",
+        "--null",
+        "--null-data",
+        "--field-match-separator",
+        "--field-context-separator",
+        "--path-separator",
+        "--hyperlink-format",
+        "--stats",
+        "--crlf",
+        "--no-crlf",
+    }
+)
+SEARCHER_EXECUTION_OPTIONS: Final = frozenset({"--pre", "--pre-glob"})
+TREE_SAFE_LONG_OPTIONS: Final = frozenset(
+    {
+        "--help",
+        "--version",
+        "--noreport",
+        "--charset",
+        "--filelimit",
+        "--si",
+        "--du",
+        "--inodes",
+        "--device",
+        "--dirsfirst",
+        "--matchdirs",
+        "--prune",
+        "--ignore",
+        "--gitignore",
+        "--gitfile",
+        "--match",
+        "--fromfile",
+        "--fflinks",
+        "--nolinks",
+        "--timefmt",
+    }
+)
+TREE_OUTPUT_OPTIONS: Final = frozenset({"-o", "--output"})
+LS_SAFE_LONG_OPTIONS: Final = frozenset(
+    {
+        "--help",
+        "--version",
+        "--color",
+        "--colour",
+        "--group-directories-first",
+        "--time-style",
+        "--format",
+        "--indicator-style",
+        "--quoting-style",
+        "--block-size",
+        "--hide",
+        "--ignore",
+        "--ignore-backups",
+        "--classify",
+        "--file-type",
+        "--hyperlink",
+        "--si",
+        "--human-readable",
+        "--inode",
+        "--size",
+        "--recursive",
+        "--reverse",
+        "--almost-all",
+        "--all",
+        "--author",
+        "--context",
+        "--directory",
+        "--dired",
+        "--full-time",
+        "--literal",
+        "--numeric-uid-gid",
+        "--no-group",
+        "--tabsize",
+        "--width",
+        "--sort",
+        "--time",
+    }
 )
 
 
@@ -195,6 +387,52 @@ def _path_arg_outside_workspace(argv: list[str], workspace: Path) -> str | None:
     return None
 
 
+def _long_option_name(token: str) -> str | None:
+    if not token.startswith("--") or token == "--":
+        return None
+    return token.partition("=")[0]
+
+
+def _unknown_long_option(argv: list[str], allowed: frozenset[str]) -> str | None:
+    for token in argv[1:]:
+        name = _long_option_name(token)
+        if name is not None and name not in allowed:
+            return f"unrecognized option {name}"
+    return None
+
+
+def _option_present(argv: list[str], names: frozenset[str]) -> str | None:
+    """Return the matching option name when present (``--opt`` or ``--opt=``)."""
+    for token in argv[1:]:
+        if token in names:
+            return token
+        name = _long_option_name(token)
+        if name is not None and name in names:
+            return name
+    return None
+
+
+def _split_option_value(argv: list[str], names: frozenset[str]) -> str | None:
+    """Value of a space-separated or ``=``-attached option, else None."""
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token in names:
+            return argv[index + 1] if index + 1 < len(argv) else None
+        name = _long_option_name(token)
+        if name is not None and name in names and "=" in token:
+            return token.split("=", 1)[1]
+        # Glued short form: -oFILE
+        if not token.startswith("--"):
+            for name in names:
+                if name.startswith("-") and not name.startswith("--") and token.startswith(name):
+                    glued = token[len(name) :]
+                    if glued:
+                        return glued
+        index += 1
+    return None
+
+
 def _scan_git_verb(argv: list[str]) -> tuple[str, list[str], bool]:
     conservative_global = False
     index = 1
@@ -263,6 +501,14 @@ def _git_output_path(tokens: list[str]) -> str | None:
     return None
 
 
+def _git_external_helper(flags: list[str]) -> str | None:
+    for flag in flags:
+        name = flag.partition("=")[0]
+        if name in GIT_EXTERNAL_HELPER_OPTIONS:
+            return f"{name} can execute configured external helpers"
+    return None
+
+
 def _classify_git(argv: list[str], workspace: Path) -> CommandRisk:
     verb, verb_args, conservative_global = _scan_git_verb(argv)
     flags = [token for token in argv[1:] if token.startswith("-")]
@@ -300,9 +546,20 @@ def _classify_git(argv: list[str], workspace: Path) -> CommandRisk:
             return CommandRisk(RiskLevel.MEDIUM, (f"git {verb} changes repository state",))
     if conservative_global:
         return CommandRisk(RiskLevel.MEDIUM, ("git uses a non-benign global option",))
-    if verb in GIT_READONLY_VERBS:
-        return CommandRisk(RiskLevel.LOW, ())
-    if verb == "stash" and verb_args and verb_args[0] in ("list", "show"):
+    helper = _git_external_helper(flags)
+    if helper:
+        return CommandRisk(RiskLevel.MEDIUM, (helper,))
+    if verb in GIT_READONLY_VERBS or (
+        verb == "stash" and verb_args and verb_args[0] in ("list", "show")
+    ):
+        # Read-only git still has to prove the LOW invariant: no out-of-workspace
+        # path payloads (e.g. `git diff --no-index /etc/a /etc/b`).
+        outside = _path_arg_outside_workspace(argv, workspace)
+        if outside:
+            return CommandRisk(
+                RiskLevel.HIGH,
+                (f"git {verb or '?'} reads outside the workspace boundary: {outside}",),
+            )
         return CommandRisk(RiskLevel.LOW, ())
     return CommandRisk(RiskLevel.MEDIUM, (f"git {verb or '?'} changes repository state",))
 
@@ -317,6 +574,102 @@ def _classify_rm(argv: list[str], workspace: Path) -> CommandRisk:
     if outside:
         return CommandRisk(RiskLevel.HIGH, ("deletes outside the workspace",))
     return CommandRisk(RiskLevel.MEDIUM, ("deletes a file",))
+
+
+def _classify_searcher(argv: list[str], workspace: Path) -> CommandRisk | None:
+    """Extra LOW-invariant checks for grep/rg family. None = fall through."""
+    hook = _option_present(argv, SEARCHER_EXECUTION_OPTIONS)
+    if hook:
+        return CommandRisk(
+            RiskLevel.HIGH,
+            (f"{hook} executes a preprocessor over matched files",),
+        )
+    unknown = _unknown_long_option(argv, SEARCHER_SAFE_LONG_OPTIONS)
+    if unknown:
+        return CommandRisk(RiskLevel.MEDIUM, (unknown,))
+    outside = _path_arg_outside_workspace(argv, workspace)
+    if outside:
+        return CommandRisk(RiskLevel.HIGH, (f"reads outside the workspace boundary: {outside}",))
+    return None
+
+
+def _classify_tree(argv: list[str], workspace: Path) -> CommandRisk | None:
+    output = _split_option_value(argv, TREE_OUTPUT_OPTIONS)
+    if output is not None or _option_present(argv, TREE_OUTPUT_OPTIONS):
+        target = output or ""
+        if target and _path_arg_outside_workspace(["tree", target], workspace):
+            return CommandRisk(
+                RiskLevel.HIGH,
+                ("tree output path is outside the workspace boundary",),
+            )
+        return CommandRisk(RiskLevel.MEDIUM, ("tree writes output to a file",))
+    unknown = _unknown_long_option(argv, TREE_SAFE_LONG_OPTIONS)
+    if unknown:
+        return CommandRisk(RiskLevel.MEDIUM, (unknown,))
+    outside = _path_arg_outside_workspace(argv, workspace)
+    if outside:
+        return CommandRisk(RiskLevel.HIGH, (f"reads outside the workspace boundary: {outside}",))
+    return None
+
+
+def _ps_exposes_environment(argv: list[str]) -> bool:
+    """True when argv likely requests process environment display.
+
+    BSD ``ps e`` / ``ps auxe`` expose environments. macOS ``-E`` does too.
+    SysV ``-e`` means "every process" and is left alone (listing only).
+    """
+    for token in argv[1:]:
+        if token in {"e", "E"}:
+            return True
+        name = _long_option_name(token)
+        if name is not None and "env" in name.lower():
+            return True
+        if not token.startswith("-") and token.isalpha() and "e" in token.lower():
+            # BSD clustered flags without a leading dash: auxe, ue, ...
+            return True
+        if token.startswith("-") and not token.startswith("--") and "E" in token[1:]:
+            return True
+    return False
+
+
+def _classify_ps(argv: list[str]) -> CommandRisk | None:
+    if _ps_exposes_environment(argv):
+        return CommandRisk(RiskLevel.MEDIUM, ("ps can expose process environments",))
+    # Unknown long options fail the LOW proof.
+    unknown = _unknown_long_option(
+        argv,
+        frozenset(
+            {
+                "--help",
+                "--version",
+                "--pid",
+                "--ppid",
+                "--user",
+                "--sort",
+                "--format",
+                "--forest",
+                "--cols",
+                "--columns",
+                "--width",
+                "--headers",
+                "--no-headers",
+                "--deselect",
+            }
+        ),
+    )
+    if unknown:
+        return CommandRisk(RiskLevel.MEDIUM, (unknown,))
+    return None
+
+
+def _classify_ls(argv: list[str], workspace: Path) -> CommandRisk | None:
+    unknown = _unknown_long_option(argv, LS_SAFE_LONG_OPTIONS)
+    if unknown:
+        return CommandRisk(RiskLevel.MEDIUM, (unknown,))
+    outside = _path_arg_outside_workspace(argv, workspace)
+    if outside:
+        return CommandRisk(RiskLevel.HIGH, (f"reads outside the workspace boundary: {outside}",))
+    return None
 
 
 def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
@@ -374,6 +727,28 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
         if argv[1:] == ["--version"]:
             return CommandRisk(RiskLevel.LOW, ())
         return CommandRisk(RiskLevel.MEDIUM, ("runs arbitrary python code",))
+
+    # Capability-bearing LOW candidates: prove the invariant before AUTO.
+    if executable in SEARCHER_EXECUTABLES:
+        special = _classify_searcher(argv, workspace)
+        if special is not None:
+            return special
+        return CommandRisk(RiskLevel.LOW, ())
+    if executable == "tree":
+        special = _classify_tree(argv, workspace)
+        if special is not None:
+            return special
+        return CommandRisk(RiskLevel.LOW, ())
+    if executable == "ps":
+        special = _classify_ps(argv)
+        if special is not None:
+            return special
+        return CommandRisk(RiskLevel.LOW, ())
+    if executable == "ls":
+        special = _classify_ls(argv, workspace)
+        if special is not None:
+            return special
+        return CommandRisk(RiskLevel.LOW, ())
     if executable in READER_EXECUTABLES:
         # Unlike read_file (which honors allow_sensitive_reads via decide()),
         # classify_command sees only a RiskLevel and run_command is
@@ -386,8 +761,17 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
             return CommandRisk(
                 RiskLevel.HIGH, (f"reads outside the workspace boundary: {outside}",)
             )
-        # in-workspace readers fall through to the LOW return below
-    if executable in LOW_EXECUTABLES:
+        return CommandRisk(RiskLevel.LOW, ())
+    if executable in INERT_LOW_EXECUTABLES or executable in LOW_EXECUTABLES:
+        # Remaining LOW allowlist entries (including inert tools). Path-bearing
+        # leftovers still get a boundary check so the invariant holds.
+        if executable in PATH_CHECKED_LOW_EXECUTABLES or executable not in INERT_LOW_EXECUTABLES:
+            outside = _path_arg_outside_workspace(argv, workspace)
+            if outside:
+                return CommandRisk(
+                    RiskLevel.HIGH,
+                    (f"reads outside the workspace boundary: {outside}",),
+                )
         return CommandRisk(RiskLevel.LOW, ())
 
     return CommandRisk(
