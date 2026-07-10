@@ -512,10 +512,7 @@ class ConversationRuntime:
 
     def _hard_limit_status(self) -> str:
         """Status text when the hard context limit blocks a model call."""
-        if (
-            not self._history
-            and self.estimated_prompt_tokens() > self.budget.hard_limit_tokens
-        ):
+        if not self._history and self.estimated_prompt_tokens() > self.budget.hard_limit_tokens:
             return (
                 "System prompt and tool schemas alone exceed the hard limit. "
                 "Raise context.model_context_tokens, or trim tools/AGENTS.md."
@@ -696,7 +693,6 @@ class ConversationRuntime:
         nudges_used = 0
         empty_nudges_used = 0
         consecutive_malformed = 0
-        last_reply = Message(role="assistant", content="")
 
         while True:
             if (
@@ -714,9 +710,7 @@ class ConversationRuntime:
                 if self._settings.runtime.auto_compact:
                     if self._force_digest_all_tools():
                         self.compact_now()
-                    recovered = (
-                        self.estimated_prompt_tokens() <= self.budget.hard_limit_tokens
-                    )
+                    recovered = self.estimated_prompt_tokens() <= self.budget.hard_limit_tokens
                 if not recovered:
                     self._ui.show_status(self._hard_limit_status())
                     self._rollback_in_flight_turn()
@@ -760,7 +754,6 @@ class ConversationRuntime:
             finally:
                 self._ui.end_response()
             self._turn_output_tokens += reply.output_tokens
-            last_reply = reply
             # History length BEFORE this model step is recorded, so a mid-tool
             # cancel (below) can roll the step back out and leave no orphaned
             # tool_call behind (§31.15).

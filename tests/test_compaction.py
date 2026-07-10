@@ -107,9 +107,7 @@ def test_auto_compact_off_refuses_past_hard_limit(tmp_path: Path) -> None:
         tmp_path, context_tokens=4096, auto_compact=False, script=[answer("hi")]
     )
     runtime._history.extend(Message(role="user", content="pad " * 600) for _ in range(4))
-    assert (
-        runtime.estimated_prompt_tokens() + 50 > runtime.budget.hard_limit_tokens
-    )
+    assert runtime.estimated_prompt_tokens() + 50 > runtime.budget.hard_limit_tokens
     reply = runtime.run_turn("over the limit now")
     assert reply == ""
     assert fake.calls == []  # the model was never called
