@@ -21,7 +21,10 @@ without a full long-option allowlist.
 
 Accepted residual: classification still keys off the basename (PATH substitution
 of a LOW name remains LOW by design of the argv executor); path-qualified
-executables already escalate out of LOW.
+executables already escalate out of LOW. A searcher pattern file glued to its
+short flag (``grep -f/etc/passwd``) reads a pattern file the boundary check does
+not decode and still classifies LOW; the ``--file=PATH`` and space-separated
+forms are already escalated.
 """
 
 from __future__ import annotations
