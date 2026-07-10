@@ -707,12 +707,17 @@ class ConversationRuntime:
                 if adjusted:
                     self._ui.show_status(f"Compacted context: adjusted {adjusted} messages.")
             if self.estimated_prompt_tokens() > self.budget.hard_limit_tokens:
-                # In-flight tool results sit in the protected compaction window;
-                # force-digest them once, then retry. If still over, roll the
-                # incomplete assistant+tool exchange back so the next turn is not stuck.
-                if self._force_digest_all_tools() and self._settings.runtime.auto_compact:
-                    self.compact_now()
-                if self.estimated_prompt_tokens() > self.budget.hard_limit_tokens:
+                # In-flight tool results sit in the protected compaction window.
+                # Only force-digest them when automatic compaction is on; with it
+                # off, refuse and roll back without silently rewriting history.
+                recovered = False
+                if self._settings.runtime.auto_compact:
+                    if self._force_digest_all_tools():
+                        self.compact_now()
+                    recovered = (
+                        self.estimated_prompt_tokens() <= self.budget.hard_limit_tokens
+                    )
+                if not recovered:
                     self._ui.show_status(self._hard_limit_status())
                     self._rollback_in_flight_turn()
                     return Message(role="assistant", content="")

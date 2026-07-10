@@ -1158,6 +1158,55 @@ def test_mid_tool_loop_hard_limit_rolls_back_in_flight_turn(tmp_path: Path) -> N
     assert loaded.messages[0].content == "go"
 
 
+def test_mid_tool_loop_hard_limit_with_auto_compact_off_does_not_digest(
+    tmp_path: Path,
+) -> None:
+    """With auto_compact off, hard-limit refusal must not silently digest tool history."""
+    from shellpilot.config.model import RuntimeSettings
+
+    (tmp_path / "blob.txt").write_text("y" * 50_000)
+    settings = Settings(
+        context=ContextSettings(model_context_tokens=4096),
+        runtime=RuntimeSettings(auto_compact=False),
+    )
+    ui = FakeUI()
+    # ~3639 tokens: under the hard limit, but any truncated tool result tips over.
+    prior_tool = ("line of prior tool output\n" * 250).rstrip("\n")
+    runtime = ConversationRuntime(
+        llm=FakeLLM(
+            script=[
+                tool_call("read_file", path="blob.txt"),
+                answer("unreachable"),
+            ]
+        ),
+        settings=settings,
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=ui,
+    )
+    runtime.restore_history(
+        [
+            Message(role="user", content="earlier"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "old.txt"}),),
+            ),
+            Message(role="tool", content=prior_tool),
+        ]
+    )
+    assert runtime.estimated_prompt_tokens() <= runtime.budget.hard_limit_tokens
+    prior_tool_before = runtime._history[2].content
+
+    reply = runtime.run_turn("go")
+    assert reply == ""
+    assert len(runtime._llm.calls) == 1
+    assert [m.role for m in runtime._history] == ["user", "assistant", "tool", "user"]
+    assert runtime._history[2].content == prior_tool_before
+    assert "compacted" not in runtime._history[2].content
+    assert any("hard limit" in status.lower() for status in ui.statuses)
+
+
 def test_set_workspace_rebuilds_project_memory(tmp_path: Path) -> None:
     """Changing workspace (/cwd) rebuilds the project memory store for the new
     path, so the previous workspace's facts stop injecting (design section 16);
