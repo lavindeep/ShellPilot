@@ -479,7 +479,7 @@ The roadblock protocol (section 11.6) and the model edge cases (section 24.6) ar
 
 Handler-level checks for the same conditions (e.g. the `if mode not in WRITE_MODES` guard in `_write_file`, the `if status not in STEP_STATUSES` guard in `_update`) remain in place as defense in depth; in normal flow they are unreachable for those parameters.
 
-**`max_plan_steps` enforcement (v0.5.2).** `RuntimeSettings.max_plan_steps` (default 10) is now enforced at proposal time. A `propose_plan` call whose `steps` list exceeds the limit returns a corrective failure (`plan has N steps; max is M — consolidate related steps and propose again`) via the normal `ToolResult(success=False, ...)` path — not the malformed-call path — because the step count is a policy decision, not a schema error. The setting is threaded from `Settings.runtime.max_plan_steps` through `ConversationRuntime` to `make_plan_tools(max_plan_steps=...)` at construction time.
+**`max_plan_steps` enforcement (v0.5.2).** `RuntimeSettings.max_plan_steps` (default 10) is now enforced at proposal time. A `propose_plan` call whose `steps` list exceeds the limit returns a corrective failure (`plan has N steps; max is M — consolidate related steps and propose again`) via the normal `ToolResult(success=False, ...)` path — not the malformed-call path — because the step count is a policy decision, not a schema error. The limit lives on `PlanManager.max_plan_steps` (seeded from `Settings.runtime.max_plan_steps` when the manager is constructed) and is read *live* at proposal time: `make_plan_tools` is called with no `max_plan_steps` argument, so its `_limit()` reads `manager.max_plan_steps` on every `propose_plan`. A `/config set runtime.max_plan_steps` therefore takes effect the same session — `update_settings` writes the new value onto `plan_manager.max_plan_steps` without rebuilding the plan tools.
 
 ### 10.5 Context And Output Budgeting
 
@@ -1409,6 +1409,7 @@ The project `<workspace>/AGENTS.md` is injected as standing "Project instruction
 - The **project** `<workspace>/AGENTS.md` is loaded only after the user accepts it. Acceptance is recorded in `.shellpilot/state.json` as the `trusted_agents_md` SHA-256 digest of the file's raw bytes.
 - On boot, the current digest is compared to the recorded one. If they match, the file loads without prompting. If it is new or its content has changed since it was last trusted (any byte change flips the digest), the user is re-prompted (default No) and the file is loaded only on acceptance.
 - A **non-TTY** session fails closed: the project file is not loaded (no way to obtain consent).
+- The same gate runs **mid-session on `/cwd set <path>`**: switching the workspace re-resolves trust for the *new* directory's `AGENTS.md` inside `SlashDispatcher._reload_behavior_for_workspace` before its instructions are injected. An already-trusted destination loads without prompting; a new or changed destination re-prompts (default No); a non-TTY session fails closed. Either way the previous workspace's project instructions are dropped, so a switch into an untrusted repo can never keep injecting the old rules or silently pick up the new ones. The always-trusted global `AGENTS.md` is reloaded unchanged.
 
 Storing the digest never clobbers the recorded last-selected model; both keys coexist in `state.json` via read-merge-write.
 
@@ -1683,9 +1684,11 @@ Three slash commands manage the overrides file at runtime:
   the error is printed in red and the file is never touched.  This invariant
   means a corrupt entry can never reach `overrides.json` via the CLI.
   The new value takes effect immediately for live keys (via `update_settings`).
-  A subset of keys are *boot-only* (theme, model client, tool registration,
+  A subset of keys are *boot-only* (theme, model client, web-tool registration,
   keep_alive preload, etc.); for those a dim note is appended: "takes effect
-  next session".  For `model.default` specifically the note adds "use
+  next session".  (Not all tool registration is boot-only: `update_settings`
+  re-syncs the `skill_read` tool live when `skills.enabled` becomes empty or
+  non-empty, registering or unregistering it without a restart.)  For `model.default` specifically the note adds "use
   `/model use <name>` to switch now".
   Setting a **high-stakes key** (`HIGH_STAKES_KEYS` — `tools.web`,
   `model.base_url`, `runtime.security_profile`, `model.allow_cloud`) first
@@ -3153,6 +3156,8 @@ Because a high-stakes override persists in `overrides.json` and silently outrank
 ### 36.4 Project AGENTS.md Trust-on-First-Use
 
 A project `AGENTS.md` is injected as standing instructions with the same authority as ShellPilot's own prompt, so cloning and running in an untrusted repo could load attacker-authored instructions every turn (and, under cloud, egress them turn one). The project (workspace) `AGENTS.md` is now gated behind per-workspace **trust-on-first-use**: its SHA-256 content digest (`project_agents_md_digest`, `memory/agents_md.py`) is recorded in program-managed workspace state (`.shellpilot/state.json`) once the user accepts it. A non-TTY session fails closed (the file is skipped), and because the gate keys on the content digest, **any change to the file re-prompts** before the new content is trusted. The global config-dir `AGENTS.md` stays trusted (it is the user's own).
+
+The gate is not boot-only: a mid-session `/cwd set <path>` re-runs it for the new workspace (`SlashDispatcher._reload_behavior_for_workspace` → `_resolve_project_agents_trust`) before any of the destination's instructions are injected. The switch always drops the previous workspace's project instructions, then loads the new project `AGENTS.md` only if its digest is already trusted or the user accepts it this session (non-TTY fails closed). This closes the stale-instructions gap where a session that switched into an untrusted repo would otherwise keep injecting the prior workspace's rules — or silently adopt the new repo's — without a trust decision.
 
 ### 36.5 Egress Chokepoint and Audit
 
