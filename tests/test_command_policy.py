@@ -254,10 +254,11 @@ def test_flags_not_treated_as_paths() -> None:
     assert result.risk == RiskLevel.MEDIUM
 
 
-def test_ls_with_relative_escape_unchanged() -> None:
-    # read-only LOW commands never hit the write-boundary path
+def test_ls_with_relative_escape_is_high() -> None:
+    # LOW must prove no out-of-workspace reads — ls is path-checked.
     result = classify_command(["ls", "../"], workspace=WS)
-    assert result.risk == RiskLevel.LOW
+    assert result.risk == RiskLevel.HIGH
+    assert any("outside the workspace" in reason for reason in result.reasons)
 
 
 # -- end relative-path boundary tests ------------------------------------------
@@ -306,7 +307,6 @@ def test_wc_relative_inside_stays_low() -> None:
 
 
 def test_bare_ls_no_path_stays_low() -> None:
-    # ls is not a reader executable; no path arg, no boundary check
     result = classify_command(["ls"], workspace=WS)
     assert result.risk == RiskLevel.LOW
 
@@ -448,6 +448,63 @@ def test_reasons_are_present_for_risky_commands() -> None:
 def test_empty_argv_is_blocked() -> None:
     result = classify_command([], workspace=WS)
     assert result.risk == RiskLevel.BLOCKED
+
+
+# -- LOW invariant: no execution / write / out-of-workspace auto-run ----------
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        # Verified bypasses that previously classified LOW under balanced AUTO.
+        (["rg", "--pre", "sh -c evil", "x"], RiskLevel.HIGH),
+        (["rg", "--pre=./preprocessor", "x"], RiskLevel.HIGH),
+        (["rg", "--pre-glob", "*.txt", "x"], RiskLevel.HIGH),
+        (["git", "diff", "--ext-diff"], RiskLevel.MEDIUM),
+        (["git", "show", "--textconv"], RiskLevel.MEDIUM),
+        (["git", "diff", "--no-index", "/etc/passwd", "/etc/hosts"], RiskLevel.HIGH),
+        (["tree", "-o", "/tmp/shellpilot-out", "."], RiskLevel.HIGH),
+        (["tree", "--output=out.txt", "."], RiskLevel.MEDIUM),
+        (["tree", "-o", "out.txt", "."], RiskLevel.MEDIUM),
+        (["ps", "e"], RiskLevel.MEDIUM),
+        (["ps", "auxe"], RiskLevel.MEDIUM),
+        (["ps", "-E"], RiskLevel.MEDIUM),
+        (["ps", "-o", "pid,environ"], RiskLevel.MEDIUM),
+        (["ps", "-o", "pid,env"], RiskLevel.MEDIUM),
+        (["ps", "--format", "pid,environ"], RiskLevel.MEDIUM),
+        (["ps", "--format=pid,environ"], RiskLevel.MEDIUM),
+        # tree write forms beyond plain -o
+        (["tree", "-R", "-L", "2", "."], RiskLevel.MEDIUM),
+        (["tree", "-ao", "out.txt", "."], RiskLevel.MEDIUM),
+        (["tree", "-aofoo.txt", "."], RiskLevel.MEDIUM),
+        # date is not inert: file-backed reads must not auto-run
+        (["date", "-r", "/etc/passwd"], RiskLevel.HIGH),
+        (["date", "-r/etc/passwd"], RiskLevel.HIGH),
+        (["date", "-f/etc/passwd"], RiskLevel.HIGH),
+        (["date", "--file=/etc/shadow"], RiskLevel.HIGH),
+        (["date", "-r", "README.md"], RiskLevel.MEDIUM),
+        # Unknown long options fail the LOW proof on capability tools.
+        (["rg", "--totally-unknown-flag", "x"], RiskLevel.MEDIUM),
+        (["ls", "--totally-unknown-flag"], RiskLevel.MEDIUM),
+        (["tree", "--totally-unknown-flag"], RiskLevel.MEDIUM),
+        # Benign forms must keep auto-running.
+        (["rg", "-n", "TODO", "."], RiskLevel.LOW),
+        (["rg", "--hidden", "-n", "TODO", "."], RiskLevel.LOW),
+        (["rg", "--smart-case", "TODO", "."], RiskLevel.LOW),
+        (["rg", "--multiline", "TODO", "."], RiskLevel.LOW),
+        (["git", "diff", "--stat"], RiskLevel.LOW),
+        (["tree", "-L", "2", "."], RiskLevel.LOW),
+        (["ps", "aux"], RiskLevel.LOW),
+        (["ps", "-ef"], RiskLevel.LOW),
+        (["ps", "-o", "pid,comm"], RiskLevel.LOW),
+        (["ls", "-la", "."], RiskLevel.LOW),
+        (["date"], RiskLevel.LOW),
+    ],
+    ids=lambda case: str(case),
+)
+def test_low_invariant_adversarial_corpus(argv: list[str], expected: RiskLevel) -> None:
+    result = classify_command(argv, workspace=WS)
+    assert result.risk == expected, f"{argv}: {result.reasons}"
 
 
 # -- sensitive_path_reason (component-exact, not substring) --------------------
