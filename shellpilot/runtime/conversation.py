@@ -411,18 +411,27 @@ class ConversationRuntime:
             for definition in self._registry.definitions_for_profile(profile)
         )
 
+    def _message_tokens(self, message: Message) -> int:
+        """Estimate one history message the way it is serialized for the model."""
+        total = estimate_tokens(message.content)
+        total += IMAGE_TOKEN_ESTIMATE * len(message.images)
+        for call in message.tool_calls:
+            total += estimate_tokens(
+                json.dumps({"function": {"name": call.name, "arguments": call.arguments}})
+            )
+        return total
+
     def history_token_estimate(self) -> tuple[int, int]:
-        """Estimated history tokens (incl. images) and message count, counted
-        exactly as estimated_prompt_tokens does for the /context breakdown."""
-        total = 0
-        for message in self._history:
-            total += estimate_tokens(message.content)
-            total += IMAGE_TOKEN_ESTIMATE * len(message.images)
+        """Estimated history tokens (content, images, tool-call args) and count."""
+        total = sum(self._message_tokens(message) for message in self._history)
         return total, len(self._history)
 
     def estimated_prompt_tokens(self) -> int:
+        """Complete request estimate: system + tool schemas + history."""
         history_tokens, _ = self.history_token_estimate()
-        return self._context_snapshot().est_system_tokens + history_tokens
+        return (
+            self._context_snapshot().est_system_tokens + self.tool_schema_tokens() + history_tokens
+        )
 
     def status(self) -> RuntimeStatus:
         return RuntimeStatus(
@@ -448,12 +457,9 @@ class ConversationRuntime:
         metadata live outside history and are never touched.
         """
         changed = 0
-        # System context is invariant during compaction (only self._history
-        # mutates), so estimate it once and re-test only the changing history sum.
-        system_tokens = self._context_snapshot().est_system_tokens
 
         def over() -> bool:
-            return system_tokens + self.history_token_estimate()[0] > self.budget.compact_at_tokens
+            return self.estimated_prompt_tokens() > self.budget.compact_at_tokens
 
         # Digestion may reach everything except the in-flight exchange (last 2
         # messages); snapshot staleness checks still force a fresh read before
@@ -490,6 +496,65 @@ class ConversationRuntime:
             changed += 1
         return changed
 
+    def _ensure_under_hard_limit(self) -> bool:
+        """Compact at the soft threshold when enabled; refuse past the hard limit."""
+        if (
+            self._settings.runtime.auto_compact
+            and self.estimated_prompt_tokens() > self.budget.compact_at_tokens
+        ):
+            adjusted = self.compact_now()
+            if adjusted:
+                self._ui.show_status(f"Compacted context: adjusted {adjusted} messages.")
+        if self.estimated_prompt_tokens() <= self.budget.hard_limit_tokens:
+            return True
+        self._ui.show_status(self._hard_limit_status())
+        return False
+
+    def _hard_limit_status(self) -> str:
+        """Status text when the hard context limit blocks a model call."""
+        if not self._history and self.estimated_prompt_tokens() > self.budget.hard_limit_tokens:
+            return (
+                "System prompt and tool schemas alone exceed the hard limit. "
+                "Raise context.model_context_tokens, or trim tools/AGENTS.md."
+            )
+        if self._settings.runtime.auto_compact:
+            return (
+                "Context is over the hard limit even after compaction. "
+                "Run /clear, or shorten the request."
+            )
+        return (
+            "Context is over the hard limit and automatic compaction is off. "
+            "Run /compact (or /clear), or turn it back on with /compact auto on."
+        )
+
+    def _discard_last_user_message(self) -> None:
+        """Undo a user message that was recorded then refused by the hard limit."""
+        if self._history and self._history[-1].role == "user":
+            self._history.pop()
+            if self._session is not None:
+                self._session.discard_last_message()
+
+    def _force_digest_all_tools(self) -> int:
+        """Digest every tool result, including the normally protected tail."""
+        changed = 0
+        for index, message in enumerate(self._history):
+            if message.role != "tool":
+                continue
+            digest = _digest_text(message.content)
+            if digest != message.content:
+                self._history[index] = Message(role="tool", content=digest)
+                changed += 1
+        return changed
+
+    def _rollback_in_flight_turn(self) -> None:
+        """Drop from the last assistant message to the end (overflow / cancel)."""
+        for index in range(len(self._history) - 1, -1, -1):
+            if self._history[index].role == "assistant":
+                del self._history[index:]
+                if self._session is not None:
+                    self._session.truncate_last_turn()
+                return
+
     def run_turn(
         self,
         text: str,
@@ -521,16 +586,22 @@ class ConversationRuntime:
             )
             return ""
 
-        if not self._settings.runtime.auto_compact and (
+        # Compact existing history first when enabled, then preflight the
+        # incoming turn so a refused request never sticks in history/session.
+        if (
+            self._settings.runtime.auto_compact
+            and self.estimated_prompt_tokens() > self.budget.compact_at_tokens
+        ):
+            adjusted = self.compact_now()
+            if adjusted:
+                self._ui.show_status(f"Compacted context: adjusted {adjusted} messages.")
+        projected = (
             self.estimated_prompt_tokens()
             + estimate_tokens(text)
             + IMAGE_TOKEN_ESTIMATE * len(images)
-            > self.budget.hard_limit_tokens
-        ):
-            self._ui.show_status(
-                "Context is over the hard limit and automatic compaction is off. "
-                "Run /compact (or /clear), or turn it back on with /compact auto on."
-            )
+        )
+        if projected > self.budget.hard_limit_tokens:
+            self._ui.show_status(self._hard_limit_status())
             return ""
 
         started = time.monotonic()
@@ -541,10 +612,9 @@ class ConversationRuntime:
                 audit_kwargs["images"] = len(images)
             self._audit.write("user_turn", **audit_kwargs)
         self._record(user(text, images=tuple(images)))
-        if self._settings.runtime.auto_compact:
-            adjusted = self.compact_now()
-            if adjusted:
-                self._ui.show_status(f"Compacted context: adjusted {adjusted} messages.")
+        if not self._ensure_under_hard_limit():
+            self._discard_last_user_message()
+            return ""
         content = self._tool_loop().content
         self._ui.turn_finished(self._turn_stats(time.monotonic() - started))
         return content
@@ -608,6 +678,7 @@ class ConversationRuntime:
             profile=self._settings.runtime.security_profile,
             max_result_tokens=self.budget.max_tool_prompt_tokens,
             max_total_tokens=self.budget.max_total_tool_prompt_tokens,
+            max_command_prompt_tokens=self.budget.max_command_prompt_tokens,
             max_capture_chars=self.budget.max_command_capture_chars,
             command_timeout_seconds=self._settings.runtime.command_timeout_seconds,
             ask_approval=self._ui.ask_approval,
@@ -624,6 +695,26 @@ class ConversationRuntime:
         consecutive_malformed = 0
 
         while True:
+            if (
+                self._settings.runtime.auto_compact
+                and self.estimated_prompt_tokens() > self.budget.compact_at_tokens
+            ):
+                adjusted = self.compact_now()
+                if adjusted:
+                    self._ui.show_status(f"Compacted context: adjusted {adjusted} messages.")
+            if self.estimated_prompt_tokens() > self.budget.hard_limit_tokens:
+                # In-flight tool results sit in the protected compaction window.
+                # Only force-digest them when automatic compaction is on; with it
+                # off, refuse and roll back without silently rewriting history.
+                recovered = False
+                if self._settings.runtime.auto_compact:
+                    if self._force_digest_all_tools():
+                        self.compact_now()
+                    recovered = self.estimated_prompt_tokens() <= self.budget.hard_limit_tokens
+                if not recovered:
+                    self._ui.show_status(self._hard_limit_status())
+                    self._rollback_in_flight_turn()
+                    return Message(role="assistant", content="")
             messages = [
                 Message(role="system", content=self._system_message_text()),
                 *self._history,

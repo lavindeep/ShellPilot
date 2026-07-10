@@ -856,3 +856,30 @@ def test_approval_display_marks_path_escaping_workspace(tmp_path: Path) -> None:
     )
     assert escape not in request.display
     assert OUTSIDE_WORKSPACE_DISPLAY in request.display
+
+
+def test_run_command_uses_command_prompt_cap(tmp_path: Path) -> None:
+    """run_command model text is truncated by max_command_prompt_tokens, not max_result_tokens."""
+    from shellpilot.tools.base import ToolResult
+    from shellpilot.tools.command import RUN_COMMAND
+    from shellpilot.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(RUN_COMMAND)
+    executor = ToolExecutor(
+        registry=registry,
+        workspace=tmp_path,
+        profile="balanced",
+        max_result_tokens=2000,
+        max_total_tokens=10_000,
+        max_command_prompt_tokens=20,
+    )
+    rendered = executor._render(
+        "run_command",
+        ToolResult(success=True, summary="ok", content="word " * 500),
+    )
+    from shellpilot.runtime.budget import estimate_tokens
+
+    # Header + body should stay near the command cap, far below the general tool cap.
+    assert estimate_tokens(rendered) < 200
+    assert "word" in rendered

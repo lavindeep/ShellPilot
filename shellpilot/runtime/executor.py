@@ -60,6 +60,7 @@ class ToolExecutor:
         profile: str,
         max_result_tokens: int,
         max_total_tokens: int,
+        max_command_prompt_tokens: int | None = None,
         max_capture_chars: int = 200_000,
         command_timeout_seconds: int = 600,
         ask_approval: ApprovalAsker | None = None,
@@ -76,6 +77,9 @@ class ToolExecutor:
         self._profile = profile
         self._max_result_tokens = max_result_tokens
         self._max_total_tokens = max_total_tokens
+        self._max_command_prompt_tokens = (
+            max_result_tokens if max_command_prompt_tokens is None else max_command_prompt_tokens
+        )
         self._max_capture_chars = max_capture_chars
         self._command_timeout_seconds = command_timeout_seconds
         self._ask_approval = ask_approval
@@ -284,7 +288,12 @@ class ToolExecutor:
             if remaining <= 0:
                 content = "[omitted: total tool-output budget for this turn is spent]"
             else:
-                content, _ = truncate_to_tokens(content, min(remaining, self._max_result_tokens))
+                per_tool_cap = (
+                    self._max_command_prompt_tokens
+                    if name == "run_command"
+                    else self._max_result_tokens
+                )
+                content, _ = truncate_to_tokens(content, min(remaining, per_tool_cap))
         text = f"{header}\n---\n{content}" if content else header
         if result.truncated:
             text += "\n(note: output truncated)"

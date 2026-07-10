@@ -145,6 +145,14 @@ class SessionStore:
         """
         self._append({"type": "truncate_last_turn"})
 
+    def discard_last_message(self) -> None:
+        """Record that the trailing transcript message is discarded.
+
+        Used when a user turn is recorded and then refused (e.g. hard context
+        limit) so --resume does not keep a stuck user message with no reply.
+        """
+        self._append({"type": "discard_last_message"})
+
     def _message_record(self, kind: str, message: Message) -> dict[str, Any]:
         content = redact_secrets(message.content) if self._redact else message.content
         record: dict[str, Any] = {
@@ -215,6 +223,9 @@ class SessionStore:
                     if messages[i].role == "assistant":
                         del messages[i:]
                         break
+            elif kind == "discard_last_message":
+                if messages:
+                    messages.pop()
             elif kind in ("message", "replace_last_message"):
                 role = record.get("role")
                 if not role:
