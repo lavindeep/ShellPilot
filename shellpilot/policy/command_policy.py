@@ -12,10 +12,12 @@ A command may be classified LOW only when the argv form cannot:
 - perform network I/O
 - read content outside the workspace
 
-Capability-bearing LOW tools (searchers, ``tree``, ``ps``, ``ls``, readers, and
-read-only git verbs) must prove that invariant via explicit checks. Unknown
-long options on those tools escalate to MEDIUM — LOW is earned, not assumed
-from the executable basename alone.
+Capability-bearing LOW tools (searchers, ``tree``, ``ps``, ``ls``, and other
+path-bearing allowlisted tools) must prove that invariant via explicit checks.
+Unknown long options on searchers / ``tree`` / ``ps`` / ``ls`` escalate to
+MEDIUM — LOW is earned, not assumed from the executable basename alone.
+Readers and read-only git verbs prove the path/helper parts of the invariant
+without a full long-option allowlist.
 
 Accepted residual: classification still keys off the basename (PATH substitution
 of a LOW name remains LOW by design of the argv executor); path-qualified
@@ -59,15 +61,14 @@ LOW_EXECUTABLES: Final = frozenset(
 )
 # Inert tools take no filesystem/process payload that can violate the LOW
 # invariant under shell=False argv execution.
+# Truly argv-inert under shell=False: no filesystem payload options we honor.
 INERT_LOW_EXECUTABLES: Final = frozenset(
-    {"pwd", "true", "false", "uname", "date", "whoami", "which", "echo", "df"}
+    {"pwd", "true", "false", "uname", "whoami", "which", "echo", "df"}
 )
 READER_EXECUTABLES: Final = frozenset(
     {"cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "file", "stat", "du"}
 )
 SEARCHER_EXECUTABLES: Final = frozenset({"grep", "egrep", "fgrep", "rg"})
-# Path-bearing LOW tools that are not already covered by READER_EXECUTABLES.
-PATH_CHECKED_LOW_EXECUTABLES: Final = frozenset({"ls", "tree"})
 GIT_READONLY_VERBS: Final = frozenset(
     {
         "status",
@@ -245,6 +246,16 @@ SEARCHER_SAFE_LONG_OPTIONS: Final = frozenset(
         "--stats",
         "--crlf",
         "--no-crlf",
+        # Common agent-facing ripgrep options (short forms already stay LOW).
+        "--smart-case",
+        "--case-sensitive",
+        "--multiline",
+        "--multiline-dotall",
+        "--pcre2",
+        "--encoding",
+        "--threads",
+        "--pretty",
+        "--no-config",
     }
 )
 SEARCHER_EXECUTION_OPTIONS: Final = frozenset({"--pre", "--pre-glob"})
@@ -412,8 +423,21 @@ def _option_present(argv: list[str], names: frozenset[str]) -> str | None:
     return None
 
 
+def _short_option_letters(names: frozenset[str]) -> frozenset[str]:
+    return frozenset(
+        name[1:]
+        for name in names
+        if name.startswith("-") and not name.startswith("--") and len(name) == 2
+    )
+
+
 def _split_option_value(argv: list[str], names: frozenset[str]) -> str | None:
-    """Value of a space-separated or ``=``-attached option, else None."""
+    """Value of a space-separated, ``=``-attached, glued, or clustered option.
+
+    Clustered short options are supported when the value-taking letter is last
+    in the cluster (``-ao out.txt``) or followed by a glued value (``-aofoo``).
+    """
+    short_letters = _short_option_letters(names)
     index = 1
     while index < len(argv):
         token = argv[index]
@@ -422,15 +446,32 @@ def _split_option_value(argv: list[str], names: frozenset[str]) -> str | None:
         name = _long_option_name(token)
         if name is not None and name in names and "=" in token:
             return token.split("=", 1)[1]
-        # Glued short form: -oFILE
-        if not token.startswith("--"):
+        if token.startswith("-") and not token.startswith("--"):
+            body = token[1:]
+            # Exact/glued short form: -o / -oFILE
             for name in names:
                 if name.startswith("-") and not name.startswith("--") and token.startswith(name):
                     glued = token[len(name) :]
                     if glued:
                         return glued
+            # Clustered short options: -ao FILE or -aofoo
+            for offset, letter in enumerate(body):
+                if letter not in short_letters:
+                    continue
+                rest = body[offset + 1 :]
+                if rest:
+                    return rest
+                return argv[index + 1] if index + 1 < len(argv) else None
         index += 1
     return None
+
+
+def _short_flag_letter_present(argv: list[str], letter: str) -> bool:
+    """True when ``letter`` appears in any short-option cluster (e.g. ``-aR``)."""
+    for token in argv[1:]:
+        if token.startswith("-") and not token.startswith("--") and letter in token[1:]:
+            return True
+    return False
 
 
 def _scan_git_verb(argv: list[str]) -> tuple[str, list[str], bool]:
@@ -594,8 +635,15 @@ def _classify_searcher(argv: list[str], workspace: Path) -> CommandRisk | None:
 
 
 def _classify_tree(argv: list[str], workspace: Path) -> CommandRisk | None:
+    # Debian/GNU tree -R writes 00Tree.html at each level (ala -o).
+    if _short_flag_letter_present(argv, "R"):
+        return CommandRisk(RiskLevel.MEDIUM, ("tree -R writes HTML files into the tree",))
     output = _split_option_value(argv, TREE_OUTPUT_OPTIONS)
-    if output is not None or _option_present(argv, TREE_OUTPUT_OPTIONS):
+    if (
+        output is not None
+        or _option_present(argv, TREE_OUTPUT_OPTIONS)
+        or _short_flag_letter_present(argv, "o")
+    ):
         target = output or ""
         if target and _path_arg_outside_workspace(["tree", target], workspace):
             return CommandRisk(
@@ -612,12 +660,57 @@ def _classify_tree(argv: list[str], workspace: Path) -> CommandRisk | None:
     return None
 
 
+def _format_field_list(value: str) -> list[str]:
+    return [part.strip().lower() for part in value.replace(" ", ",").split(",") if part.strip()]
+
+
+def _ps_format_exposes_environment(argv: list[str]) -> bool:
+    """True when ``-o``/``-O``/``--format`` selects env/environ columns."""
+    format_names = frozenset({"-o", "-O", "--format", "--Format"})
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        value: str | None = None
+        if token in format_names:
+            value = argv[index + 1] if index + 1 < len(argv) else None
+            index += 2
+        elif token.startswith("--format=") or token.startswith("--Format="):
+            value = token.split("=", 1)[1]
+            index += 1
+        elif token.startswith("-o") and len(token) > 2:
+            value = token[2:]
+            index += 1
+        elif token.startswith("-O") and len(token) > 2:
+            value = token[2:]
+            index += 1
+        else:
+            # Clustered short options with trailing o/O: -ao environ / -aopid,environ
+            if token.startswith("-") and not token.startswith("--"):
+                body = token[1:]
+                for offset, letter in enumerate(body):
+                    if letter not in {"o", "O"}:
+                        continue
+                    rest = body[offset + 1 :]
+                    value = rest if rest else (argv[index + 1] if index + 1 < len(argv) else None)
+                    break
+            index += 1
+        if value is None:
+            continue
+        fields = _format_field_list(value)
+        if any(field in {"env", "environ", "environment"} for field in fields):
+            return True
+    return False
+
+
 def _ps_exposes_environment(argv: list[str]) -> bool:
     """True when argv likely requests process environment display.
 
     BSD ``ps e`` / ``ps auxe`` expose environments. macOS ``-E`` does too.
     SysV ``-e`` means "every process" and is left alone (listing only).
+    Format selectors (``-o environ``, ``--format=pid,env``) are also covered.
     """
+    if _ps_format_exposes_environment(argv):
+        return True
     for token in argv[1:]:
         if token in {"e", "E"}:
             return True
@@ -763,9 +856,9 @@ def classify_command(argv: list[str], *, workspace: Path) -> CommandRisk:
             )
         return CommandRisk(RiskLevel.LOW, ())
     if executable in INERT_LOW_EXECUTABLES or executable in LOW_EXECUTABLES:
-        # Remaining LOW allowlist entries (including inert tools). Path-bearing
-        # leftovers still get a boundary check so the invariant holds.
-        if executable in PATH_CHECKED_LOW_EXECUTABLES or executable not in INERT_LOW_EXECUTABLES:
+        # Remaining LOW allowlist entries. Non-inert leftovers (e.g. date) still
+        # get a boundary check so out-of-workspace reads cannot auto-run.
+        if executable not in INERT_LOW_EXECUTABLES:
             outside = _path_arg_outside_workspace(argv, workspace)
             if outside:
                 return CommandRisk(

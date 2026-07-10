@@ -469,6 +469,17 @@ def test_empty_argv_is_blocked() -> None:
         (["ps", "e"], RiskLevel.MEDIUM),
         (["ps", "auxe"], RiskLevel.MEDIUM),
         (["ps", "-E"], RiskLevel.MEDIUM),
+        (["ps", "-o", "pid,environ"], RiskLevel.MEDIUM),
+        (["ps", "-o", "pid,env"], RiskLevel.MEDIUM),
+        (["ps", "--format", "pid,environ"], RiskLevel.MEDIUM),
+        (["ps", "--format=pid,environ"], RiskLevel.MEDIUM),
+        # tree write forms beyond plain -o
+        (["tree", "-R", "-L", "2", "."], RiskLevel.MEDIUM),
+        (["tree", "-ao", "out.txt", "."], RiskLevel.MEDIUM),
+        (["tree", "-aofoo.txt", "."], RiskLevel.MEDIUM),
+        # date is not inert: file-backed reads must not auto-run
+        (["date", "-r", "/etc/passwd"], RiskLevel.HIGH),
+        (["date", "--file=/etc/shadow"], RiskLevel.HIGH),
         # Unknown long options fail the LOW proof on capability tools.
         (["rg", "--totally-unknown-flag", "x"], RiskLevel.MEDIUM),
         (["ls", "--totally-unknown-flag"], RiskLevel.MEDIUM),
@@ -476,11 +487,15 @@ def test_empty_argv_is_blocked() -> None:
         # Benign forms must keep auto-running.
         (["rg", "-n", "TODO", "."], RiskLevel.LOW),
         (["rg", "--hidden", "-n", "TODO", "."], RiskLevel.LOW),
+        (["rg", "--smart-case", "TODO", "."], RiskLevel.LOW),
+        (["rg", "--multiline", "TODO", "."], RiskLevel.LOW),
         (["git", "diff", "--stat"], RiskLevel.LOW),
         (["tree", "-L", "2", "."], RiskLevel.LOW),
         (["ps", "aux"], RiskLevel.LOW),
         (["ps", "-ef"], RiskLevel.LOW),
+        (["ps", "-o", "pid,comm"], RiskLevel.LOW),
         (["ls", "-la", "."], RiskLevel.LOW),
+        (["date"], RiskLevel.LOW),
     ],
     ids=lambda case: str(case),
 )
