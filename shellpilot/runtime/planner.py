@@ -162,9 +162,10 @@ def compact_plan_state(plan: TaskPlan) -> str:
 class PlanManager:
     """Owns the active plan and its artifact on disk."""
 
-    def __init__(self, workspace: Path, profile: str) -> None:
+    def __init__(self, workspace: Path, profile: str, *, max_plan_steps: int = 10) -> None:
         self._workspace = workspace
         self._profile = profile
+        self._max_plan_steps = max_plan_steps
         self.active: TaskPlan | None = None
         self.pending_revision: str | None = None
         # Transient completion-guard state (runtime-only; never persisted to
@@ -180,6 +181,18 @@ class PlanManager:
     def set_workspace(self, workspace: Path) -> None:
         """New tasks use the new boundary; an active plan keeps its artifact path."""
         self._workspace = workspace
+
+    def set_profile(self, profile: str) -> None:
+        """New tasks stamp *profile*; an active plan keeps its recorded profile."""
+        self._profile = profile
+
+    @property
+    def max_plan_steps(self) -> int:
+        return self._max_plan_steps
+
+    @max_plan_steps.setter
+    def max_plan_steps(self, value: int) -> None:
+        self._max_plan_steps = value
 
     def artifact_path(self, plan: TaskPlan) -> Path:
         # Pinned to the plan's own workspace (set at create, persisted, restored),
@@ -393,9 +406,16 @@ def make_plan_tools(
     ask_plan_approval: PlanApprovalAsker,
     get_user_intent: UserIntentGetter,
     on_step_change: PlanProgressShower | None = None,
-    max_plan_steps: int = 10,
+    max_plan_steps: int | None = None,
 ) -> list[ToolSpec]:
-    """Plan tools close over the manager and the UI approval flow."""
+    """Plan tools close over the manager and the UI approval flow.
+
+    When *max_plan_steps* is omitted, the live ``manager.max_plan_steps`` value
+    is used so ``/config`` changes take effect without rebuilding the tools.
+    """
+
+    def _limit() -> int:
+        return manager.max_plan_steps if max_plan_steps is None else max_plan_steps
 
     def _propose(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
         goal = str(arguments["goal"]).strip()
@@ -405,13 +425,14 @@ def make_plan_tools(
                 success=False, summary="plan needs a goal and at least one step", content=""
             )
 
-        if len(steps) > max_plan_steps:
+        limit = _limit()
+        if len(steps) > limit:
             n = len(steps)
             return ToolResult(
                 success=False,
-                summary=f"plan has {n} steps; max is {max_plan_steps}",
+                summary=f"plan has {n} steps; max is {limit}",
                 content=(
-                    f"plan has {n} steps; max is {max_plan_steps} — consolidate related "
+                    f"plan has {n} steps; max is {limit} — consolidate related "
                     "steps and propose again"
                 ),
             )

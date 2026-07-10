@@ -164,7 +164,11 @@ class ConversationRuntime:
         self._cancel: threading.Event | None = None
         self.snapshots = SnapshotStore()
         self.recent_diffs: list[str] = []
-        self.plan_manager = PlanManager(workspace, settings.runtime.security_profile)
+        self.plan_manager = PlanManager(
+            workspace,
+            settings.runtime.security_profile,
+            max_plan_steps=settings.runtime.max_plan_steps,
+        )
         self._last_recorded_plan_ptr: str | None | _Unset = _UNSET
         self.plan_manager.on_change = self._on_plan_change
         for spec in make_plan_tools(
@@ -172,7 +176,6 @@ class ConversationRuntime:
             ui.ask_plan_approval,
             lambda: self._last_user_text,
             on_step_change=ui.show_plan_progress,
-            max_plan_steps=settings.runtime.max_plan_steps,
         ):
             self._registry.register(spec)
         self._registry.register(
@@ -184,7 +187,12 @@ class ConversationRuntime:
         if memory is not None:
             from shellpilot.tools.memory_tools import make_memory_tools
 
-            for spec in make_memory_tools(memory):
+            def _live_memory() -> MemoryStores:
+                if self._memory is None:
+                    raise RuntimeError("memory tools registered without live memory stores")
+                return self._memory
+
+            for spec in make_memory_tools(_live_memory):
                 self._registry.register(spec)
         if settings.tools.web:
             from shellpilot.tools.web import default_web_tools
@@ -280,6 +288,8 @@ class ConversationRuntime:
             # so a /cwd change must rebuild the project store for the new path —
             # otherwise the previous workspace's facts keep injecting (and, under
             # cloud, egressing). The shared global store is preserved as-is.
+            # Memory tools resolve stores through a getter, so they follow this
+            # replacement automatically.
             self._memory = dataclasses.replace(
                 self._memory,
                 project_store=MemoryStore(
@@ -296,9 +306,37 @@ class ConversationRuntime:
             self._audit.workspace = workspace
             self._audit.write("config_change", setting="workspace", value=str(workspace))
 
+    def set_behavior(self, behavior: BehaviorInstructions) -> None:
+        """Replace standing AGENTS.md instructions (used after ``/cwd`` trust)."""
+        self._behavior = behavior
+
     def update_settings(self, settings: Settings) -> None:
+        """Apply live settings and refresh dependents that must stay in sync.
+
+        Boot-only keys (for example ``tools.web``) may still leave registered
+        tools unchanged by design; this method keeps the live surface coherent
+        for profile, plan limits, audit metadata, and skill_read availability.
+        """
+        previous = self._settings
         self._settings = settings
         self.budget = self._resolve_budget()
+        self.plan_manager.set_profile(settings.runtime.security_profile)
+        self.plan_manager.max_plan_steps = settings.runtime.max_plan_steps
+        if self._audit is not None:
+            self._audit.profile = settings.runtime.security_profile
+        self._sync_skill_read_tool(previous.skills.enabled, settings.skills.enabled)
+
+    def _sync_skill_read_tool(self, was_enabled: tuple[str, ...], enabled: tuple[str, ...]) -> None:
+        """Keep skill_read registered iff the enabled-skills list is non-empty."""
+        if bool(was_enabled) == bool(enabled):
+            return
+        from shellpilot.tools.skill_tools import make_skill_read_tool
+
+        if enabled:
+            valid_skills = tuple(s for s in self._skills if s.valid)
+            self._registry.replace(make_skill_read_tool(valid_skills))
+        else:
+            self._registry.unregister("skill_read")
 
     def _endpoint_host(self) -> str:
         """Host of the model endpoint (for audit); empty when unparseable."""
