@@ -45,6 +45,12 @@ def test_explicit_settings_win_over_detection() -> None:
     assert budget.reserved_response_tokens == 2222
 
 
+def test_explicit_context_setting_is_not_capped() -> None:
+    explicit = ContextSettings(model_context_tokens=131_072)
+    budget = resolve_budget(explicit, detected_context_tokens=None)
+    assert budget.model_context_tokens == 131_072
+
+
 def test_estimate_tokens_rounds_up() -> None:
     assert estimate_tokens("") == 0
     assert estimate_tokens("abcd") == 1

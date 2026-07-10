@@ -544,6 +544,18 @@ def test_load_truncate_last_turn_with_no_assistant_is_ignored(tmp_path: Path) ->
     assert loaded.messages[0].content == "hi"
 
 
+def test_load_discard_last_message_pops_trailing(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions", "discard-unit")
+    store.record_message(Message(role="user", content="keep"))
+    store.record_message(Message(role="user", content="drop"))
+    store.discard_last_message()
+
+    loaded = SessionStore.load(store.path)
+
+    assert [m.role for m in loaded.messages] == ["user"]
+    assert loaded.messages[0].content == "keep"
+
+
 def test_plain_decline_after_step_skip_does_not_show_plan_pause_message(tmp_path: Path) -> None:
     registry, ran = _side_effect_registry()
     fake = FakeLLM(
@@ -1073,6 +1085,77 @@ def test_ensure_under_hard_limit_blocks_when_compaction_cannot_recover(
     assert runtime.estimated_prompt_tokens() > runtime.budget.hard_limit_tokens
     assert not runtime._ensure_under_hard_limit()
     assert any("hard limit" in status.lower() for status in ui.statuses)
+
+
+def test_hard_limit_refusal_discards_recorded_user_message(tmp_path: Path) -> None:
+    """A refused turn must not leave a stuck user message in history or on disk."""
+    from shellpilot.config.model import RuntimeSettings
+
+    settings = Settings(
+        context=ContextSettings(model_context_tokens=4096),
+        runtime=RuntimeSettings(auto_compact=True),
+    )
+    session = SessionStore(tmp_path / "sessions", "hard-limit-user")
+    ui = FakeUI()
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[answer("should not run")]),
+        settings=settings,
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=ui,
+        session=session,
+    )
+    # Sole user message sits just under the hard limit; any new turn tips it over
+    # and compaction cannot drop the only user message.
+    pad = "x" * 6600
+    runtime.restore_history([Message(role="user", content=pad)])
+    session.record_message(Message(role="user", content=pad))
+    assert runtime.estimated_prompt_tokens() <= runtime.budget.hard_limit_tokens
+    before = list(runtime._history)
+    reply = runtime.run_turn("tip " * 50)
+    assert reply == ""
+    assert runtime._history == before
+    assert [m.content for m in SessionStore.load(session.path).messages] == [pad]
+    assert any("hard limit" in status.lower() for status in ui.statuses)
+
+
+def test_mid_tool_loop_hard_limit_rolls_back_in_flight_turn(tmp_path: Path) -> None:
+    """Oversized in-flight assistant+tool exchanges must not stick past the hard limit."""
+    from shellpilot.config.model import RuntimeSettings
+    from shellpilot.llm.messages import assistant
+
+    (tmp_path / "blob.txt").write_text("ok")
+    settings = Settings(
+        context=ContextSettings(model_context_tokens=4096),
+        runtime=RuntimeSettings(auto_compact=True),
+    )
+    session = SessionStore(tmp_path / "sessions", "hard-limit-tools")
+    # Huge assistant text is not force-digested (only tool results are), so the
+    # hard-limit gate must roll the incomplete exchange back out of history/session.
+    runtime = ConversationRuntime(
+        llm=FakeLLM(
+            script=[
+                assistant(
+                    "z" * 20_000,
+                    tool_calls=(ToolCall(name="read_file", arguments={"path": "blob.txt"}),),
+                ),
+                answer("unreachable"),
+            ]
+        ),
+        settings=settings,
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        session=session,
+    )
+
+    reply = runtime.run_turn("go")
+    assert reply == ""
+    assert [m.role for m in runtime._history] == ["user"]
+    assert runtime._history[0].content == "go"
+    loaded = SessionStore.load(session.path)
+    assert [m.role for m in loaded.messages] == ["user"]
+    assert loaded.messages[0].content == "go"
 
 
 def test_set_workspace_rebuilds_project_memory(tmp_path: Path) -> None:
