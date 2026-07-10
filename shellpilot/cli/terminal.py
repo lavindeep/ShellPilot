@@ -783,7 +783,7 @@ def run_interactive(
             return StatusValues(
                 workspace=st.workspace,
                 model=runtime.model,
-                profile=settings.runtime.security_profile,
+                profile=st.profile,
                 is_cloud=is_egressing(runtime.model, settings.model.base_url),
                 ctx_pct=ctx_percent(st.estimated_prompt_tokens, st.budget.model_context_tokens),
             )

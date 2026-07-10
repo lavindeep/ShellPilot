@@ -1252,6 +1252,127 @@ def test_set_workspace_rebuilds_project_memory(tmp_path: Path) -> None:
     assert "postgres-b" in runtime.context_snapshot().system_text()
 
 
+def test_set_workspace_memory_tools_follow_new_project_store(tmp_path: Path) -> None:
+    """memory_read / memory_propose_update must use the live project store after /cwd."""
+    from shellpilot.memory.store import MemoryStore, MemoryStores, project_id_for
+    from shellpilot.persistence.paths import project_state_dir
+    from shellpilot.tools.base import ToolContext
+
+    workspace_a = tmp_path / "a"
+    workspace_b = tmp_path / "b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    stores = MemoryStores(
+        global_store=MemoryStore(tmp_path / "global-memory.json"),
+        project_store=MemoryStore(
+            project_state_dir(workspace_a) / "memory.json",
+            project_id=project_id_for(workspace_a),
+        ),
+    )
+    stores.project_store.add_fact(kind="config", value="postgres-a", label="db", source="user")
+
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=workspace_a,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        memory=stores,
+    )
+    read_spec = next(s for s in runtime.registry.specs() if s.name == "memory_read")
+    propose_spec = next(s for s in runtime.registry.specs() if s.name == "memory_propose_update")
+    ctx = ToolContext(workspace=workspace_a, max_result_tokens=4096)
+
+    before = read_spec.handler(ctx, {})
+    assert "postgres-a" in before.content
+
+    runtime.set_workspace(workspace_b)
+    after = read_spec.handler(ctx, {})
+    assert "postgres-a" not in after.content
+
+    proposed = propose_spec.handler(
+        ctx,
+        {"action": "add_fact", "kind": "config", "label": "db", "value": "postgres-b"},
+    )
+    assert proposed.success
+    assert runtime.memory is not None
+    assert any(f.value == "postgres-b" for f in runtime.memory.project_store.facts)
+    assert not any(f.value == "postgres-b" for f in stores.project_store.facts)
+
+
+def test_update_settings_keeps_plan_limits_and_audit_profile_live(tmp_path: Path) -> None:
+    """Live settings must refresh plan max steps, new-plan profile, and audit profile."""
+    import dataclasses
+
+    from shellpilot.persistence.audit_store import AuditLogger
+    from shellpilot.tools.base import ToolContext
+
+    audit = AuditLogger(
+        tmp_path / "audit.jsonl",
+        session_id="s1",
+        workspace=tmp_path,
+        profile="balanced",
+    )
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        audit=audit,
+    )
+    propose = next(s for s in runtime.registry.specs() if s.name == "propose_plan")
+    ctx = ToolContext(workspace=tmp_path, max_result_tokens=4096)
+
+    new_runtime = dataclasses.replace(
+        runtime.settings.runtime, max_plan_steps=2, security_profile="supervised"
+    )
+    runtime.update_settings(dataclasses.replace(runtime.settings, runtime=new_runtime))
+
+    assert audit.profile == "supervised"
+    assert runtime.plan_manager.max_plan_steps == 2
+    too_many = propose.handler(
+        ctx,
+        {
+            "goal": "Ship it",
+            "steps": ["one", "two", "three"],
+            "assumptions": [],
+            "verification": [],
+        },
+    )
+    assert not too_many.success
+    assert "max is 2" in too_many.summary
+
+    ok = propose.handler(
+        ctx,
+        {
+            "goal": "Ship it",
+            "steps": ["one", "two"],
+            "assumptions": [],
+            "verification": [],
+        },
+    )
+    assert ok.success
+    assert runtime.plan_manager.active is not None
+    assert runtime.plan_manager.active.profile == "supervised"
+
+
+def test_set_behavior_updates_context_prompt(tmp_path: Path) -> None:
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text="old project rules"),
+        ui=FakeUI(),
+    )
+    assert "old project rules" in runtime.context_snapshot().system_text()
+    runtime.set_behavior(BehaviorInstructions(global_text=None, project_text="new project rules"))
+    text = runtime.context_snapshot().system_text()
+    assert "new project rules" in text
+    assert "old project rules" not in text
+
+
 def test_update_plan_after_clear_reports_no_active_plan(tmp_path: Path) -> None:
     """After clear, the update_plan tool handler returns 'no active plan'."""
     fake = FakeLLM(
@@ -1631,6 +1752,26 @@ def test_skill_read_registered_when_skills_enabled(tmp_path: Path) -> None:
     settings = Settings(skills=SkillSettings(enabled=("skill-authoring",)))
     runtime = make_runtime(fake, FakeUI(), tmp_path, settings=settings)
     assert runtime.registry.get("skill_read") is not None
+
+
+def test_update_settings_syncs_skill_read_registration(tmp_path: Path) -> None:
+    """update_settings registers skill_read when skills.enabled becomes non-empty
+    and unregisters it when the list empties again."""
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        skills=_real_builtin_skills(),
+    )
+    assert runtime.registry.get("skill_read") is None
+
+    runtime.update_settings(Settings(skills=SkillSettings(enabled=("skill-authoring",))))
+    assert runtime.registry.get("skill_read") is not None
+
+    runtime.update_settings(Settings(skills=SkillSettings(enabled=())))
+    assert runtime.registry.get("skill_read") is None
 
 
 def test_tool_guide_tracks_registered_optional_tools(tmp_path: Path) -> None:

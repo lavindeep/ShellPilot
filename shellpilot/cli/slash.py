@@ -746,9 +746,31 @@ class SlashDispatcher:
                 return
             if self._confirm(f"Change the workspace boundary to {new_workspace}?"):
                 self._runtime.set_workspace(new_workspace)
+                self._reload_behavior_for_workspace(new_workspace)
                 self._console.print(f"Workspace boundary: {new_workspace}")
             return
         self._console.print("Usage: /cwd | /cwd set <path>")
+
+    def _reload_behavior_for_workspace(self, workspace: Path) -> None:
+        """Trust-gate and reload AGENTS.md for the new workspace after ``/cwd``."""
+        from shellpilot.cli.terminal import _resolve_project_agents_trust
+        from shellpilot.memory.agents_md import BehaviorInstructions, load_behavior_instructions
+
+        settings = self._runtime.settings
+        if not settings.instructions.load_agents_md:
+            self._runtime.set_behavior(BehaviorInstructions(global_text=None, project_text=None))
+            return
+        config_dir = self._user_config_file.parent
+        detected = self._runtime.budget.model_context_tokens
+        cap = min(1500, max(1, detected // 10))
+        project_trusted = _resolve_project_agents_trust(self._console, workspace, tty=self._tty)
+        behavior = load_behavior_instructions(
+            config_dir,
+            workspace,
+            max_tokens=cap,
+            project_trusted=project_trusted,
+        )
+        self._runtime.set_behavior(behavior)
 
     def _doctor(self) -> None:
         from shellpilot.cli.doctor import run_doctor
@@ -784,7 +806,6 @@ class SlashDispatcher:
             self._runtime.update_settings(dataclasses.replace(settings, runtime=new_runtime))
             if self._runtime.audit is not None:
                 self._runtime.audit.write("config_change", setting="profile", value=name)
-                self._runtime.audit.profile = name
             self._console.print(f"Switched to profile: {name}")
             return
         self._console.print("Usage: /profile | /profile use <supervised|balanced>")

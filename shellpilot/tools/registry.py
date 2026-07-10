@@ -15,6 +15,13 @@ class ToolRegistry:
             raise ValueError(f"tool already registered: {spec.name}")
         self._specs[spec.name] = spec
 
+    def replace(self, spec: ToolSpec) -> None:
+        """Register or overwrite a tool by name (for live settings transitions)."""
+        self._specs[spec.name] = spec
+
+    def unregister(self, name: str) -> None:
+        self._specs.pop(name, None)
+
     def get(self, name: str) -> ToolSpec | None:
         return self._specs.get(name)
 

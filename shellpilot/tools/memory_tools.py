@@ -9,6 +9,7 @@ files directly.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from shellpilot.llm.messages import ToolDefinition
@@ -38,8 +39,16 @@ def _diff_preview(title: str, lines: list[str]) -> str:
     return f"--- a/{title}\n+++ b/{title}\n@@ -1 +1 @@\n{body}\n"
 
 
-def make_memory_tools(stores: MemoryStores) -> list[ToolSpec]:
+def make_memory_tools(get_stores: Callable[[], MemoryStores]) -> list[ToolSpec]:
+    """Build memory tools that resolve stores through *get_stores* each call.
+
+    Handlers must not close over a concrete ``MemoryStores`` instance: ``/cwd``
+    replaces the runtime's project store, and a captured reference would keep
+    reading and writing the previous workspace.
+    """
+
     def _read(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
+        stores = get_stores()
         block = stores.render(max_tokens=PREVIEW_TOKENS)
         if not block:
             return ToolResult(
@@ -50,6 +59,7 @@ def make_memory_tools(stores: MemoryStores) -> list[ToolSpec]:
         return ToolResult(success=True, summary=f"{entries} memory entries", content=block)
 
     def _propose(context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
+        stores = get_stores()
         action = str(arguments.get("action", ""))
         try:
             if action == "add_preference":
@@ -106,6 +116,7 @@ def make_memory_tools(stores: MemoryStores) -> list[ToolSpec]:
         )
 
     def _propose_preview(context: ToolContext, arguments: dict[str, Any]) -> str:
+        stores = get_stores()
         action = str(arguments.get("action", ""))
         if action == "add_preference":
             scope = str(arguments.get("scope", "global"))
