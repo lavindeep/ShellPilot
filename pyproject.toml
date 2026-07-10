@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "shellpilot"
-version = "0.11.1"
+version = "0.11.2"
 description = "A local-first AI shell harness for your terminal, powered by Ollama."
 readme = "README.md"
 requires-python = ">=3.11"
