@@ -1568,6 +1568,26 @@ def test_skill_read_registered_when_skills_enabled(tmp_path: Path) -> None:
     assert runtime.registry.get("skill_read") is not None
 
 
+def test_update_settings_syncs_skill_read_registration(tmp_path: Path) -> None:
+    """update_settings registers skill_read when skills.enabled becomes non-empty
+    and unregisters it when the list empties again."""
+    runtime = ConversationRuntime(
+        llm=FakeLLM(script=[]),
+        settings=Settings(),
+        workspace=tmp_path,
+        behavior=BehaviorInstructions(global_text=None, project_text=None),
+        ui=FakeUI(),
+        skills=_real_builtin_skills(),
+    )
+    assert runtime.registry.get("skill_read") is None
+
+    runtime.update_settings(Settings(skills=SkillSettings(enabled=("skill-authoring",))))
+    assert runtime.registry.get("skill_read") is not None
+
+    runtime.update_settings(Settings(skills=SkillSettings(enabled=())))
+    assert runtime.registry.get("skill_read") is None
+
+
 def test_tool_guide_tracks_registered_optional_tools(tmp_path: Path) -> None:
     """The prompt guide names optional tools only when those tools are registered."""
     default_runtime = make_runtime(FakeLLM(script=[]), FakeUI(), tmp_path, settings=Settings())

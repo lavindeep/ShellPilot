@@ -20,6 +20,7 @@ class Harness:
         tmp_path: Path,
         confirm_answer: bool = True,
         session: SessionStore | None = None,
+        tty: bool = True,
     ) -> None:
         self.console = Console(record=True, width=100)
         self.fake = FakeLLM(script=[answer("hello")])
@@ -46,6 +47,7 @@ class Harness:
             user_config_file=tmp_path / "config.toml",
             reload_config=reload_config,
             confirm=lambda prompt: confirm_answer,
+            tty=tty,
         )
 
     @staticmethod
@@ -596,6 +598,95 @@ def test_cwd_set_reflected_in_runtime_status(tmp_path: Path) -> None:
     harness = Harness(tmp_path, confirm_answer=True)
     harness.dispatcher.handle(f"/cwd set {new_workspace}")
     assert harness.runtime.status().workspace == new_workspace.resolve()
+
+
+# ---------------------------------------------------------------------------
+# /cwd set re-runs AGENTS.md trust-on-first-use for the new workspace
+# ---------------------------------------------------------------------------
+
+
+def _prepare_cwd_trust(tmp_path: Path, tty: bool) -> tuple["Harness", Path]:
+    """Harness with a global AGENTS.md, an untrusted new workspace with its own
+    project AGENTS.md, and the runtime pre-seeded with the old workspace's
+    project instructions so a switch can be observed to drop them."""
+    (tmp_path / "AGENTS.md").write_text("GLOBAL RULE ALPHA", encoding="utf-8")
+    new_workspace = tmp_path / "other"
+    new_workspace.mkdir()
+    (new_workspace / "AGENTS.md").write_text("PROJECT RULE BETA", encoding="utf-8")
+    harness = Harness(tmp_path, confirm_answer=True, tty=tty)
+    harness.runtime.set_behavior(
+        BehaviorInstructions(global_text="GLOBAL RULE ALPHA", project_text="OLD PROJECT RULE")
+    )
+    return harness, new_workspace
+
+
+def test_cwd_set_non_tty_fails_closed_dropping_old_project_rules(tmp_path: Path) -> None:
+    """A non-TTY /cwd set drops the old project rules and does NOT load the new
+    (untrusted) ones, while the global rules are preserved."""
+    harness, new_workspace = _prepare_cwd_trust(tmp_path, tty=False)
+
+    harness.dispatcher.handle(f"/cwd set {new_workspace}")
+
+    behavior = harness.runtime._behavior
+    assert behavior.project_text is None
+    assert behavior.global_text == "GLOBAL RULE ALPHA"
+
+
+def test_cwd_set_decline_fails_closed_dropping_old_project_rules(tmp_path: Path) -> None:
+    """Declining the trust prompt on /cwd set drops the old project rules,
+    leaves the new project AGENTS.md unloaded, and persists no digest."""
+    from shellpilot.persistence.workspace_state import load_trusted_agents_digest
+
+    harness, new_workspace = _prepare_cwd_trust(tmp_path, tty=True)
+    harness.console.input = lambda *a, **k: "n"  # type: ignore[method-assign]
+
+    harness.dispatcher.handle(f"/cwd set {new_workspace}")
+
+    behavior = harness.runtime._behavior
+    assert behavior.project_text is None
+    assert behavior.global_text == "GLOBAL RULE ALPHA"
+    assert load_trusted_agents_digest(new_workspace) is None
+
+
+def test_cwd_set_accept_loads_new_rules_and_persists_digest(tmp_path: Path) -> None:
+    """Accepting the trust prompt on /cwd set loads the new project AGENTS.md
+    and records its digest so a later visit is trusted without prompting."""
+    from shellpilot.memory.agents_md import project_agents_md_digest
+    from shellpilot.persistence.workspace_state import load_trusted_agents_digest
+
+    harness, new_workspace = _prepare_cwd_trust(tmp_path, tty=True)
+    harness.console.input = lambda *a, **k: "y"  # type: ignore[method-assign]
+
+    harness.dispatcher.handle(f"/cwd set {new_workspace}")
+
+    behavior = harness.runtime._behavior
+    assert behavior.project_text is not None
+    assert "PROJECT RULE BETA" in behavior.project_text
+    assert behavior.global_text == "GLOBAL RULE ALPHA"
+    assert load_trusted_agents_digest(new_workspace) == project_agents_md_digest(new_workspace)
+
+
+def test_cwd_set_previously_trusted_workspace_does_not_reprompt(tmp_path: Path) -> None:
+    """A /cwd set into a workspace whose current AGENTS.md digest is already
+    trusted loads its rules without prompting."""
+    from shellpilot.memory.agents_md import project_agents_md_digest
+    from shellpilot.persistence.workspace_state import save_trusted_agents_digest
+
+    harness, new_workspace = _prepare_cwd_trust(tmp_path, tty=True)
+    digest = project_agents_md_digest(new_workspace)
+    assert digest is not None
+    save_trusted_agents_digest(new_workspace, digest)
+
+    def _no_prompt(*_a: object, **_k: object) -> str:
+        raise AssertionError("trusted workspace must not re-prompt")
+
+    harness.console.input = _no_prompt  # type: ignore[method-assign]
+
+    harness.dispatcher.handle(f"/cwd set {new_workspace}")
+
+    behavior = harness.runtime._behavior
+    assert behavior.project_text is not None
+    assert "PROJECT RULE BETA" in behavior.project_text
 
 
 # ---------------------------------------------------------------------------
