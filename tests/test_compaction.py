@@ -36,8 +36,10 @@ def make_runtime(
 
 
 def test_old_tool_results_are_digested_before_anything_drops(tmp_path: Path) -> None:
-    runtime, _, _ = make_runtime(tmp_path, context_tokens=2048)
-    big_output = "line of tool output\n" * 300
+    # Schemas alone are ~1.4k tokens; 4096 leaves room under the hard limit while
+    # still forcing compaction once a large tool result is present.
+    runtime, _, _ = make_runtime(tmp_path, context_tokens=4096)
+    big_output = "line of tool output\n" * 800
     runtime._history.extend(
         [
             Message(role="user", content="please inspect the project"),
@@ -52,6 +54,7 @@ def test_old_tool_results_are_digested_before_anything_drops(tmp_path: Path) -> 
             Message(role="assistant", content="working on it"),
         ]
     )
+    assert runtime.estimated_prompt_tokens() > runtime.budget.compact_at_tokens
     runtime.compact_now()
     roles = [message.role for message in runtime._history]
     assert roles.count("user") == 2  # no user message was dropped
@@ -62,7 +65,7 @@ def test_old_tool_results_are_digested_before_anything_drops(tmp_path: Path) -> 
 
 
 def test_assistant_tool_call_drops_together_with_results(tmp_path: Path) -> None:
-    runtime, _, _ = make_runtime(tmp_path, context_tokens=256)
+    runtime, _, _ = make_runtime(tmp_path, context_tokens=2048)
     runtime._history.extend(
         [
             Message(role="user", content="inspect " + "pad " * 40),
@@ -90,7 +93,7 @@ def test_assistant_tool_call_drops_together_with_results(tmp_path: Path) -> None
 
 
 def test_user_messages_drop_last_and_newest_is_kept(tmp_path: Path) -> None:
-    runtime, _, _ = make_runtime(tmp_path, context_tokens=96)
+    runtime, _, _ = make_runtime(tmp_path, context_tokens=2048)
     for index in range(6):
         runtime._history.append(Message(role="user", content=f"instruction {index} " + "pad " * 30))
     runtime.compact_now()
@@ -101,9 +104,12 @@ def test_user_messages_drop_last_and_newest_is_kept(tmp_path: Path) -> None:
 
 def test_auto_compact_off_refuses_past_hard_limit(tmp_path: Path) -> None:
     runtime, ui, fake = make_runtime(
-        tmp_path, context_tokens=256, auto_compact=False, script=[answer("hi")]
+        tmp_path, context_tokens=4096, auto_compact=False, script=[answer("hi")]
     )
-    runtime._history.extend(Message(role="user", content="pad " * 100) for _ in range(4))
+    runtime._history.extend(Message(role="user", content="pad " * 600) for _ in range(4))
+    assert (
+        runtime.estimated_prompt_tokens() + 50 > runtime.budget.hard_limit_tokens
+    )
     reply = runtime.run_turn("over the limit now")
     assert reply == ""
     assert fake.calls == []  # the model was never called

@@ -621,17 +621,18 @@ def test_oversized_user_message_is_refused(tmp_path: Path) -> None:
 
 
 def test_compaction_drops_oldest_turns(tmp_path: Path) -> None:
-    # Tiny explicit context so a few turns cross the threshold.
-    settings = Settings(context=ContextSettings(model_context_tokens=512))
-    script = [answer(f"reply {i} " + "pad " * 30) for i in range(6)]
+    # Context must leave room for tool schemas (~1.4k) while still compacting.
+    settings = Settings(context=ContextSettings(model_context_tokens=4096))
+    script = [answer(f"reply {i} " + "pad " * 40) for i in range(8)]
     fake = FakeLLM(script=script)
     ui = FakeUI()
     runtime = make_runtime(fake, ui, tmp_path, settings)
 
-    for i in range(6):
-        runtime.run_turn(f"question {i} " + "pad " * 30)
+    for i in range(8):
+        runtime.run_turn(f"question {i} " + "pad " * 120)
 
     assert any("Compacted" in status for status in ui.statuses)
+    assert fake.calls
     final_call = fake.calls[-1]
     contents = [message.content for message in final_call.messages]
     assert not any("question 0" in content for content in contents)
@@ -1019,6 +1020,59 @@ def test_image_token_estimate_counted(tmp_path: Path) -> None:
     estimate_with_image = runtime_with_image.estimated_prompt_tokens()
 
     assert estimate_with_image >= estimate_no_image + IMAGE_TOKEN_ESTIMATE
+
+
+def test_estimated_prompt_tokens_includes_schemas_and_tool_call_args(tmp_path: Path) -> None:
+    """The live request estimate must count tool schemas and tool-call arguments."""
+    import json
+
+    from shellpilot.llm.messages import Message, ToolCall
+    from shellpilot.runtime.budget import estimate_tokens
+
+    runtime = make_runtime(FakeLLM(script=[]), FakeUI(), tmp_path)
+    baseline = runtime.estimated_prompt_tokens()
+    assert baseline == (
+        runtime.context_snapshot().est_system_tokens
+        + runtime.tool_schema_tokens()
+        + runtime.history_token_estimate()[0]
+    )
+    assert runtime.tool_schema_tokens() > 0
+
+    huge_args = {"path": "x" * 4000}
+    runtime.restore_history(
+        [
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments=huge_args),),
+            )
+        ]
+    )
+    with_args = runtime.estimated_prompt_tokens()
+    arg_tokens = estimate_tokens(
+        json.dumps({"function": {"name": "read_file", "arguments": huge_args}})
+    )
+    assert with_args >= baseline + arg_tokens
+
+
+def test_ensure_under_hard_limit_blocks_when_compaction_cannot_recover(
+    tmp_path: Path,
+) -> None:
+    """The shared hard-limit gate refuses when kept context still exceeds the limit."""
+    from shellpilot.config.model import ContextSettings, RuntimeSettings
+    from shellpilot.llm.messages import Message
+
+    settings = Settings(
+        context=ContextSettings(model_context_tokens=2048),
+        runtime=RuntimeSettings(auto_compact=True),
+    )
+    ui = FakeUI()
+    runtime = make_runtime(FakeLLM(script=[]), ui, tmp_path, settings=settings)
+    # Keep a single huge user message so compaction cannot drop below the hard limit.
+    runtime.restore_history([Message(role="user", content="x" * 20_000)])
+    assert runtime.estimated_prompt_tokens() > runtime.budget.hard_limit_tokens
+    assert not runtime._ensure_under_hard_limit()
+    assert any("hard limit" in status.lower() for status in ui.statuses)
 
 
 def test_set_workspace_rebuilds_project_memory(tmp_path: Path) -> None:

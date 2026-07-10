@@ -1077,7 +1077,7 @@ class SlashDispatcher:
             "[green]yes[/green]",
             "",
         )
-        total = snapshot.est_system_tokens + tool_tokens + history_tokens
+        total = self._runtime.estimated_prompt_tokens()
         table.add_row(
             "TOTAL",
             f"of {budget.model_context_tokens} (compact at {budget.compact_at_tokens})",

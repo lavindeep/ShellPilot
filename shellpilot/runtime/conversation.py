@@ -411,18 +411,27 @@ class ConversationRuntime:
             for definition in self._registry.definitions_for_profile(profile)
         )
 
+    def _message_tokens(self, message: Message) -> int:
+        """Estimate one history message the way it is serialized for the model."""
+        total = estimate_tokens(message.content)
+        total += IMAGE_TOKEN_ESTIMATE * len(message.images)
+        for call in message.tool_calls:
+            total += estimate_tokens(
+                json.dumps({"function": {"name": call.name, "arguments": call.arguments}})
+            )
+        return total
+
     def history_token_estimate(self) -> tuple[int, int]:
-        """Estimated history tokens (incl. images) and message count, counted
-        exactly as estimated_prompt_tokens does for the /context breakdown."""
-        total = 0
-        for message in self._history:
-            total += estimate_tokens(message.content)
-            total += IMAGE_TOKEN_ESTIMATE * len(message.images)
+        """Estimated history tokens (content, images, tool-call args) and count."""
+        total = sum(self._message_tokens(message) for message in self._history)
         return total, len(self._history)
 
     def estimated_prompt_tokens(self) -> int:
+        """Complete request estimate: system + tool schemas + history."""
         history_tokens, _ = self.history_token_estimate()
-        return self._context_snapshot().est_system_tokens + history_tokens
+        return (
+            self._context_snapshot().est_system_tokens + self.tool_schema_tokens() + history_tokens
+        )
 
     def status(self) -> RuntimeStatus:
         return RuntimeStatus(
@@ -448,12 +457,9 @@ class ConversationRuntime:
         metadata live outside history and are never touched.
         """
         changed = 0
-        # System context is invariant during compaction (only self._history
-        # mutates), so estimate it once and re-test only the changing history sum.
-        system_tokens = self._context_snapshot().est_system_tokens
 
         def over() -> bool:
-            return system_tokens + self.history_token_estimate()[0] > self.budget.compact_at_tokens
+            return self.estimated_prompt_tokens() > self.budget.compact_at_tokens
 
         # Digestion may reach everything except the in-flight exchange (last 2
         # messages); snapshot staleness checks still force a fresh read before
@@ -489,6 +495,28 @@ class ConversationRuntime:
             self._history.pop(user_indices[0])
             changed += 1
         return changed
+
+    def _ensure_under_hard_limit(self) -> bool:
+        """Compact at the soft threshold when enabled; refuse past the hard limit."""
+        if (
+            self._settings.runtime.auto_compact
+            and self.estimated_prompt_tokens() > self.budget.compact_at_tokens
+        ):
+            adjusted = self.compact_now()
+            if adjusted:
+                self._ui.show_status(f"Compacted context: adjusted {adjusted} messages.")
+        if self.estimated_prompt_tokens() <= self.budget.hard_limit_tokens:
+            return True
+        self._ui.show_status(
+            "Context is over the hard limit"
+            + (
+                " even after compaction. Run /clear, or shorten the request."
+                if self._settings.runtime.auto_compact
+                else " and automatic compaction is off. "
+                "Run /compact (or /clear), or turn it back on with /compact auto on."
+            )
+        )
+        return False
 
     def run_turn(
         self,
@@ -541,10 +569,8 @@ class ConversationRuntime:
                 audit_kwargs["images"] = len(images)
             self._audit.write("user_turn", **audit_kwargs)
         self._record(user(text, images=tuple(images)))
-        if self._settings.runtime.auto_compact:
-            adjusted = self.compact_now()
-            if adjusted:
-                self._ui.show_status(f"Compacted context: adjusted {adjusted} messages.")
+        if not self._ensure_under_hard_limit():
+            return ""
         content = self._tool_loop().content
         self._ui.turn_finished(self._turn_stats(time.monotonic() - started))
         return content
@@ -608,6 +634,7 @@ class ConversationRuntime:
             profile=self._settings.runtime.security_profile,
             max_result_tokens=self.budget.max_tool_prompt_tokens,
             max_total_tokens=self.budget.max_total_tool_prompt_tokens,
+            max_command_prompt_tokens=self.budget.max_command_prompt_tokens,
             max_capture_chars=self.budget.max_command_capture_chars,
             command_timeout_seconds=self._settings.runtime.command_timeout_seconds,
             ask_approval=self._ui.ask_approval,
@@ -622,8 +649,11 @@ class ConversationRuntime:
         nudges_used = 0
         empty_nudges_used = 0
         consecutive_malformed = 0
+        last_reply = Message(role="assistant", content="")
 
         while True:
+            if not self._ensure_under_hard_limit():
+                return last_reply
             messages = [
                 Message(role="system", content=self._system_message_text()),
                 *self._history,
@@ -663,6 +693,7 @@ class ConversationRuntime:
             finally:
                 self._ui.end_response()
             self._turn_output_tokens += reply.output_tokens
+            last_reply = reply
             # History length BEFORE this model step is recorded, so a mid-tool
             # cancel (below) can roll the step back out and leave no orphaned
             # tool_call behind (§31.15).
