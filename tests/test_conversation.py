@@ -1693,6 +1693,27 @@ def test_non_final_step_completion_still_nudges(tmp_path: Path) -> None:
     assert any(c.startswith(plan_prefix) for c in tool_msgs)
 
 
+def test_plan_nudge_selects_first_pending_step_when_none_is_active(tmp_path: Path) -> None:
+    from shellpilot.runtime.conversation import PLAN_CONTINUE_NUDGE
+
+    fake = FakeLLM(script=[answer("Working."), answer("Still working."), answer("Stopping.")])
+    runtime = make_runtime(fake, FakeUI(), tmp_path)
+    runtime.plan_manager.create(
+        goal="Set up the service",
+        user_intent="set up the service",
+        steps=["Skip this", "First pending", "Later pending"],
+        assumptions=[],
+        verification=[],
+    )
+    runtime.plan_manager.approve()
+    runtime.plan_manager.update_step(1, "skipped")
+
+    runtime.run_turn("continue")
+
+    tool_msgs = [m.content for m in runtime._history if m.role == "tool"]
+    assert PLAN_CONTINUE_NUDGE.format(index=2, title="First pending") in tool_msgs
+
+
 def test_empty_reply_still_routes_to_empty_nudge(tmp_path: Path) -> None:
     """An empty reply (no content, no tool calls) still hits the empty-reply path."""
     from shellpilot.runtime.conversation import EMPTY_FIRST_NUDGE

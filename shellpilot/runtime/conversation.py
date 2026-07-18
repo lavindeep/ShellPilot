@@ -669,14 +669,15 @@ class ConversationRuntime:
             output_tokens=self._turn_output_tokens,
         )
 
-    def _pending_plan_step(self) -> tuple[int, str] | None:
-        """First unfinished step of the active plan, as (1-based index, title).
+    def _plan_step(self, *, active_only: bool = False) -> tuple[int, str] | None:
+        """Relevant step of the active plan, as (1-based index, title).
 
-        Returns the first step whose status is "active", else the first
-        "pending" step. Returns None when there is no plan, the plan is not yet
-        active (e.g. still "proposed" awaiting approval, or blocked/completed),
-        or every step is already in a terminal state. Used by the tool loop to
-        decide whether a no-tool-call reply should be nudged to keep executing.
+        Returns the first step whose status is "active". Unless *active_only* is
+        set, falls back to the first "pending" step. Returns None when there is
+        no plan, the plan is not yet active (e.g. still "proposed" awaiting
+        approval, or blocked/completed), or no matching step remains. The tool
+        loop uses the fallback form to nudge stalled execution and the
+        active-only form to report where a declined action paused the plan.
         """
         plan = self.plan_manager.active
         if plan is None or plan.status != "active":
@@ -687,6 +688,8 @@ class ConversationRuntime:
         )
         if active is not None:
             return active, plan.steps[active - 1].title
+        if active_only:
+            return None
         pending = next(
             (i for i, step in enumerate(plan.steps, start=1) if step.status == "pending"),
             None,
@@ -694,19 +697,6 @@ class ConversationRuntime:
         if pending is not None:
             return pending, plan.steps[pending - 1].title
         return None
-
-    def _active_plan_step(self) -> tuple[int, str] | None:
-        """Currently active plan step, without falling back to pending steps."""
-        plan = self.plan_manager.active
-        if plan is None or plan.status != "active":
-            return None
-        active = next(
-            (i for i, step in enumerate(plan.steps, start=1) if step.status == "active"),
-            None,
-        )
-        if active is None:
-            return None
-        return active, plan.steps[active - 1].title
 
     def _tool_loop(self) -> Message:
         """Model call loop with tool dispatch, budgets, and recovery (section 10.4)."""
@@ -798,7 +788,7 @@ class ConversationRuntime:
             history_before_reply = len(self._history)
             self._record(reply)
             if not reply.tool_calls:
-                pending = self._pending_plan_step()
+                pending = self._plan_step()
                 if pending is not None and tools and nudges_used < MAX_PLAN_NUDGES:
                     nudges_used += 1
                     index, title = pending
@@ -921,7 +911,7 @@ class ConversationRuntime:
                             self._session.replace_last_message(reply)
                 self._record(tool_result(outcome.model_text))
                 if outcome.stop_turn:
-                    active_step = self._active_plan_step()
+                    active_step = self._plan_step(active_only=True)
                     if active_step is not None:
                         index, _title = active_step
                         self._ui.show_status(f"Action declined; plan paused on step {index}.")
