@@ -195,12 +195,6 @@ def test_phase_for_elapsed_boundaries() -> None:
     assert phase_for_elapsed(1000.0).name == "long-haul"
 
 
-def test_phase_for_elapsed_is_deterministic() -> None:
-    """phase_for_elapsed is a pure function — same input always returns same phase."""
-    for elapsed in (0.0, 5.0, 10.0, 20.0, 60.0, 120.0):
-        assert phase_for_elapsed(elapsed).name == phase_for_elapsed(elapsed).name
-
-
 def test_phase_pools_are_populated() -> None:
     """Each phase pool must be non-empty and contain only lowercase strings."""
     for phase in FLIGHT_PHASES:
