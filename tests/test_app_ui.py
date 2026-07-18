@@ -1115,8 +1115,14 @@ def test_tool_call_path_uses_live_workspace(tmp_path: Path) -> None:
     ws_b = tmp_path / "sub"
     holder: dict[str, Path] = {"ws": ws_a}
 
-    # workspace_fn returns the live workspace from the holder.
-    ui = AppUI(glyphs=GLYPHS, workspace_fn=lambda: holder["ws"], width_fn=lambda: 80)
+    # workspace_fn returns the live workspace from the holder and must win over
+    # the deliberately stale static fallback.
+    ui = AppUI(
+        glyphs=GLYPHS,
+        workspace=ws_b,
+        workspace_fn=lambda: holder["ws"],
+        width_fn=lambda: 80,
+    )
 
     # The absolute path is inside ws_a but outside ws_b.
     abs_path = str(ws_a / "file.txt")

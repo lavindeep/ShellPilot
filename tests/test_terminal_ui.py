@@ -1066,7 +1066,13 @@ def test_tool_call_path_uses_live_workspace(tmp_path: Path) -> None:
     holder: dict[str, Path] = {"ws": ws_a}
 
     console = make_console()
-    ui = TerminalUI(console, glyphs=GLYPHS, spinner=False, workspace_fn=lambda: holder["ws"])
+    ui = TerminalUI(
+        console,
+        glyphs=GLYPHS,
+        spinner=False,
+        workspace=ws_b,
+        workspace_fn=lambda: holder["ws"],
+    )
 
     # The absolute path is inside ws_a but outside ws_b.
     abs_path = str(ws_a / "file.txt")
