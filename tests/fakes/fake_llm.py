@@ -29,6 +29,17 @@ def tool_call(name: str, **arguments: Any) -> Message:
     return assistant("", tool_calls=(ToolCall(name=name, arguments=arguments),))
 
 
+def canonical_plan_call() -> Message:
+    """Script entry: the canonical plan proposal used across runtime tests."""
+    return tool_call(
+        "propose_plan",
+        goal="Add a feature",
+        steps=["Inspect code", "Make change", "Run tests"],
+        assumptions=["repo is clean"],
+        verification=["pytest"],
+    )
+
+
 @dataclass
 class RecordedCall:
     model: str

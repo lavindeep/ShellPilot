@@ -316,7 +316,7 @@ def test_labeled_frame_contains_no_flight_phrase() -> None:
     spinner.start(label="fueling gemma4:e4b")
     time.sleep(0.2)
     assert spinner.active
-    frame_text = spinner._current_label_text()
+    frame_text = spinner._frame(0).plain
     assert "fueling gemma4:e4b" in frame_text
     for phrase in ALL_PHRASES:
         assert phrase not in frame_text, f"unexpected phrase {phrase!r} in labeled frame"
@@ -329,7 +329,7 @@ def test_unlabeled_frame_uses_flight_phrase() -> None:
     spinner = AviationSpinner(terminal_console(), GLYPHS, enabled=True)
     spinner.start()
     assert spinner.active
-    frame_text = spinner._current_label_text()
+    frame_text = spinner._frame(0).plain
     assert any(phrase in frame_text for phrase in ALL_PHRASES)
     spinner.stop()
 

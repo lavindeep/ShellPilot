@@ -10,7 +10,7 @@ from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.audit_store import AuditLogger
 from shellpilot.policy.risk import RiskLevel
 from shellpilot.runtime.conversation import ConversationRuntime
-from tests.fakes.fake_llm import FakeLLM, answer, tool_call
+from tests.fakes.fake_llm import FakeLLM, answer, canonical_plan_call, tool_call
 from tests.fakes.fake_ui import FakeUI
 
 
@@ -31,21 +31,11 @@ def make_runtime(
     )
 
 
-def plan_call() -> Message:
-    return tool_call(
-        "propose_plan",
-        goal="Add a feature",
-        steps=["Inspect code", "Make change", "Run tests"],
-        assumptions=["repo is clean"],
-        verification=["pytest"],
-    )
-
-
 def test_plan_proposal_approved_and_artifact_written(tmp_path: Path) -> None:
     # After approval, step 1 is active; the model completes the steps in-turn.
     fake = FakeLLM(
         script=[
-            plan_call(),
+            canonical_plan_call(),
             tool_call("update_plan", step=1, status="completed"),
             tool_call("update_plan", step=2, status="completed"),
             tool_call("update_plan", step=3, status="completed"),
@@ -70,7 +60,7 @@ def test_plan_proposal_approved_and_artifact_written(tmp_path: Path) -> None:
 
 
 def test_plan_rejection_stops_execution(tmp_path: Path) -> None:
-    fake = FakeLLM(script=[plan_call(), answer("Okay, what would you like instead?")])
+    fake = FakeLLM(script=[canonical_plan_call(), answer("Okay, what would you like instead?")])
     ui = FakeUI(plan_answer=("n", ""))
     runtime = make_runtime(fake, ui, tmp_path)
 
@@ -82,7 +72,7 @@ def test_plan_rejection_stops_execution(tmp_path: Path) -> None:
 
 
 def test_plan_edit_requests_revision(tmp_path: Path) -> None:
-    fake = FakeLLM(script=[plan_call(), answer("Here is a revised approach.")])
+    fake = FakeLLM(script=[canonical_plan_call(), answer("Here is a revised approach.")])
     ui = FakeUI(plan_answer=("e", "skip the tests step"))
     runtime = make_runtime(fake, ui, tmp_path)
 
@@ -103,7 +93,7 @@ def test_e_then_repropose_single_task_dir_integration(tmp_path: Path) -> None:
     )
     fake = FakeLLM(
         script=[
-            plan_call(),
+            canonical_plan_call(),
             revised_plan,
             tool_call("update_plan", step=1, status="completed"),
             tool_call("update_plan", step=2, status="completed"),
@@ -149,7 +139,7 @@ def test_e_then_repropose_single_task_dir_integration(tmp_path: Path) -> None:
 def test_clear_with_pending_revision_next_propose_is_fresh(tmp_path: Path) -> None:
     """After /clear on a pending-revision state, next propose_plan creates a new task."""
     # First turn: propose, user picks "e"
-    fake1 = FakeLLM(script=[plan_call(), answer("Let me revise.")])
+    fake1 = FakeLLM(script=[canonical_plan_call(), answer("Let me revise.")])
     ui1 = FakeUI(plan_answer=("e", "make it shorter"))
     runtime = make_runtime(fake1, ui1, tmp_path)
     runtime.run_turn("Please add the feature")
@@ -196,7 +186,7 @@ def test_update_plan_completes_steps(tmp_path: Path) -> None:
     # active; the bounded nudge fires twice, then the turn ends on plain text.
     fake = FakeLLM(
         script=[
-            plan_call(),
+            canonical_plan_call(),
             tool_call("update_plan", step=1, status="completed", note="inspected"),
             answer("Step 1 done."),
             answer("Still narrating step 2."),
@@ -216,7 +206,7 @@ def test_update_plan_completes_steps(tmp_path: Path) -> None:
 def test_blocker_tool_blocks_plan_and_instructs_protocol(tmp_path: Path) -> None:
     fake = FakeLLM(
         script=[
-            plan_call(),
+            canonical_plan_call(),
             tool_call("update_plan", blocker="pytest fails: ModuleNotFoundError"),
             answer("I hit a roadblock and recorded it."),
         ]

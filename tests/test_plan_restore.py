@@ -10,7 +10,7 @@ from shellpilot.llm.messages import Message
 from shellpilot.memory.agents_md import BehaviorInstructions
 from shellpilot.persistence.sessions import SessionStore
 from shellpilot.runtime.conversation import ConversationRuntime
-from tests.fakes.fake_llm import FakeLLM, answer, tool_call
+from tests.fakes.fake_llm import FakeLLM, answer, canonical_plan_call, tool_call
 from tests.fakes.fake_ui import FakeUI
 
 
@@ -31,16 +31,6 @@ def make_runtime(
     )
 
 
-def plan_call() -> Message:
-    return tool_call(
-        "propose_plan",
-        goal="Add a feature",
-        steps=["Inspect code", "Make change", "Run tests"],
-        assumptions=["repo is clean"],
-        verification=["pytest"],
-    )
-
-
 # ---------------------------------------------------------------------------
 # Test 1: pointer recorded at transition
 # ---------------------------------------------------------------------------
@@ -50,7 +40,7 @@ def test_active_plan_pointer_recorded_at_approval(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions", "test-sess")
     fake = FakeLLM(
         script=[
-            plan_call(),
+            canonical_plan_call(),
             tool_call("update_plan", step=1, status="completed"),
             tool_call("update_plan", step=2, status="completed"),
             tool_call("update_plan", step=3, status="completed"),
@@ -300,7 +290,7 @@ def test_step_progress_no_extra_pointer_records(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions", "dedup-sess")
     fake = FakeLLM(
         script=[
-            plan_call(),
+            canonical_plan_call(),
             tool_call("update_plan", step=1, status="completed"),
             tool_call("update_plan", step=2, status="completed"),
             tool_call("update_plan", step=3, status="completed"),
