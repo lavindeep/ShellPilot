@@ -507,6 +507,26 @@ def test_low_invariant_adversarial_corpus(argv: list[str], expected: RiskLevel) 
     assert result.risk == expected, f"{argv}: {result.reasons}"
 
 
+def test_tree_clustered_output_flag_outside_workspace_is_high() -> None:
+    result = classify_command(["tree", "-ao/tmp/out.txt"], workspace=WS)
+    assert result.risk == RiskLevel.HIGH
+    assert result.reasons == ("tree output path is outside the workspace boundary",)
+
+
+def test_git_first_external_helper_flag_wins() -> None:
+    result = classify_command(
+        ["git", "diff", "--textconv=first", "--ext-diff=second"], workspace=WS
+    )
+    assert result.risk == RiskLevel.MEDIUM
+    assert result.reasons == ("--textconv can execute configured external helpers",)
+
+
+def test_ps_format_fields_normalize_case_and_spacing() -> None:
+    result = classify_command(["ps", "--format", "PID EnViRoN"], workspace=WS)
+    assert result.risk == RiskLevel.MEDIUM
+    assert result.reasons == ("ps can expose process environments",)
+
+
 # -- sensitive_path_reason (component-exact, not substring) --------------------
 
 SENSITIVE_PATHS: list[str] = [

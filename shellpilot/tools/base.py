@@ -199,3 +199,15 @@ def workspace_display(workspace: Path, raw_path: str) -> str:
     relative = resolved.relative_to(workspace.resolve())
     rel_str = relative.as_posix()
     return "." if rel_str == "." else rel_str
+
+
+def make_workspace_path_display(
+    workspace: Path | None, workspace_fn: Callable[[], Path] | None
+) -> Callable[[str], str]:
+    """Build a path display callback preferring the live workspace provider."""
+
+    def path_display(path: str) -> str:
+        current = workspace_fn() if workspace_fn is not None else workspace
+        return workspace_display(current, path) if current is not None else path
+
+    return path_display

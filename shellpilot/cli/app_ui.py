@@ -42,7 +42,7 @@ from shellpilot.cli.streaming import DiffReveal, phase_for_elapsed
 from shellpilot.cli.theme import SHELLPILOT_THEME, UNICODE_GLYPHS, Glyphs
 from shellpilot.memory.redaction import redact_structure
 from shellpilot.runtime.budget import CHARS_PER_TOKEN
-from shellpilot.tools.base import workspace_display
+from shellpilot.tools.base import make_workspace_path_display
 
 if TYPE_CHECKING:
     from shellpilot.policy.approvals import ApprovalRequest
@@ -167,8 +167,7 @@ class AppUI:
         # workspace_fn (preferred in production) is called at render time so a
         # mid-session /cwd change is immediately reflected; workspace is the
         # static fallback for test doubles that construct without a live runtime.
-        self._workspace = workspace
-        self._workspace_fn = workspace_fn
+        self._path_display = make_workspace_path_display(workspace, workspace_fn)
         self._width_fn = width_fn
         # Gate for the reasoning-token readout (settings.ui.show_reasoning_summary,
         # design section 31.14): when False, the live/done lines show plane+phrase+
@@ -600,15 +599,6 @@ class AppUI:
             name, redacted, self._glyphs, path_display=self._path_display
         ):
             self._add_renderable(renderable)
-
-    def _path_display(self, path: str) -> str:
-        # Resolve a `path` argument to its workspace-relative target (§14.5).
-        # Prefer the live workspace (workspace_fn, set in production) so a
-        # mid-session /cwd is honoured; fall back to the build-time workspace,
-        # then verbatim (a test-double with neither set — production always wires
-        # workspace_fn, so the path display never drifts from the action).
-        workspace = self._workspace_fn() if self._workspace_fn is not None else self._workspace
-        return workspace_display(workspace, path) if workspace is not None else path
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
         self._add_renderable(render_tool_result(success, summary, self._glyphs))

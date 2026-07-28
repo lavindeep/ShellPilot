@@ -15,7 +15,7 @@ from shellpilot.skills.model import Skill, SkillResource, SkillTrigger
 from shellpilot.skills.triggers import TriggerContext
 from shellpilot.tools.base import ToolContext, ToolResult, ToolSpec
 from shellpilot.tools.registry import default_registry
-from tests.fakes.fake_llm import FakeLLM, answer, tool_call
+from tests.fakes.fake_llm import FakeLLM, answer, canonical_plan_call, tool_call
 from tests.fakes.fake_ui import FakeUI
 
 
@@ -53,16 +53,6 @@ def _user_skill(tmp_path: Path, folder: str, body: str) -> Path:
     return skills_dir
 
 
-def _plan_call() -> object:
-    return tool_call(
-        "propose_plan",
-        goal="Add a feature",
-        steps=["Inspect code", "Make change", "Run tests"],
-        assumptions=["repo is clean"],
-        verification=["pytest"],
-    )
-
-
 def _system_texts(fake: FakeLLM) -> list[str]:
     return [call.messages[0].content for call in fake.calls if call.messages]
 
@@ -72,7 +62,7 @@ def test_planning_skill_injected_only_when_plan_active(tmp_path: Path) -> None:
     # do. The planning skill body must appear only in the post-approval calls.
     fake = FakeLLM(
         script=[
-            _plan_call(),
+            canonical_plan_call(),
             tool_call("update_plan", step=1, status="completed"),
             tool_call("update_plan", step=2, status="completed"),
             tool_call("update_plan", step=3, status="completed"),

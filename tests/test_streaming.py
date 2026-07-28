@@ -195,12 +195,6 @@ def test_phase_for_elapsed_boundaries() -> None:
     assert phase_for_elapsed(1000.0).name == "long-haul"
 
 
-def test_phase_for_elapsed_is_deterministic() -> None:
-    """phase_for_elapsed is a pure function — same input always returns same phase."""
-    for elapsed in (0.0, 5.0, 10.0, 20.0, 60.0, 120.0):
-        assert phase_for_elapsed(elapsed).name == phase_for_elapsed(elapsed).name
-
-
 def test_phase_pools_are_populated() -> None:
     """Each phase pool must be non-empty and contain only lowercase strings."""
     for phase in FLIGHT_PHASES:
@@ -322,7 +316,7 @@ def test_labeled_frame_contains_no_flight_phrase() -> None:
     spinner.start(label="fueling gemma4:e4b")
     time.sleep(0.2)
     assert spinner.active
-    frame_text = spinner._current_label_text()
+    frame_text = spinner._frame(0).plain
     assert "fueling gemma4:e4b" in frame_text
     for phrase in ALL_PHRASES:
         assert phrase not in frame_text, f"unexpected phrase {phrase!r} in labeled frame"
@@ -335,7 +329,7 @@ def test_unlabeled_frame_uses_flight_phrase() -> None:
     spinner = AviationSpinner(terminal_console(), GLYPHS, enabled=True)
     spinner.start()
     assert spinner.active
-    frame_text = spinner._current_label_text()
+    frame_text = spinner._frame(0).plain
     assert any(phrase in frame_text for phrase in ALL_PHRASES)
     spinner.stop()
 

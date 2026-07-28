@@ -232,14 +232,6 @@ def _additions_diff(count: int, name: str = "big.py") -> str:
     return make_diff("", after, name=name)
 
 
-def test_render_diff_max_rows_param_exists() -> None:
-    """CI guard: render_diff keeps its keyword-only max_rows parameter."""
-    import inspect
-
-    sig = inspect.signature(render_diff)
-    assert "max_rows" in sig.parameters
-
-
 def test_render_diff_max_rows_caps_output_with_footer() -> None:
     diff = _additions_diff(30)
     out = rendered(render_diff(diff, GLYPHS, max_rows=10))
@@ -279,14 +271,6 @@ def test_render_diff_footer_style_is_faint() -> None:
     assert isinstance(footer, Text)
     assert footer.style == "sp.faint"
     assert footer.plain.startswith(f"{GLYPHS.ellipsis} (+")
-
-
-def test_render_diff_width_param_exists() -> None:
-    """CI guard: render_diff keeps its keyword-only width parameter (§31.16)."""
-    import inspect
-
-    sig = inspect.signature(render_diff)
-    assert "width" in sig.parameters
 
 
 def test_render_diff_width_standardizes_panel_width() -> None:

@@ -91,7 +91,7 @@ from shellpilot.runtime.conversation import ConversationRuntime
 from shellpilot.runtime.events import RuntimeUI, TurnStats
 from shellpilot.runtime.planner import TaskPlan
 from shellpilot.skills.loader import discover_skills
-from shellpilot.tools.base import workspace_display
+from shellpilot.tools.base import make_workspace_path_display
 
 
 def should_discard_interrupt(
@@ -217,8 +217,7 @@ class TerminalUI:
         # workspace_fn (preferred in production) is called at render time so a
         # mid-session /cwd change is immediately reflected; workspace is the
         # static fallback for test doubles that construct without a live runtime.
-        self._workspace = workspace
-        self._workspace_fn = workspace_fn
+        self._path_display = make_workspace_path_display(workspace, workspace_fn)
         self._stream = ResponseStream(console)
         self._spinner = AviationSpinner(console, glyphs, enabled=spinner)
         # The diff-reveal animation rides the same motion toggle as the spinner.
@@ -271,15 +270,6 @@ class TerminalUI:
             self._console.print(renderable)
         label = Text.assemble(("running ", "sp.dim"), (_sanitize_line(name), "sp.emph"))
         self._spinner.start(label=label)
-
-    def _path_display(self, path: str) -> str:
-        # Resolve a `path` argument to its workspace-relative target (§14.5).
-        # Prefer the live workspace (workspace_fn, set in production) so a
-        # mid-session /cwd is honoured; fall back to the build-time workspace,
-        # then verbatim (a test-double with neither set — production always wires
-        # workspace_fn, so the path display never drifts from the action).
-        workspace = self._workspace_fn() if self._workspace_fn is not None else self._workspace
-        return workspace_display(workspace, path) if workspace is not None else path
 
     def show_tool_result(self, name: str, success: bool, summary: str) -> None:
         self._spinner.stop()

@@ -14,12 +14,6 @@ from shellpilot.memory.redaction import redact_structure
 AUDIT_VERSION = 1
 
 
-def _redact_value(value: Any, enabled: bool) -> Any:
-    if not enabled:
-        return value
-    return redact_structure(value)
-
-
 @dataclass
 class AuditLogger:
     """Append-only JSONL audit events; secrets redacted before write."""
@@ -39,7 +33,12 @@ class AuditLogger:
             "profile": self.profile,
             "event": event,
         }
-        record.update({key: _redact_value(value, self.redact) for key, value in fields.items()})
+        record.update(
+            {
+                key: redact_structure(value) if self.redact else value
+                for key, value in fields.items()
+            }
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as handle:

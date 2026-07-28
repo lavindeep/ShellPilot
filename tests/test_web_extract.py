@@ -138,11 +138,3 @@ def test_title_inside_skip_region_ignored() -> None:
     html = "<svg><title>inner</title></svg>"
     page = extract_text(html)
     assert page.title == ""
-
-
-def test_returns_extracted_page_dataclass() -> None:
-    page = extract_text("<html><body><p>hi</p></body></html>")
-    assert isinstance(page, ExtractedPage)
-    assert isinstance(page.title, str)
-    assert isinstance(page.text, str)
-    assert isinstance(page.truncated, bool)

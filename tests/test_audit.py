@@ -42,6 +42,18 @@ def test_secrets_redacted_in_events(tmp_path: Path) -> None:
     assert "ghp_" not in event["command"]
 
 
+def test_redaction_applies_to_values_not_top_level_field_names(tmp_path: Path) -> None:
+    logger = make_logger(tmp_path)
+    logger.write(
+        "command_result",
+        token="audit label",
+        command="export TOKEN=ghp_abcdefghijklmnopqrstuvwxyz012345",
+    )
+    event = json.loads((tmp_path / "audit.jsonl").read_text())
+    assert event["token"] == "audit label"
+    assert event["command"] == "export [REDACTED]"
+
+
 def test_redaction_can_be_disabled(tmp_path: Path) -> None:
     logger = make_logger(tmp_path, redact=False)
     logger.write("command_result", command="AKIAIOSFODNN7EXAMPLE")

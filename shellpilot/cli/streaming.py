@@ -332,10 +332,6 @@ class AviationSpinner:
             (f"{self._glyphs.ellipsis} {int(elapsed)}s", "sp.dim"),
         )
 
-    def _current_label_text(self) -> str:
-        """Return the plain text of the most recent frame (for tests)."""
-        return self._frame(0).plain
-
     def _spin(self) -> None:
         tick = 0
         while not self._stop_event.wait(_REFRESH_SECONDS):

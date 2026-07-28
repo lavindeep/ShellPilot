@@ -165,7 +165,7 @@ class PlanManager:
     def __init__(self, workspace: Path, profile: str, *, max_plan_steps: int = 10) -> None:
         self._workspace = workspace
         self._profile = profile
-        self._max_plan_steps = max_plan_steps
+        self.max_plan_steps = max_plan_steps
         self.active: TaskPlan | None = None
         self.pending_revision: str | None = None
         # Transient completion-guard state (runtime-only; never persisted to
@@ -185,14 +185,6 @@ class PlanManager:
     def set_profile(self, profile: str) -> None:
         """New tasks stamp *profile*; an active plan keeps its recorded profile."""
         self._profile = profile
-
-    @property
-    def max_plan_steps(self) -> int:
-        return self._max_plan_steps
-
-    @max_plan_steps.setter
-    def max_plan_steps(self, value: int) -> None:
-        self._max_plan_steps = value
 
     def artifact_path(self, plan: TaskPlan) -> Path:
         # Pinned to the plan's own workspace (set at create, persisted, restored),

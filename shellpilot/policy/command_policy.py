@@ -426,21 +426,17 @@ def _option_present(argv: list[str], names: frozenset[str]) -> str | None:
     return None
 
 
-def _short_option_letters(names: frozenset[str]) -> frozenset[str]:
-    return frozenset(
-        name[1:]
-        for name in names
-        if name.startswith("-") and not name.startswith("--") and len(name) == 2
-    )
-
-
 def _split_option_value(argv: list[str], names: frozenset[str]) -> str | None:
     """Value of a space-separated, ``=``-attached, glued, or clustered option.
 
     Clustered short options are supported when the value-taking letter is last
     in the cluster (``-ao out.txt``) or followed by a glued value (``-aofoo``).
     """
-    short_letters = _short_option_letters(names)
+    short_letters = frozenset(
+        name[1:]
+        for name in names
+        if name.startswith("-") and not name.startswith("--") and len(name) == 2
+    )
     index = 1
     while index < len(argv):
         token = argv[index]
@@ -545,14 +541,6 @@ def _git_output_path(tokens: list[str]) -> str | None:
     return None
 
 
-def _git_external_helper(flags: list[str]) -> str | None:
-    for flag in flags:
-        name = flag.partition("=")[0]
-        if name in GIT_EXTERNAL_HELPER_OPTIONS:
-            return f"{name} can execute configured external helpers"
-    return None
-
-
 def _classify_git(argv: list[str], workspace: Path) -> CommandRisk:
     verb, verb_args, conservative_global = _scan_git_verb(argv)
     flags = [token for token in argv[1:] if token.startswith("-")]
@@ -590,7 +578,12 @@ def _classify_git(argv: list[str], workspace: Path) -> CommandRisk:
             return CommandRisk(RiskLevel.MEDIUM, (f"git {verb} changes repository state",))
     if conservative_global:
         return CommandRisk(RiskLevel.MEDIUM, ("git uses a non-benign global option",))
-    helper = _git_external_helper(flags)
+    helper = None
+    for flag in flags:
+        name = flag.partition("=")[0]
+        if name in GIT_EXTERNAL_HELPER_OPTIONS:
+            helper = f"{name} can execute configured external helpers"
+            break
     if helper:
         return CommandRisk(RiskLevel.MEDIUM, (helper,))
     if verb in GIT_READONLY_VERBS or (
@@ -663,10 +656,6 @@ def _classify_tree(argv: list[str], workspace: Path) -> CommandRisk | None:
     return None
 
 
-def _format_field_list(value: str) -> list[str]:
-    return [part.strip().lower() for part in value.replace(" ", ",").split(",") if part.strip()]
-
-
 def _ps_format_exposes_environment(argv: list[str]) -> bool:
     """True when ``-o``/``-O``/``--format`` selects env/environ columns."""
     format_names = frozenset({"-o", "-O", "--format", "--Format"})
@@ -699,7 +688,9 @@ def _ps_format_exposes_environment(argv: list[str]) -> bool:
             index += 1
         if value is None:
             continue
-        fields = _format_field_list(value)
+        fields = [
+            part.strip().lower() for part in value.replace(" ", ",").split(",") if part.strip()
+        ]
         if any(field in {"env", "environ", "environment"} for field in fields):
             return True
     return False
