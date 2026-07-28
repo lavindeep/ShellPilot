@@ -589,6 +589,7 @@ class TaskPlan:
     assumptions: list[str]
     verification: list[str]
 
+
 class PlanStep:
     id: str
     title: str
